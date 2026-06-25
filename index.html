@@ -2692,6 +2692,19 @@ function exportData() {
               Import = fusion sans perte de donnees existantes
             </div>
             <button onClick={() => {
+              const d = prompt("Date de début du cycle actuel ? (format AAAA-MM-JJ)", "2026-05-22");
+              if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) {
+                save(KEYS.cycle, { startDate: d, num: 1 });
+                alert("Cycle réinitialisé au " + d + " !");
+                setShowDataMenu(false);
+                window.location.reload();
+              } else if (d) {
+                alert("Format invalide. Utilise AAAA-MM-JJ (ex: 2026-05-22)");
+              }
+            }} style={{ width: "100%", background: "#001a1a", border: "1px solid #004444", color: "#00E5FF", borderRadius: 10, padding: "12px", fontSize: 12, fontWeight: 700, cursor: "pointer", marginBottom: 6, marginTop: 10 }}>
+              📅 RÉINITIALISER DATE DU CYCLE
+            </button>
+            <button onClick={() => {
               if (confirm("Réparer l'app ? Les routines seront réinitialisées, vos séances sont conservées.")) {
                 ["it3_current_session","it3_prog_version",KEYS.routines].forEach(k => { try { localStorage.removeItem(k); } catch(e) {} });
                 window.location.reload();
