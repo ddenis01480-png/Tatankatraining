@@ -843,6 +843,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
     const ex = currentSets.exercises[exIdx];
     const exSets2 = ex.sets || [];
     if (!exSets2[setIdx]) return;
+    if (!exSets2[setIdx].reps) { alert("Saisis le nombre de reps avant de valider la série."); return; }
     if (!exSets2[setIdx].weight) { alert("Saisis la charge avant de valider la série."); return; }
     const wasNotDone = !exSets2[setIdx].done;
     const updatedSets = exSets2.map((s, si) => si === setIdx ? { ...s, done: !s.done } : s);
