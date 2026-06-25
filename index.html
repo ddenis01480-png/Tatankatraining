@@ -2493,7 +2493,7 @@ function exportData() {
       routines: load(KEYS.routines) || [],
       supps: load(KEYS.supps) || [],
       fatigue: load(KEYS.fatigue) || {},
-      cycle: load(KEYS.cycle) || null,
+      cycle: load(KEYS.cycle) || { startDate: ((load(KEYS.sessions)||[])[0] && (load(KEYS.sessions)||[])[0].date) || today(), num: 1 },
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -2600,7 +2600,8 @@ function exportData() {
           }
           if (data.supps) { save(KEYS.supps, data.supps); setSupps(data.supps); }
           if (data.fatigue) { save(KEYS.fatigue, data.fatigue); setFatigue(data.fatigue); }
-          if (data.cycle && data.cycle.startDate) { save(KEYS.cycle, data.cycle); }
+          const cycleToRestore = (data.cycle && data.cycle.startDate) ? data.cycle : { startDate: (data.sessions && data.sessions[0] && data.sessions[0].date) || today(), num: 1 };
+          save(KEYS.cycle, cycleToRestore);
           alert("Restauration réussie ! " + (data.sessions||[]).length + " séance(s) importée(s).");
           setShowDataMenu(false);
         } catch(err) { alert("Erreur JSON : " + err.message); }
