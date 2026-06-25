@@ -843,6 +843,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
     const ex = currentSets.exercises[exIdx];
     const exSets2 = ex.sets || [];
     if (!exSets2[setIdx]) return;
+    if (!exSets2[setIdx].weight) { alert("Saisis la charge avant de valider la série."); return; }
     const wasNotDone = !exSets2[setIdx].done;
     const updatedSets = exSets2.map((s, si) => si === setIdx ? { ...s, done: !s.done } : s);
     setCurrentSets(prev => ({
@@ -862,7 +863,13 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
         // Séries déjà validées dans la séance en cours (hors série actuelle)
         const currentSessionRM = exSets2.filter((s, si) => si !== setIdx && s.done && s.weight && s.reps).map(s => parseFloat(s.weight) * (1 + parseInt(s.reps) / 30));
         const allPastRM = [...pastRM, ...currentSessionRM];
-        isPR = allPastRM.length > 0 && currentRM > Math.max(...allPastRM);
+        const maxPastRM = allPastRM.length > 0 ? Math.max(...allPastRM) : 0;
+        // PR si 1RM strictement supérieur, OU si égal au max mais avec plus de reps (même charge)
+        const prevMaxReps = allPastRM.length > 0
+          ? Math.max(...sessions.flatMap(s=>(s.exercises||[]).filter(e=>e.name===ex.name).flatMap(e=>(e.sets||[]).filter(st=>st.weight&&st.reps&&Math.abs(parseFloat(st.weight)-parseFloat(currentSet.weight))<0.01).map(st=>parseInt(st.reps)))), ...exSets2.filter((s,si)=>si!==setIdx&&s.done&&s.weight&&Math.abs(parseFloat(s.weight)-parseFloat(currentSet.weight))<0.01&&s.reps).map(s=>parseInt(s.reps)))
+          : 0;
+        const sameWeightMoreReps = prevMaxReps > 0 && parseInt(currentSet.reps) > prevMaxReps;
+        isPR = allPastRM.length > 0 && (currentRM > maxPastRM || sameWeightMoreReps);
       }
       setValidationToast({ setNum: setIdx + 1, exName: ex.name, rest: ex.rest || 90, isPR });
       setTimeout(() => setValidationToast(null), isPR ? 3000 : 2200);
