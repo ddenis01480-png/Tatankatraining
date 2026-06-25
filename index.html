@@ -2600,6 +2600,7 @@ function exportData() {
           }
           if (data.supps) { save(KEYS.supps, data.supps); setSupps(data.supps); }
           if (data.fatigue) { save(KEYS.fatigue, data.fatigue); setFatigue(data.fatigue); }
+          if (data.cycle && data.cycle.startDate) { save(KEYS.cycle, data.cycle); }
           alert("Restauration réussie ! " + (data.sessions||[]).length + " séance(s) importée(s).");
           setShowDataMenu(false);
         } catch(err) { alert("Erreur JSON : " + err.message); }
