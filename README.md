@@ -1,2 +1,0 @@
-# Tatankatraining
-Training 
