@@ -620,6 +620,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
   const [lastSetInfo, setLastSetInfo] = useState(null);
   const [stagAlert, setStagAlert] = useState(null);
   const [replaceIdx, setReplaceIdx] = useState(null);
+  const [showExSettings, setShowExSettings] = useState(null);
   const [validationToast, setValidationToast] = useState(null);
   const [postSeanceModal, setPostSeanceModal] = useState(null);
   const [adaptModal, setAdaptModal] = useState(null);
@@ -1416,11 +1417,36 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
                   const rt = ex.repsTarget; const rtMax = rt ? parseInt((rt.split("-")[1] || rt.split("-")[0])) : 12;
                   return rtMax <= 20 ? <span style={{ fontSize: 11, color: "#ff6600", fontWeight: 800 }}>{best1rm}kg 1RM</span> : null;
                 })()}
+                <button onClick={() => setShowExSettings(showExSettings === exIdx ? null : exIdx)} style={{ background: showExSettings === exIdx ? "#ff660033" : "none", border: "none", color: showExSettings === exIdx ? "#ff6600" : "#555", cursor: "pointer", fontSize: 14, padding: "0 4px", borderRadius: 4 }} title="Paramètres">⚙</button>
                 <button onClick={() => setReplaceIdx(exIdx)} style={{ background: "none", border: "none", color: "#555", cursor: "pointer", fontSize: 14, padding: "0 4px" }} title="Changer d'exercice">⇔</button>
                 <button onClick={() => { if (window.confirm("Supprimer " + ex.name + " ?")) setCurrentSets(prev => ({ ...prev, exercises: prev.exercises.filter((_, i) => i !== exIdx) })); }} style={{ background: "none", border: "none", color: "#333", cursor: "pointer", fontSize: 16, padding: 0 }}>X</button>
               </div>
             </div>
 
+            {showExSettings === exIdx && (
+              <div style={{ background: "#111", borderRadius: 8, padding: "10px 12px", marginBottom: 8, border: "1px solid #ff660033" }}>
+                <div style={{ fontSize: 9, color: "#ff6600", fontFamily: "monospace", letterSpacing: "0.1em", marginBottom: 8 }}>⚙ PARAMÈTRES EXERCICE</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <label style={{ fontSize: 10, color: "#888", minWidth: 90 }}>Range reps</label>
+                    <input value={ex.repsTarget || "8-12"} onChange={e => setCurrentSets(prev => ({ ...prev, exercises: prev.exercises.map((e2, ei) => ei !== exIdx ? e2 : { ...e2, repsTarget: e.target.value }) }))}
+                      placeholder="ex: 8-12"
+                      style={{ flex: 1, background: "#1a1a1a", border: "1px solid #333", color: "#fff", borderRadius: 6, padding: "6px 8px", fontSize: 12, fontFamily: "monospace" }} />
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <label style={{ fontSize: 10, color: "#888", minWidth: 90 }}>Repos (sec)</label>
+                    <input type="number" value={ex.rest || 90} onChange={e => setCurrentSets(prev => ({ ...prev, exercises: prev.exercises.map((e2, ei) => ei !== exIdx ? e2 : { ...e2, rest: parseInt(e.target.value) || 90 }) }))}
+                      style={{ flex: 1, background: "#1a1a1a", border: "1px solid #333", color: "#fff", borderRadius: 6, padding: "6px 8px", fontSize: 12, fontFamily: "monospace" }} />
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <label style={{ fontSize: 10, color: "#888", minWidth: 90 }}>Séries échauff.</label>
+                    <input type="number" min="0" max="5" value={ex.warmupSets || 0} onChange={e => { const v = parseInt(e.target.value)||0; setCurrentSets(prev => ({ ...prev, exercises: prev.exercises.map((e2, ei) => ei !== exIdx ? e2 : { ...e2, warmupSets: v, warmupLabel: v > 0 ? "1-"+v : "" }) })); }}
+                      style={{ flex: 1, background: "#1a1a1a", border: "1px solid #333", color: "#fff", borderRadius: 6, padding: "6px 8px", fontSize: 12, fontFamily: "monospace" }} />
+                  </div>
+                </div>
+                <button onClick={() => setShowExSettings(null)} style={{ marginTop: 10, width: "100%", background: "#ff660022", border: "1px solid #ff660044", color: "#ff6600", borderRadius: 6, padding: "7px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Fermer</button>
+              </div>
+            )}
             {ex.lastSets && ex.lastSets.length > 0 && (
               <div style={{ background: "#0d0d0d", borderRadius: 7, padding: "6px 10px", marginBottom: 6, border: "1px solid #1a1a1a" }}>
                 <div style={{ fontSize: 8, color: "#444", fontFamily: "monospace", marginBottom: 4 }}>DERNIERE SEANCE</div>
