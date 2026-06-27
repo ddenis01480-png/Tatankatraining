@@ -824,7 +824,17 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
       .map(s => { const ex = s.exercises.find(e => e.name === exName); return { date: s.date, sets: (ex && ex.sets) || [] }; });
     if (hist.length < 2) return;
     const diag = analyzeEx([...hist, { date: today(), sets: setsArr }]);
-    if (diag && diag.type > 0) setStagAlert({ ...diag, exName });
+    // Afficher alerte uniquement pour stagnation (2) et regression (3), jamais pour progression (0) ou trop rapide (1)
+    if (diag && (diag.type === 2 || diag.type === 3)) {
+      // Vérifier que la séance actuelle ne montre pas une progression vs la précédente
+      const lastHist = hist[hist.length - 1];
+      const prevTotalReps = (lastHist.sets||[]).filter(s=>s.reps&&s.weight).reduce((a,s)=>a+parseInt(s.reps),0);
+      const currTotalReps = setsArr.filter(s=>s.reps&&s.weight).reduce((a,s)=>a+parseInt(s.reps),0);
+      const prevMax1RM = Math.max(0, ...(lastHist.sets||[]).filter(s=>s.weight&&s.reps).map(s=>parseFloat(s.weight)*(1+parseInt(s.reps)/30)));
+      const currMax1RM = Math.max(0, ...setsArr.filter(s=>s.weight&&s.reps).map(s=>parseFloat(s.weight)*(1+parseInt(s.reps)/30)));
+      if (currMax1RM > prevMax1RM || currTotalReps > prevTotalReps) return; // progression reelle, pas d alerte
+      setStagAlert({ ...diag, exName });
+    }
   }
 
   function updateSet(exIdx, setIdx, field, val) {
