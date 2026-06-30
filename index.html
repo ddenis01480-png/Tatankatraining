@@ -871,27 +871,33 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
       let isPR = false;
       if (currentSet && currentSet.weight && currentSet.reps) {
         const currentRM = parseFloat(currentSet.weight) * (1 + parseInt(currentSet.reps) / 30);
-        // Séances passées sauvegardées
+        // 1) Comparaison 1RM global (toutes séries confondues) — record absolu sur l exercice
         const pastRM = sessions.flatMap(s => (s.exercises||[]).filter(e=>e.name===ex.name).flatMap(e=>(e.sets||[]).filter(st=>st.weight&&st.reps).map(st=>parseFloat(st.weight)*(1+parseInt(st.reps)/30))));
-        // Séries déjà validées dans la séance en cours (hors série actuelle)
         const currentSessionRM = exSets2.filter((s, si) => si !== setIdx && s.done && s.weight && s.reps).map(s => parseFloat(s.weight) * (1 + parseInt(s.reps) / 30));
         const allPastRM = [...pastRM, ...currentSessionRM];
-        // Si pas d historique passé, comparer uniquement les séries de la séance en cours
-        if (allPastRM.length === 0) {
-          // Première fois sur cet exercice : PR uniquement si meilleure que les séries déjà faites dans cette séance
-          const intraRM = currentSessionRM;
-          isPR = intraRM.length === 0 ? false : currentRM > Math.max(...intraRM);
-        } else {
-          const maxPastRM = Math.max(...allPastRM);
-          // PR si 1RM strictement supérieur
-          // OU même charge mais plus de reps que le max historique à cette charge
-          const prevMaxRepsAtWeight = Math.max(0,
-            ...sessions.flatMap(s=>(s.exercises||[]).filter(e=>e.name===ex.name).flatMap(e=>(e.sets||[]).filter(st=>st.weight&&st.reps&&Math.abs(parseFloat(st.weight)-parseFloat(currentSet.weight))<0.01).map(st=>parseInt(st.reps)))),
-            ...exSets2.filter((s,si)=>si!==setIdx&&s.done&&s.weight&&Math.abs(parseFloat(s.weight)-parseFloat(currentSet.weight))<0.01&&s.reps).map(s=>parseInt(s.reps))
-          );
-          const sameWeightMoreReps = prevMaxRepsAtWeight > 0 && parseInt(currentSet.reps) > prevMaxRepsAtWeight;
-          isPR = currentRM > maxPastRM || sameWeightMoreReps;
-        }
+        const isGlobalPR = allPastRM.length > 0 && currentRM > Math.max(...allPastRM);
+
+        // 2) Comparaison par position de série (S1 vs S1, S2 vs S2, S3 vs S3...) — progression sur CETTE série précise
+        const pastAtSamePosition = sessions.flatMap(s => {
+          const e = (s.exercises||[]).find(e=>e.name===ex.name);
+          if (!e || !e.sets || !e.sets[setIdx]) return [];
+          const st = e.sets[setIdx];
+          return (st.weight && st.reps) ? [parseFloat(st.weight) * (1 + parseInt(st.reps) / 30)] : [];
+        });
+        const isPositionPR = pastAtSamePosition.length > 0 && currentRM > Math.max(...pastAtSamePosition);
+
+        // 3) Même charge, plus de reps que le max historique à cette charge (toutes positions confondues)
+        const prevMaxRepsAtWeight = Math.max(0,
+          ...sessions.flatMap(s=>(s.exercises||[]).filter(e=>e.name===ex.name).flatMap(e=>(e.sets||[]).filter(st=>st.weight&&st.reps&&Math.abs(parseFloat(st.weight)-parseFloat(currentSet.weight))<0.01).map(st=>parseInt(st.reps)))),
+          ...exSets2.filter((s,si)=>si!==setIdx&&s.done&&s.weight&&Math.abs(parseFloat(s.weight)-parseFloat(currentSet.weight))<0.01&&s.reps).map(s=>parseInt(s.reps))
+        );
+        const sameWeightMoreReps = prevMaxRepsAtWeight > 0 && parseInt(currentSet.reps) > prevMaxRepsAtWeight;
+
+        // 4) Premier passage sur l exercice (aucun historique du tout) : comparer juste vs séries déjà faites cette séance
+        const noHistoryAtAll = pastRM.length === 0;
+        const isFirstTimePR = noHistoryAtAll && currentSessionRM.length > 0 && currentRM > Math.max(...currentSessionRM);
+
+        isPR = isGlobalPR || isPositionPR || sameWeightMoreReps || isFirstTimePR;
       }
       setValidationToast({ setNum: setIdx + 1, exName: ex.name, rest: ex.rest || 90, isPR });
       setTimeout(() => setValidationToast(null), isPR ? 3000 : 2200);
