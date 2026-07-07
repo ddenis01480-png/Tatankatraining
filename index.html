@@ -901,7 +901,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
         const lastSession = [...sessions].reverse().find(s => (s.exercises||[]).some(e=>e.name===ex.name));
         const lastSet = lastSession && (lastSession.exercises.find(e=>e.name===ex.name)||{sets:[]}).sets[setIdx];
         const prevSessionSamePosiReps = lastSet && lastSet.reps ? parseInt(lastSet.reps) : 0;
-        const moreRepsThanLastSession = prevSessionSamePosiReps > 0 && parseInt(currentSet.reps) > prevSessionSamePosiReps && parseFloat(currentSet.weight) >= parseFloat(lastSet.weight);
+        const moreRepsThanLastSession = prevSessionSamePosiReps > 0 && parseInt(currentSet.reps) > prevSessionSamePosiReps && lastSet && parseFloat(currentSet.weight) >= parseFloat(lastSet.weight);
 
         // 3) Même charge, plus de reps que le max historique à cette charge (toutes positions confondues)
         const prevMaxRepsAtWeight = Math.max(0,
