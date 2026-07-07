@@ -1869,13 +1869,35 @@ function BilanMensuel({ sessions, onClose }) {
   const prevSessions = prevMonth ? sessions.filter(s => s.date.startsWith(prevMonth)) : [];
   const exNames = [...new Set(monthSessions.flatMap(s => (s.exercises || []).map(e => e.name)))];
   const exStats = exNames.map(name => {
-    const getTonnage = (sess) => { const sets = sess.flatMap(s => (s.exercises || []).filter(e => e.name === name).flatMap(e => (e.sets || []).filter(st => st.weight && st.reps))); return Math.round(sets.reduce((a, st) => a + parseFloat(st.weight) * parseInt(st.reps), 0)); };
-    const curT = getTonnage(monthSessions), prevT = getTonnage(prevSessions);
+    // Tonnage moyen par séance (évite le biais mois en cours vs mois complet)
+    const getAvgTonnage = (sess) => {
+      const sessWith = sess.filter(s => s.exercises && s.exercises.some(e => e.name === name));
+      if (sessWith.length === 0) return 0;
+      const total = sessWith.reduce((a, s) => {
+        const sets = ((s.exercises.find(e => e.name === name) || {}).sets || []).filter(st => st.weight && st.reps);
+        return a + sets.reduce((b, st) => b + parseFloat(st.weight) * parseInt(st.reps), 0);
+      }, 0);
+      return Math.round(total / sessWith.length);
+    };
+    // best1RM moyen par séance
+    const getAvg1RM = (sess) => {
+      const sessWith = sess.filter(s => s.exercises && s.exercises.some(e => e.name === name));
+      if (sessWith.length === 0) return 0;
+      const total = sessWith.reduce((a, s) => {
+        const sets = ((s.exercises.find(e => e.name === name) || {}).sets || []).filter(st => st.weight && st.reps);
+        return a + (sets.length ? Math.max(...sets.map(st => e1RM(st.weight, st.reps))) : 0);
+      }, 0);
+      return Math.round(total / sessWith.length);
+    };
+    const curT = getAvgTonnage(monthSessions), prevT = getAvg1RM(prevSessions) > 0 ? getAvgTonnage(prevSessions) : 0;
+    const cur1RM = getAvg1RM(monthSessions), prev1RM = getAvg1RM(prevSessions);
+    // Progression si tonnage moyen OU 1RM moyen en hausse
     const diff = prevT > 0 ? curT - prevT : null;
-    const trend = diff === null ? "?" : diff > 0 ? "UP" : diff < 0 ? "DOWN" : "EQ";
+    const rm1diff = prev1RM > 0 ? cur1RM - prev1RM : null;
+    const trend = (diff === null && rm1diff === null) ? "?" : ((diff !== null && diff > 0) || (rm1diff !== null && rm1diff > 0)) ? "UP" : ((diff !== null && diff < 0) && (rm1diff !== null && rm1diff < 0)) ? "DOWN" : "EQ";
     const trendIcon = trend === "UP" ? "↑" : trend === "DOWN" ? "↓" : "→";
     const trendColor = trend === "UP" ? "#00C853" : trend === "DOWN" ? "#FF4444" : "#888";
-    const directive = trend === "UP" ? "Tonnage en hausse" : trend === "DOWN" ? "Tonnage en baisse" : "Tonnage stable";
+    const directive = trend === "UP" ? "En progression (moy/séance)" : trend === "DOWN" ? "En baisse (moy/séance)" : "Stable";
     const hist = sessions.filter(s => s.exercises && s.exercises.some(e => e.name === name))
       .map(s => { const ex = (s.exercises || []).find(e => e.name === name); const sets = ((ex && ex.sets) || []).filter(st => st.weight && st.reps); const tonnage = sets.reduce((a, st) => a + parseFloat(st.weight) * parseInt(st.reps), 0); return { date: s.date, best1RM: sets.length ? Math.max(...sets.map(st => e1RM(st.weight, st.reps))) : 0, tonnage: Math.round(tonnage) }; })
       .filter(p => p.best1RM > 0).sort((a, b) => a.date.localeCompare(b.date));
