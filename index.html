@@ -193,6 +193,18 @@ function e1RM(w, r) { const _w = parseFloat(w); const _r = parseInt(r); if (!_w 
 function today() { return new Date().toISOString().split("T")[0]; }
 function fmtDate(d) { if (!d) return ""; const p = d.split("-"); return p[2] + "/" + p[1]; }
 
+// Normalisation des noms d exercices pour corriger les doublons historiques
+const EXERCISE_NAME_FIXES = {
+  'Tirage vertical unilatérale': 'Tirage vertical unilatéral',
+  'Leg curl assis': 'Leg curl assis machine',
+  'Leg curl couché': 'Leg curl couché machine',
+  'Leg extension': 'Leg extension machine',
+};
+function normalizeExName(name) { return EXERCISE_NAME_FIXES[name] || name; }
+function normalizeSessions(sessions) {
+  return (sessions||[]).map(s => ({ ...s, exercises: (s.exercises||[]).map(e => ({ ...e, name: normalizeExName(e.name) })) }));
+}
+
 const KEYS = { routines: "it3_routines", sessions: "it3_sessions", fatigue: "it3_fatigue", cycle: "it3_cycle", supps: "it3_supps", customEx: "it3_customEx" };
 function load(k) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : null; } catch(e) { return null; } }
 function save(k, v) {
@@ -885,6 +897,11 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
           return (st.weight && st.reps) ? [parseFloat(st.weight) * (1 + parseInt(st.reps) / 30)] : [];
         });
         const isPositionPR = pastAtSamePosition.length > 0 && currentRM > Math.max(...pastAtSamePosition);
+        // 2b) Comparaison reps à cette position vs seance precedente uniquement
+        const lastSession = [...sessions].reverse().find(s => (s.exercises||[]).some(e=>e.name===ex.name));
+        const lastSet = lastSession && (lastSession.exercises.find(e=>e.name===ex.name)||{sets:[]}).sets[setIdx];
+        const prevSessionSamePosiReps = lastSet && lastSet.reps ? parseInt(lastSet.reps) : 0;
+        const moreRepsThanLastSession = prevSessionSamePosiReps > 0 && parseInt(currentSet.reps) > prevSessionSamePosiReps && parseFloat(currentSet.weight) >= parseFloat(lastSet.weight);
 
         // 3) Même charge, plus de reps que le max historique à cette charge (toutes positions confondues)
         const prevMaxRepsAtWeight = Math.max(0,
@@ -897,7 +914,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
         const noHistoryAtAll = pastRM.length === 0;
         const isFirstTimePR = noHistoryAtAll && currentSessionRM.length > 0 && currentRM > Math.max(...currentSessionRM);
 
-        isPR = isGlobalPR || isPositionPR || sameWeightMoreReps || isFirstTimePR;
+        isPR = isGlobalPR || isPositionPR || sameWeightMoreReps || moreRepsThanLastSession || isFirstTimePR;
       }
       setValidationToast({ setNum: setIdx + 1, exName: ex.name, rest: ex.rest || 90, isPR });
       setTimeout(() => setValidationToast(null), isPR ? 3000 : 2200);
@@ -2445,7 +2462,7 @@ function IronTraining() {
   const [sessions, setSessions] = useState(() => {
     try {
       const raw = load(KEYS.sessions) || [];
-      return raw.filter(s => s && s.date && Array.isArray(s.exercises)).map(s => ({
+      return normalizeSessions(raw.filter(s => s && s.date && Array.isArray(s.exercises)).map(s => ({
         ...s,
         exercises: (s.exercises || []).map(ex => ({
           ...ex,
@@ -2686,7 +2703,7 @@ function exportData() {
           if (!confirm("Restaurer les données depuis ce fichier ? Les données actuelles seront remplacées.")) return;
           if (data.sessions && data.sessions.length) {
             save(KEYS.sessions, data.sessions);
-            setSessions(data.sessions);
+            setSessions(normalizeSessions(data.sessions));
           }
           if (data.routines && data.routines.length) {
             save(KEYS.routines, data.routines);
@@ -2728,7 +2745,7 @@ function exportData() {
           }));
         const newSessions = validSessions.filter(s => !existingIds.has(s.id || s.date + s.routineName));
         const merged = [...existing, ...newSessions].sort((a, b) => a.date.localeCompare(b.date));
-        setSessions(merged); save(KEYS.sessions, merged);
+        const mergedNorm = normalizeSessions(merged); setSessions(mergedNorm); save(KEYS.sessions, mergedNorm);
         if (data.fatigue) { setFatigue(data.fatigue); save(KEYS.fatigue, data.fatigue); }
         if (data.cycle && data.cycle.startDate) { save(KEYS.cycle, data.cycle); }
         if (data.supps && Array.isArray(data.supps)) { setSupps(data.supps); save(KEYS.supps, data.supps); }
