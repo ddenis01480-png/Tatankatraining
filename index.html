@@ -898,7 +898,6 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
         const isFirstTimePR = noHistoryAtAll && currentSessionRM.length > 0 && currentRM > Math.max(...currentSessionRM);
 
         isPR = isGlobalPR || isPositionPR || sameWeightMoreReps || isFirstTimePR;
-        if (!isPR && pastRM.length > 0) console.log("[PR debug]", ex.name, "S"+setIdx, "currentRM:", currentRM, "maxPastRM:", allPastRM.length>0?Math.max(...allPastRM):"none", "prevMaxRepsAtWeight:", prevMaxRepsAtWeight, "currentReps:", parseInt(currentSet.reps), "positionMax:", pastAtSamePosition.length>0?Math.max(...pastAtSamePosition):"none");
       }
       setValidationToast({ setNum: setIdx + 1, exName: ex.name, rest: ex.rest || 90, isPR });
       setTimeout(() => setValidationToast(null), isPR ? 3000 : 2200);
