@@ -228,6 +228,25 @@ function saveAuth(data) { try { localStorage.setItem(AUTH_KEY, JSON.stringify(da
 function loadAuth() { try { const d = localStorage.getItem(AUTH_KEY); return d ? JSON.parse(d) : null; } catch(e) { return null; } }
 function clearAuth() { try { localStorage.removeItem(AUTH_KEY); } catch(e) {} }
 
+async function refreshAuthToken() {
+  try {
+    const auth = loadAuth();
+    if (!auth || !auth.refresh_token) return null;
+    const r = await fetch(SB_URL + '/auth/v1/token?grant_type=refresh_token', {
+      method: 'POST', headers: sbHeaders(),
+      body: JSON.stringify({ refresh_token: auth.refresh_token })
+    });
+    if (!r.ok) { clearAuth(); return null; }
+    const data = await r.json();
+    if (data.access_token) {
+      const updated = { ...auth, access_token: data.access_token, refresh_token: data.refresh_token || auth.refresh_token };
+      saveAuth(updated);
+      return updated;
+    }
+    return null;
+  } catch(e) { return null; }
+}
+
 async function sbSignUp(email, password) {
   const r = await fetch(SB_URL + '/auth/v1/signup', {
     method: 'POST', headers: sbHeaders(),
@@ -252,7 +271,7 @@ async function sbSignIn(email, password) {
   });
   const data = await r.json();
   if (data.error || data.error_description) throw new Error(data.error_description || data.error || 'Email ou mot de passe incorrect');
-  saveAuth({ access_token: data.access_token, email });
+  saveAuth({ access_token: data.access_token, refresh_token: data.refresh_token, email });
   return data;
 }
 
@@ -739,11 +758,29 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
   // Démarrer le chrono de séance si pas encore démarré
   // Init auth depuis localStorage
   useEffect(() => {
-    const auth = loadAuth();
-    if (auth && auth.email && auth.access_token) {
-      setAuthUser(auth);
-      checkPremium(auth.email, auth.access_token).then(p => setIsPremium(p));
-    }
+    (async () => {
+      try {
+        let auth = loadAuth();
+        if (!auth || !auth.email) return;
+        // Tester si le token est encore valide, sinon refresh
+        const prem = await checkPremium(auth.email, auth.access_token);
+        if (prem !== null) {
+          setAuthUser(auth);
+          setIsPremium(prem);
+        } else if (auth.refresh_token) {
+          // Token expiré → refresh
+          const refreshed = await refreshAuthToken();
+          if (refreshed) {
+            setAuthUser(refreshed);
+            const p = await checkPremium(refreshed.email, refreshed.access_token);
+            setIsPremium(!!p);
+          }
+        } else {
+          setAuthUser(auth);
+          setIsPremium(false);
+        }
+      } catch(e) {}
+    })();
   }, []);
 
   useEffect(() => {
