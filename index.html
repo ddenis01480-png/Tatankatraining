@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Tatanka Training</title>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
@@ -207,13 +207,16 @@ const FREE_SESSION_LIMIT = 30;
 
 let _supabase = null;
 function getSupabase() {
-  if (!_supabase && window.supabase) {
-    _supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
-  }
+  try {
+    if (!_supabase && window.supabase) {
+      _supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+    }
+  } catch(e) { console.warn('Supabase init error:', e); }
   return _supabase;
 }
 
 async function checkPremium(email) {
+  try {
   if (!email) return false;
   const sb = getSupabase();
   if (!sb) return false;
@@ -229,6 +232,7 @@ async function checkPremium(email) {
     if (!promo.expires_at || new Date(promo.expires_at) > new Date()) return true;
   }
   return false;
+  } catch(e) { return false; }
 }
 
 async function registerUser(email, password) {
@@ -727,8 +731,8 @@ function SessionTab({ isPremium, onShowPaywall, sessions, setSessions, activeRou
           const premium = await checkPremium(user.email);
           if (mounted) setIsPremium(premium);
         }
-      } catch(e) {}
-      if (mounted) setAuthLoading(false);
+      } catch(e) { console.warn('Auth init error:', e); }
+      finally { if (mounted) setAuthLoading(false); }
     })();
     // Écouter les changements d auth
     const sb = getSupabase();
