@@ -254,7 +254,7 @@ async function sbSignUp(email, password) {
   });
   const data = await r.json();
   if (data.error || data.msg) throw new Error(data.error_description || data.msg || 'Erreur inscription');
-  if (data.access_token) saveAuth({ access_token: data.access_token, email });
+  if (data.access_token) saveAuth({ access_token: data.access_token, refresh_token: data.refresh_token || "", email });
   // Créer entrée subscription gratuite
   await fetch(SB_URL + '/rest/v1/subscriptions', {
     method: 'POST',
@@ -2962,11 +2962,11 @@ function exportData() {
           setTimeout(onClose, 1500);
         } else if (mode === "register") {
           const data = await sbSignUp(email, password);
-          if (data.access_token) { setAuthUser({ email, access_token: data.access_token }); setSuccess("Compte créé !"); setTimeout(onClose, 1000); }
+          if (data.access_token) { setAuthUser({ email, access_token: data.access_token, refresh_token: data.refresh_token || "" }); setSuccess("Compte créé !"); setTimeout(onClose, 1000); }
           else setSuccess("Compte créé ! Vérifie ton email pour confirmer.");
         } else {
           const data = await sbSignIn(email, password);
-          const user = { email, access_token: data.access_token };
+          const user = { email, access_token: data.access_token, refresh_token: data.refresh_token || "" };
           setAuthUser(user);
           const prem = await checkPremium(email, data.access_token);
           setIsPremium(prem);
