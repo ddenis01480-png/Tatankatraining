@@ -4,8 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Tatanka Training</title>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
@@ -196,84 +194,6 @@ function today() { return new Date().toISOString().split("T")[0]; }
 function fmtDate(d) { if (!d) return ""; const p = d.split("-"); return p[2] + "/" + p[1]; }
 
 // Normalisation des noms d exercices pour corriger les doublons historiques
-// ============================================================
-// SUPABASE + AUTH CONFIG
-// ============================================================
-const SUPABASE_URL = 'https://bltrsrpxrrqcjvbwuxbw.supabase.co';
-const SUPABASE_ANON = 'sb_publishable_5BG5h0Tq8cN9CwGYYdw-0A_tHzVOQ9n';
-const STRIPE_MONTHLY = 'https://buy.stripe.com/test_bJe8wRb1s0kcc1l1uQcQU02';
-const STRIPE_YEARLY  = 'https://buy.stripe.com/test_7sY6oJfhI1og1mH3CYcQU04';
-const FREE_SESSION_LIMIT = 30;
-
-let _supabase = null;
-function getSupabase() {
-  try {
-    if (!_supabase && window.supabase) {
-      _supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
-    }
-  } catch(e) { console.warn('Supabase init error:', e); }
-  return _supabase;
-}
-
-async function checkPremium(email) {
-  try {
-  if (!email) return false;
-  const sb = getSupabase();
-  if (!sb) return false;
-  // Vérifier abonnement actif
-  const { data: sub } = await sb.from('subscriptions').select('*').eq('email', email.toLowerCase()).single();
-  if (sub && sub.status === 'premium') {
-    if (!sub.current_period_end || new Date(sub.current_period_end) > new Date()) return true;
-  }
-  if (sub && sub.status === 'promo') return true;
-  // Vérifier code promo
-  const { data: promo } = await sb.from('promo_codes').select('*').eq('email', email.toLowerCase()).eq('active', true).single();
-  if (promo) {
-    if (!promo.expires_at || new Date(promo.expires_at) > new Date()) return true;
-  }
-  return false;
-  } catch(e) { return false; }
-}
-
-async function registerUser(email, password) {
-  const sb = getSupabase();
-  const { data, error } = await sb.auth.signUp({ email, password });
-  if (error) throw error;
-  // Créer entrée subscription gratuite
-  await sb.from('subscriptions').upsert({ email: email.toLowerCase(), status: 'free' }, { onConflict: 'email' });
-  return data;
-}
-
-async function loginUser(email, password) {
-  const sb = getSupabase();
-  const { data, error } = await sb.auth.signInWithPassword({ email, password });
-  if (error) throw error;
-  return data;
-}
-
-async function logoutUser() {
-  const sb = getSupabase();
-  await sb.auth.signOut();
-}
-
-async function applyPromoCode(code, email) {
-  const sb = getSupabase();
-  const { data, error } = await sb.from('promo_codes').select('*').eq('code', code.toUpperCase()).eq('active', true).single();
-  if (error || !data) throw new Error('Code invalide ou expiré');
-  if (data.email.toLowerCase() !== email.toLowerCase()) throw new Error("Ce code n'est pas associé à cet email");
-  if (data.expires_at && new Date(data.expires_at) < new Date()) throw new Error('Code expiré');
-  // Activer premium promo
-  await sb.from('subscriptions').upsert({ email: email.toLowerCase(), status: 'promo', plan: 'promo' }, { onConflict: 'email' });
-  return true;
-}
-
-async function getCurrentUser() {
-  const sb = getSupabase();
-  if (!sb) return null;
-  const { data: { session } } = await sb.auth.getSession();
-  return session ? session.user : null;
-}
-
 const EXERCISE_NAME_FIXES = {
   'Tirage vertical unilatérale': 'Tirage vertical unilatéral',
   'Leg curl assis': 'Leg curl assis machine',
@@ -706,7 +626,7 @@ function RoutinesTab({ routines, setRoutines, onStartSession, view, setView, edi
   );
 }
 
-function SessionTab({ isPremium, onShowPaywall, sessions, setSessions, activeRoutine, setActiveRoutine, routines, currentSets, setCurrentSets, sessionRecovered, setSessionRecovered, setTab, restSec, setRestSec, restTarget, setRestTarget, timerOn, setTimerOn, timerDone, setTimerDone, seanceStartTime, setSeanceStartTime, seanceElapsed, setSeanceElapsed }) {
+function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, routines, currentSets, setCurrentSets, sessionRecovered, setSessionRecovered, setTab, restSec, setRestSec, restTarget, setRestTarget, timerOn, setTimerOn, timerDone, setTimerDone, seanceStartTime, setSeanceStartTime, seanceElapsed, setSeanceElapsed }) {
   const [showPicker, setShowPicker] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [lastSetInfo, setLastSetInfo] = useState(null);
@@ -719,42 +639,6 @@ function SessionTab({ isPremium, onShowPaywall, sessions, setSessions, activeRou
   const [adaptModal, setAdaptModal] = useState(null);
 
   // Démarrer le chrono de séance si pas encore démarré
-  // Init auth Supabase
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        const user = await getCurrentUser();
-        if (!mounted) return;
-        if (user) {
-          setAuthUser(user);
-          const premium = await checkPremium(user.email);
-          if (mounted) setIsPremium(premium);
-        }
-      } catch(e) { console.warn('Auth init error:', e); }
-      finally { if (mounted) setAuthLoading(false); }
-    })();
-    // Écouter les changements d auth
-    const sb = getSupabase();
-    let sub = null;
-    if (sb) {
-      const { data } = sb.auth.onAuthStateChange(async (event, session) => {
-        if (!mounted) return;
-        if (session && session.user) {
-          setAuthUser(session.user);
-          const premium = await checkPremium(session.user.email);
-          if (mounted) setIsPremium(premium);
-        } else {
-          setAuthUser(null);
-          setIsPremium(false);
-        }
-        setAuthLoading(false);
-      });
-      sub = data;
-    }
-    return () => { mounted = false; if (sub) sub.subscription.unsubscribe(); };
-  }, []);
-
   useEffect(() => {
     if (currentSets && !seanceStartTime) {
       setSeanceStartTime(Date.now());
@@ -871,7 +755,6 @@ function SessionTab({ isPremium, onShowPaywall, sessions, setSessions, activeRou
           }))
         };
       });
-      if (!isPremium && sessions.length >= FREE_SESSION_LIMIT) { onShowPaywall(); return; }
       setCurrentSets({ routineId: activeRoutine.id, routineName: activeRoutine.name, exercises });
       setActiveRoutine(null);
       setTimeout(() => window.scrollTo({ top: 0, behavior: "smooth" }), 50);
@@ -1190,7 +1073,7 @@ function SessionTab({ isPremium, onShowPaywall, sessions, setSessions, activeRou
           </Card>
         );
       })}
-      <Btn label="+ SEANCE LIBRE" onClick={() => { if (!isPremium && sessions.length >= FREE_SESSION_LIMIT) { onShowPaywall(); return; } setCurrentSets({ routineId: null, routineName: "Seance libre", exercises: [] }); }} style={{ width: "100%", marginTop: 12 }} />
+      <Btn label="+ SEANCE LIBRE" onClick={() => setCurrentSets({ routineId: null, routineName: "Seance libre", exercises: [] })} style={{ width: "100%", marginTop: 12 }} />
       {sessionRecovered && !currentSets && (
         <div style={{ marginTop: 12, background: "#1a0a00", border: "1px solid #ff660044", borderRadius: 10, padding: "10px 14px", fontSize: 11, color: "#ff8800" }}>
           ⚡ Séance interrompue récupérée — relance une routine pour reprendre
@@ -2549,12 +2432,7 @@ function BilanTab({ fatigue, setFatigue, sessions }) {
 }
 
 function IronTraining() {
-  const [tab, setTab] = useState(home);
-  const [authUser, setAuthUser] = useState(null);
-  const [isPremium, setIsPremium] = useState(false);
-  const [authLoading, setAuthLoading] = useState(true);
-  const [showAuthModal, setShowAuthModal] = useState(false);
-  const [showPaywall, setShowPaywall] = useState(false);
+  const [tab, setTab] = useState("home");
   const [supps, setSupps] = useState(() => { try { return load(KEYS.supps) || []; } catch(e) { return []; } });
   const [showDataMenu, setShowDataMenu] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
@@ -2897,144 +2775,8 @@ function exportData() {
     { id: "sns",      label: "SNS" },
   ];
 
-  
-
-  function PremiumGate({ onUnlock, feature }) {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '60px 24px', textAlign: 'center' }}>
-        <div style={{ fontSize: 48, marginBottom: 16 }}>🔒</div>
-        <div style={{ fontSize: 16, fontWeight: 700, color: '#fff', marginBottom: 8 }}>{feature}</div>
-        <div style={{ fontSize: 13, color: '#666', marginBottom: 24 }}>Fonctionnalité réservée aux membres Premium</div>
-        <button onClick={onUnlock} style={{ background: '#c0392b', border: 'none', color: '#fff', borderRadius: 10, padding: '14px 32px', fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>
-          🏆 Passer Premium
-        </button>
-      </div>
-    );
-  }
-
-  // ============ MODAL AUTH ============
-  function AuthModal({ onClose }) {
-    const [mode, setMode] = React.useState('login'); // login | register | promo
-    const [email, setEmail] = React.useState('');
-    const [password, setPassword] = React.useState('');
-    const [code, setCode] = React.useState('');
-    const [loading, setLoading] = React.useState(false);
-    const [error, setError] = React.useState('');
-    const [success, setSuccess] = React.useState('');
-
-    async function handleSubmit() {
-      setError(''); setSuccess('');
-      if (!email || (!code && !password)) { setError('Remplis tous les champs'); return; }
-      setLoading(true);
-      try {
-        if (mode === 'promo') {
-          if (!authUser) { setError('Connecte-toi d abord'); setLoading(false); return; }
-          await applyPromoCode(code, authUser.email);
-          setSuccess('Code appliqué ! Accès premium activé.');
-          setTimeout(onClose, 1500);
-        } else if (mode === 'register') {
-          await registerUser(email, password);
-          setSuccess('Compte créé ! Vérifie ton email.');
-        } else {
-          await loginUser(email, password);
-          onClose();
-        }
-      } catch(e) { setError(e.message || 'Erreur'); }
-      setLoading(false);
-    }
-
-    return (
-      <div style={{ position: 'fixed', inset: 0, background: '#000000cc', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-        <div style={{ background: '#111', borderRadius: 16, padding: 24, width: '100%', maxWidth: 360, border: '1px solid #222' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-            <div style={{ fontSize: 16, fontWeight: 700, color: '#fff' }}>
-              {mode === 'login' ? '🔐 Connexion' : mode === 'register' ? '📝 Créer un compte' : '🎟 Code promo'}
-            </div>
-            <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#666', fontSize: 20, cursor: 'pointer' }}>✕</button>
-          </div>
-
-          {mode !== 'promo' && (
-            <input value={email} onChange={e => setEmail(e.target.value)} placeholder="Email"
-              style={{ width: '100%', background: '#1a1a1a', border: '1px solid #333', color: '#fff', borderRadius: 8, padding: '12px', fontSize: 14, marginBottom: 10, boxSizing: 'border-box' }} />
-          )}
-          {mode !== 'promo' && (
-            <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Mot de passe"
-              style={{ width: '100%', background: '#1a1a1a', border: '1px solid #333', color: '#fff', borderRadius: 8, padding: '12px', fontSize: 14, marginBottom: 16, boxSizing: 'border-box' }} />
-          )}
-          {mode === 'promo' && (
-            <input value={code} onChange={e => setCode(e.target.value)} placeholder="Code promo"
-              style={{ width: '100%', background: '#1a1a1a', border: '1px solid #333', color: '#fff', borderRadius: 8, padding: '12px', fontSize: 14, marginBottom: 16, boxSizing: 'border-box', textTransform: 'uppercase' }} />
-          )}
-
-          {error && <div style={{ color: '#FF4444', fontSize: 12, marginBottom: 10 }}>{error}</div>}
-          {success && <div style={{ color: '#00C853', fontSize: 12, marginBottom: 10 }}>{success}</div>}
-
-          <button onClick={handleSubmit} disabled={loading}
-            style={{ width: '100%', background: '#c0392b', border: 'none', color: '#fff', borderRadius: 10, padding: '14px', fontSize: 14, fontWeight: 700, cursor: 'pointer', marginBottom: 12 }}>
-            {loading ? '...' : mode === 'login' ? 'Se connecter' : mode === 'register' ? 'Créer le compte' : 'Appliquer le code'}
-          </button>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center' }}>
-            {mode === 'login' && <button onClick={() => setMode('register')} style={{ background: 'none', border: 'none', color: '#888', fontSize: 12, cursor: 'pointer' }}>Pas encore de compte ? Créer</button>}
-            {mode === 'register' && <button onClick={() => setMode('login')} style={{ background: 'none', border: 'none', color: '#888', fontSize: 12, cursor: 'pointer' }}>Déjà un compte ? Connexion</button>}
-            {authUser && mode !== 'promo' && <button onClick={() => setMode('promo')} style={{ background: 'none', border: 'none', color: '#FF8C00', fontSize: 12, cursor: 'pointer' }}>🎟 J'ai un code promo</button>}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ============ PAYWALL ============
-  function PaywallModal({ onClose }) {
-    return (
-      <div style={{ position: 'fixed', inset: 0, background: '#000000ee', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-        <div style={{ background: '#111', borderRadius: 16, padding: 24, width: '100%', maxWidth: 380, border: '1px solid #c0392b33' }}>
-          <button onClick={onClose} style={{ position: 'absolute', top: 12, right: 16, background: 'none', border: 'none', color: '#666', fontSize: 20, cursor: 'pointer' }}>✕</button>
-          <div style={{ textAlign: 'center', marginBottom: 20 }}>
-            <div style={{ fontSize: 40, marginBottom: 8 }}>🏆</div>
-            <div style={{ fontSize: 18, fontWeight: 700, color: '#fff', marginBottom: 4 }}>Tatanka Training Premium</div>
-            <div style={{ fontSize: 12, color: '#888' }}>Débloque toutes les fonctionnalités</div>
-          </div>
-
-          <div style={{ background: '#1a1a1a', borderRadius: 10, padding: 14, marginBottom: 12 }}>
-            {['Séances illimitées', 'Bilan mensuel & cycle', 'Détection records (PR)', 'Indicateurs progression', 'Score SNS', 'Export / Import données', 'Notifications'].map(f => (
-              <div key={f} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', fontSize: 13, color: '#ccc' }}>
-                <span style={{ color: '#00C853' }}>✓</span> {f}
-              </div>
-            ))}
-          </div>
-
-          <a href={STRIPE_MONTHLY + '?prefilled_email=' + encodeURIComponent((authUser && authUser.email) || '')}
-            style={{ display: 'block', textAlign: 'center', background: '#c0392b', color: '#fff', borderRadius: 10, padding: '14px', fontSize: 14, fontWeight: 700, textDecoration: 'none', marginBottom: 10 }}>
-            4,99€ / mois
-          </a>
-          <a href={STRIPE_YEARLY + '?prefilled_email=' + encodeURIComponent((authUser && authUser.email) || '')}
-            style={{ display: 'block', textAlign: 'center', background: '#1a1a1a', border: '1px solid #c0392b', color: '#fff', borderRadius: 10, padding: '14px', fontSize: 14, fontWeight: 700, textDecoration: 'none', marginBottom: 16 }}>
-            39,99€ / an <span style={{ color: '#FFD600', fontSize: 11 }}>— économise 33%</span>
-          </a>
-
-          <div style={{ textAlign: 'center' }}>
-            {!authUser ? (
-              <button onClick={() => { onClose(); setShowAuthModal(true); }} style={{ background: 'none', border: 'none', color: '#888', fontSize: 12, cursor: 'pointer' }}>
-                Déjà un compte ? Se connecter
-              </button>
-            ) : (
-              <button onClick={() => { onClose(); setShowAuthModal(true); }} style={{ background: 'none', border: 'none', color: '#FF8C00', fontSize: 12, cursor: 'pointer' }}>
-                🎟 J'ai un code promo
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-return (
+  return (
     <div style={{ background: "#080808", minHeight: "100vh", color: "#fff", fontFamily: "-apple-system,BlinkMacSystemFont,system-ui,sans-serif", maxWidth: 480, margin: "0 auto" }}>
-
-      {/* MODALS AUTH */}
-      {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} />}
-      {showPaywall && <PaywallModal onClose={() => setShowPaywall(false)} />}
 
       {/* INPUT FICHIER CACHÉ */}
       <input ref={importRef} type="file" accept=".json,.csv,.xlsx,.xls" onChange={importData} style={{ display: "none" }} />
@@ -3097,9 +2839,6 @@ return (
             <span style={{ fontSize: 10, fontFamily: "monospace", color: snsColor }}>SNS {score}/18</span>
             {cycleAlert && <span style={{ fontSize: 9, color: "#FF6600", fontFamily: "monospace", fontWeight: 900 }}>S{weeksElapsed}!</span>}
             <span style={{ fontSize: 10, fontFamily: "monospace", color: "#333" }}>{sessions.length} seances</span>
-            <button onClick={() => authUser ? logoutUser() : setShowAuthModal(true)} style={{ background: isPremium ? '#001a00' : '#1a1a1a', border: isPremium ? '1px solid #00C85333' : '1px solid #2a2a2a', color: isPremium ? '#00C853' : '#888', borderRadius: 6, padding: '4px 8px', fontSize: 10, cursor: 'pointer', fontWeight: 700, marginRight: 4 }}>
-              {authUser ? (isPremium ? '★ PRO' : '👤') : '🔐'}
-            </button>
             <button onClick={() => setShowDataMenu(true)} style={{ background: "#1a1a1a", border: "1px solid #2a2a2a", color: "#888", borderRadius: 6, padding: "4px 8px", fontSize: 10, cursor: "pointer", fontWeight: 700 }}>
               DATA
             </button>
@@ -3110,11 +2849,11 @@ return (
       <div>
         {tab === "home"     && <HomeTab sessions={sessions} currentSets={currentSets} setTab={setTab} fatigue={fatigue} />}
         {tab === "routines" && <RoutinesTab routines={routines} setRoutines={setRoutines} onStartSession={handleStartSession} view={routineView} setView={setRoutineView} editing={routineEditing} setEditing={setRoutineEditing} />}
-        {tab === "session"  && <SessionTab isPremium={isPremium} onShowPaywall={() => setShowPaywall(true)} sessions={sessions} setSessions={setSessions} activeRoutine={activeRoutine} setActiveRoutine={setActiveRoutine} routines={routines} currentSets={currentSets} setCurrentSets={setCurrentSets} sessionRecovered={sessionRecovered} setSessionRecovered={setSessionRecovered} setTab={setTab} restSec={restSec} setRestSec={setRestSec} restTarget={restTarget} setRestTarget={setRestTarget} timerOn={timerOn} setTimerOn={setTimerOn} timerDone={timerDone} setTimerDone={setTimerDone} seanceStartTime={seanceStartTime} setSeanceStartTime={setSeanceStartTime} seanceElapsed={seanceElapsed} setSeanceElapsed={setSeanceElapsed} />}
-        {tab === "progress" && (isPremium ? <ProgressTab sessions={sessions} /> : <PremiumGate onUnlock={() => setShowPaywall(true)} feature="Indicateurs de progression" />)}
-        {tab === "bilan"    && (isPremium ? <BilanTab fatigue={fatigue} setFatigue={setFatigue} sessions={sessions} /> : <PremiumGate onUnlock={() => setShowPaywall(true)} feature="Bilan mensuel & cycle" />)}
+        {tab === "session"  && <SessionTab sessions={sessions} setSessions={setSessions} activeRoutine={activeRoutine} setActiveRoutine={setActiveRoutine} routines={routines} currentSets={currentSets} setCurrentSets={setCurrentSets} sessionRecovered={sessionRecovered} setSessionRecovered={setSessionRecovered} setTab={setTab} restSec={restSec} setRestSec={setRestSec} restTarget={restTarget} setRestTarget={setRestTarget} timerOn={timerOn} setTimerOn={setTimerOn} timerDone={timerDone} setTimerDone={setTimerDone} seanceStartTime={seanceStartTime} setSeanceStartTime={setSeanceStartTime} seanceElapsed={seanceElapsed} setSeanceElapsed={setSeanceElapsed} />}
+        {tab === "progress" && <ProgressTab sessions={sessions} />}
+        {tab === "bilan"    && <BilanTab fatigue={fatigue} setFatigue={setFatigue} sessions={sessions} />}
         {tab === "supps"    && <SupplTab supps={supps} setSupps={setSupps} />}
-        {tab === "sns"     && (isPremium ? <BilanTab fatigue={fatigue} setFatigue={setFatigue} sessions={sessions} /> : <PremiumGate onUnlock={() => setShowPaywall(true)} feature="Score SNS" />)}
+        {tab === "sns"     && <BilanTab fatigue={fatigue} setFatigue={setFatigue} sessions={sessions} />}
       </div>
 
       <div style={{ position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: "#0a0a0a", borderTop: "1px solid #1a1a1a", display: tab === "home" ? "none" : "flex" }}>
