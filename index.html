@@ -195,13 +195,41 @@ function fmtDate(d) { if (!d) return ""; const p = d.split("-"); return p[2] + "
 
 // Normalisation des noms d exercices pour corriger les doublons historiques
 // ============================================================
-// SUPABASE AUTH - fetch natif, pas de SDK externe
+// SUPABASE AUTH - chargement dynamique SDK (comme Tatanka Nutrition)
 // ============================================================
 const SB_URL  = 'https://bltrsrpxrrqcjvbwuxbw.supabase.co';
 const SB_KEY  = 'sb_publishable_5BG5h0Tq8cN9CwGYYdw-0A_tHzVOQ9n';
 const STRIPE_MONTHLY = 'https://buy.stripe.com/test_bJe8wRb1s0kcc1l1uQcQU02';
 const STRIPE_YEARLY  = 'https://buy.stripe.com/test_7sY6oJfhI1og1mH3CYcQU04';
 const FREE_SESSION_LIMIT = 30;
+
+// SDK Supabase chargé dynamiquement - même méthode que Tatanka Nutrition
+var _sbClient = null;
+var _sbInited = false;
+var _sbReadyCallbacks = [];
+
+function getSupabaseClient() { return _sbClient; }
+
+function onSupabaseReady(cb) {
+  if (_sbClient) { cb(_sbClient); return; }
+  _sbReadyCallbacks.push(cb);
+}
+
+function initSupabaseSDK() {
+  if (_sbInited) return;
+  _sbInited = true;
+  var s = document.createElement('script');
+  s.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
+  s.onerror = function() { console.warn('Supabase CDN indispo - auth désactivée'); };
+  s.onload = function() {
+    try {
+      _sbClient = window.supabase.createClient(SB_URL, SB_KEY);
+      _sbReadyCallbacks.forEach(function(cb) { try { cb(_sbClient); } catch(e) {} });
+      _sbReadyCallbacks = [];
+    } catch(e) { console.error('Supabase init error:', e); }
+  };
+  document.head.appendChild(s);
+}
 
 function sbHeaders(token) {
   const h = { 'Content-Type': 'application/json', 'apikey': SB_KEY, 'Authorization': 'Bearer ' + (token || SB_KEY) };
@@ -222,77 +250,51 @@ async function sbPost(path, body, token) {
   } catch(e) { return null; }
 }
 
-// Auth localStorage keys
-const AUTH_KEY = 'tt_auth';
-const AUTH_CREDS_KEY = 'tt_creds';
-function saveAuth(data) { try { localStorage.setItem(AUTH_KEY, JSON.stringify(data)); } catch(e) {} }
-function loadAuth() { try { const d = localStorage.getItem(AUTH_KEY); return d ? JSON.parse(d) : null; } catch(e) { return null; } }
-function clearAuth() { try { localStorage.removeItem(AUTH_KEY); localStorage.removeItem(AUTH_CREDS_KEY); } catch(e) {} }
-function saveCreds(email, password) { try { localStorage.setItem(AUTH_CREDS_KEY, JSON.stringify({ e: btoa(email), p: btoa(password) })); } catch(e) {} }
-function loadCreds() { try { const d = localStorage.getItem(AUTH_CREDS_KEY); if (!d) return null; const c = JSON.parse(d); return { email: atob(c.e), password: atob(c.p) }; } catch(e) { return null; } }
 
-async function refreshAuthToken() {
-  try {
-    const auth = loadAuth();
-    if (!auth || !auth.refresh_token) return null;
-    const r = await fetch(SB_URL + '/auth/v1/token?grant_type=refresh_token', {
-      method: 'POST', headers: sbHeaders(),
-      body: JSON.stringify({ refresh_token: auth.refresh_token })
-    });
-    if (!r.ok) { clearAuth(); return null; }
-    const data = await r.json();
-    if (data.access_token) {
-      const updated = { ...auth, access_token: data.access_token, refresh_token: data.refresh_token || auth.refresh_token };
-      saveAuth(updated);
-      return updated;
-    }
-    return null;
-  } catch(e) { return null; }
-}
+
+
 
 async function sbSignUp(email, password) {
-  const r = await fetch(SB_URL + '/auth/v1/signup', {
-    method: 'POST', headers: sbHeaders(),
-    body: JSON.stringify({ email, password })
-  });
-  const data = await r.json();
-  if (data.error || data.msg) throw new Error(data.error_description || data.msg || 'Erreur inscription');
-  if (data.access_token) saveAuth({ access_token: data.access_token, refresh_token: data.refresh_token || "", email });
-  // Créer entrée subscription gratuite
-  await fetch(SB_URL + '/rest/v1/subscriptions', {
-    method: 'POST',
-    headers: { ...sbHeaders(data.access_token), 'Prefer': 'resolution=ignore-duplicates' },
-    body: JSON.stringify({ email: email.toLowerCase(), status: 'free' })
-  });
+  const sb = getSupabaseClient();
+  if (!sb) throw new Error('Auth indisponible, réessaie dans 2 secondes');
+  const { data, error } = await sb.auth.signUp({ email, password });
+  if (error) throw new Error(error.message);
+  try {
+    await fetch(SB_URL + '/rest/v1/subscriptions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Prefer': 'resolution=ignore-duplicates' },
+      body: JSON.stringify({ email: email.toLowerCase(), status: 'free' })
+    });
+  } catch(e) {}
   return data;
 }
 
 async function sbSignIn(email, password) {
-  const r = await fetch(SB_URL + '/auth/v1/token?grant_type=password', {
-    method: 'POST', headers: sbHeaders(),
-    body: JSON.stringify({ email, password })
-  });
-  const data = await r.json();
-  if (data.error || data.error_description) throw new Error(data.error_description || data.error || 'Email ou mot de passe incorrect');
-  saveAuth({ access_token: data.access_token, refresh_token: data.refresh_token || "", email });
-  saveCreds(email, password);
+  const sb = getSupabaseClient();
+  if (!sb) throw new Error('Auth indisponible, réessaie dans 2 secondes');
+  const { data, error } = await sb.auth.signInWithPassword({ email, password });
+  if (error) throw new Error(error.message === 'Invalid login credentials' ? 'Email ou mot de passe incorrect' : error.message);
   return data;
 }
 
-function sbSignOut() { clearAuth(); }
+async function sbSignOut() {
+  const sb = getSupabaseClient();
+  if (sb) await sb.auth.signOut();
+}
 
-async function checkPremium(email, token) {
+async function checkPremium(email) {
   try {
     if (!email) return false;
-    // Vérifier abonnement
-    const subs = await sbGet('/rest/v1/subscriptions?email=eq.' + encodeURIComponent(email.toLowerCase()) + '&select=*', token);
+    const headers = { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY };
+    const r1 = await fetch(SB_URL + '/rest/v1/subscriptions?email=eq.' + encodeURIComponent(email.toLowerCase()) + '&select=*', { headers });
+    const subs = r1.ok ? await r1.json() : null;
     if (subs && subs[0]) {
       const sub = subs[0];
       if (sub.status === 'promo') return true;
       if (sub.status === 'premium' && (!sub.current_period_end || new Date(sub.current_period_end) > new Date())) return true;
     }
-    // Vérifier code promo
-    const promos = await sbGet('/rest/v1/promo_codes?email=eq.' + encodeURIComponent(email.toLowerCase()) + '&active=eq.true&select=*', token);
+    const r2 = await fetch(SB_URL + '/rest/v1/promo_codes?email=eq.' + encodeURIComponent(email.toLowerCase()) + '&active=eq.true&select=*', { headers });
+    const promos = r2.ok ? await r2.json() : null;
     if (promos && promos[0]) {
       const p = promos[0];
       if (!p.expires_at || new Date(p.expires_at) > new Date()) return true;
@@ -301,15 +303,17 @@ async function checkPremium(email, token) {
   } catch(e) { return false; }
 }
 
-async function applyPromoCode(code, email, token) {
-  const promos = await sbGet('/rest/v1/promo_codes?code=eq.' + encodeURIComponent(code.toUpperCase()) + '&active=eq.true&select=*', token);
+async function applyPromoCode(code, email) {
+  const headers = { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY };
+  const r = await fetch(SB_URL + '/rest/v1/promo_codes?code=eq.' + encodeURIComponent(code.toUpperCase()) + '&active=eq.true&select=*', { headers });
+  const promos = r.ok ? await r.json() : null;
   if (!promos || !promos[0]) throw new Error('Code invalide ou expiré');
   const p = promos[0];
   if (p.email.toLowerCase() !== email.toLowerCase()) throw new Error("Ce code n'est pas lié à cet email");
   if (p.expires_at && new Date(p.expires_at) < new Date()) throw new Error('Code expiré');
   await fetch(SB_URL + '/rest/v1/subscriptions', {
     method: 'POST',
-    headers: { ...sbHeaders(token), 'Prefer': 'resolution=merge-duplicates' },
+    headers: { ...headers, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates' },
     body: JSON.stringify({ email: email.toLowerCase(), status: 'promo', plan: 'promo' })
   });
   return true;
@@ -760,39 +764,29 @@ function SessionTab({ isPremium, onShowPaywall, sessions, setSessions, activeRou
   const [adaptModal, setAdaptModal] = useState(null);
 
   // Démarrer le chrono de séance si pas encore démarré
-  // Init auth depuis localStorage - auto-reconnexion
+  // Init auth via SDK Supabase - persistance automatique comme Tatanka Nutrition
   useEffect(() => {
-    (async () => {
-      try {
-        // Essayer refresh token d abord
-        let auth = loadAuth();
-        if (auth && auth.email) {
-          // Essayer refresh si disponible
-          if (auth.refresh_token) {
-            const refreshed = await refreshAuthToken();
-            if (refreshed) {
-              setAuthUser(refreshed);
-              setIsPremium(!!(await checkPremium(refreshed.email, refreshed.access_token)));
-              return;
-            }
-          }
-          // Sinon auto-reconnexion avec credentials sauvegardés
-          const creds = loadCreds();
-          if (creds) {
-            try {
-              const data = await sbSignIn(creds.email, creds.password);
-              const user = { email: creds.email, access_token: data.access_token, refresh_token: data.refresh_token || "" };
-              setAuthUser(user);
-              setIsPremium(!!(await checkPremium(creds.email, data.access_token)));
-              return;
-            } catch(e) {}
-          }
-          // Fallback: utiliser token actuel
-          setAuthUser(auth);
-          setIsPremium(!!(await checkPremium(auth.email, auth.access_token)));
+    initSupabaseSDK();
+    onSupabaseReady(async function(sb) {
+      // Écouter les changements de session (gère automatiquement le refresh)
+      sb.auth.onAuthStateChange(async function(event, session) {
+        if (session && session.user) {
+          const email = session.user.email;
+          setAuthUser({ email, id: session.user.id });
+          const prem = await checkPremium(email);
+          setIsPremium(!!prem);
+        } else {
+          setAuthUser(null);
+          setIsPremium(false);
         }
-      } catch(e) {}
-    })();
+      });
+      // Récupérer la session existante
+      const { data } = await sb.auth.getSession();
+      if (!data.session) {
+        setAuthUser(null);
+        setIsPremium(false);
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -2968,7 +2962,7 @@ function exportData() {
       try {
         if (mode === "promo") {
           if (!authUser) { setError("Connecte-toi d abord"); setLoading(false); return; }
-          await applyPromoCode(code, authUser.email, authUser.access_token);
+          await applyPromoCode(code, authUser.email);
           setIsPremium(true);
           setSuccess("Code appliqué ! Accès premium activé.");
           setTimeout(onClose, 1500);
@@ -2980,7 +2974,7 @@ function exportData() {
           const data = await sbSignIn(email, password);
           const user = { email, access_token: data.access_token, refresh_token: data.refresh_token || "" };
           setAuthUser(user);
-          const prem = await checkPremium(email, data.access_token);
+          const prem = await checkPremium(email);
           setIsPremium(prem);
           onClose();
         }
@@ -3114,7 +3108,7 @@ return (
             <span style={{ fontSize: 10, fontFamily: "monospace", color: snsColor }}>SNS {score}/18</span>
             {cycleAlert && <span style={{ fontSize: 9, color: "#FF6600", fontFamily: "monospace", fontWeight: 900 }}>S{weeksElapsed}!</span>}
             <span style={{ fontSize: 10, fontFamily: "monospace", color: "#333" }}>{sessions.length} seances</span>
-            <button onClick={() => authUser ? (sbSignOut(), setAuthUser(null), setIsPremium(false)) : setShowAuthModal(true)}
+            <button onClick={() => authUser ? (sbSignOut().then(() => { setAuthUser(null); setIsPremium(false); })) : setShowAuthModal(true)}
               style={{ background: isPremium ? "#001a00" : "#1a1a1a", border: isPremium ? "1px solid #00C85333" : "1px solid #2a2a2a", color: isPremium ? "#00C853" : "#888", borderRadius:6, padding:"4px 8px", fontSize:10, cursor:"pointer", fontWeight:700, marginRight:4 }}>
               {authUser ? (isPremium ? "★ PRO" : "👤") : "🔐"}
             </button>
