@@ -224,9 +224,12 @@ async function sbPost(path, body, token) {
 
 // Auth localStorage keys
 const AUTH_KEY = 'tt_auth';
+const AUTH_CREDS_KEY = 'tt_creds';
 function saveAuth(data) { try { localStorage.setItem(AUTH_KEY, JSON.stringify(data)); } catch(e) {} }
 function loadAuth() { try { const d = localStorage.getItem(AUTH_KEY); return d ? JSON.parse(d) : null; } catch(e) { return null; } }
-function clearAuth() { try { localStorage.removeItem(AUTH_KEY); } catch(e) {} }
+function clearAuth() { try { localStorage.removeItem(AUTH_KEY); localStorage.removeItem(AUTH_CREDS_KEY); } catch(e) {} }
+function saveCreds(email, password) { try { localStorage.setItem(AUTH_CREDS_KEY, JSON.stringify({ e: btoa(email), p: btoa(password) })); } catch(e) {} }
+function loadCreds() { try { const d = localStorage.getItem(AUTH_CREDS_KEY); if (!d) return null; const c = JSON.parse(d); return { email: atob(c.e), password: atob(c.p) }; } catch(e) { return null; } }
 
 async function refreshAuthToken() {
   try {
@@ -271,7 +274,8 @@ async function sbSignIn(email, password) {
   });
   const data = await r.json();
   if (data.error || data.error_description) throw new Error(data.error_description || data.error || 'Email ou mot de passe incorrect');
-  saveAuth({ access_token: data.access_token, refresh_token: data.refresh_token, email });
+  saveAuth({ access_token: data.access_token, refresh_token: data.refresh_token || "", email });
+  saveCreds(email, password);
   return data;
 }
 
@@ -756,28 +760,36 @@ function SessionTab({ isPremium, onShowPaywall, sessions, setSessions, activeRou
   const [adaptModal, setAdaptModal] = useState(null);
 
   // Démarrer le chrono de séance si pas encore démarré
-  // Init auth depuis localStorage
+  // Init auth depuis localStorage - auto-reconnexion
   useEffect(() => {
     (async () => {
       try {
+        // Essayer refresh token d abord
         let auth = loadAuth();
-        if (!auth || !auth.email) return;
-        // Tester si le token est encore valide, sinon refresh
-        const prem = await checkPremium(auth.email, auth.access_token);
-        if (prem !== null) {
-          setAuthUser(auth);
-          setIsPremium(prem);
-        } else if (auth.refresh_token) {
-          // Token expiré → refresh
-          const refreshed = await refreshAuthToken();
-          if (refreshed) {
-            setAuthUser(refreshed);
-            const p = await checkPremium(refreshed.email, refreshed.access_token);
-            setIsPremium(!!p);
+        if (auth && auth.email) {
+          // Essayer refresh si disponible
+          if (auth.refresh_token) {
+            const refreshed = await refreshAuthToken();
+            if (refreshed) {
+              setAuthUser(refreshed);
+              setIsPremium(!!(await checkPremium(refreshed.email, refreshed.access_token)));
+              return;
+            }
           }
-        } else {
+          // Sinon auto-reconnexion avec credentials sauvegardés
+          const creds = loadCreds();
+          if (creds) {
+            try {
+              const data = await sbSignIn(creds.email, creds.password);
+              const user = { email: creds.email, access_token: data.access_token, refresh_token: data.refresh_token || "" };
+              setAuthUser(user);
+              setIsPremium(!!(await checkPremium(creds.email, data.access_token)));
+              return;
+            } catch(e) {}
+          }
+          // Fallback: utiliser token actuel
           setAuthUser(auth);
-          setIsPremium(false);
+          setIsPremium(!!(await checkPremium(auth.email, auth.access_token)));
         }
       } catch(e) {}
     })();
