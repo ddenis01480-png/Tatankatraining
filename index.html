@@ -319,6 +319,9 @@ async function applyPromoCode(code, email) {
   return true;
 }
 
+// Lancer le SDK Supabase immédiatement au chargement
+initSupabaseSDK();
+
 const EXERCISE_NAME_FIXES = {
   'Tirage vertical unilatérale': 'Tirage vertical unilatéral',
   'Leg curl assis': 'Leg curl assis machine',
@@ -2958,6 +2961,10 @@ function exportData() {
       setError(""); setSuccess("");
       if (mode === "promo" && !code) { setError("Saisis le code"); return; }
       if (mode !== "promo" && (!email || !password)) { setError("Remplis tous les champs"); return; }
+      if (!getSupabaseClient()) {
+        setError("Connexion en cours, réessaie dans 2 secondes...");
+        return;
+      }
       setLoading(true);
       try {
         if (mode === "promo") {
