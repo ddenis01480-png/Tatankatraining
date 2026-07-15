@@ -194,6 +194,47 @@ function today() { return new Date().toISOString().split("T")[0]; }
 function fmtDate(d) { if (!d) return ""; const p = d.split("-"); return p[2] + "/" + p[1]; }
 
 // Normalisation des noms d exercices pour corriger les doublons historiques
+// ============================================================
+// SAUVEGARDE AUTOMATIQUE ANONYME - sans auth
+// ============================================================
+const SB_URL_BK = 'https://bltrsrpxrrqcjvbwuxbw.supabase.co';
+const SB_KEY_BK = 'sb_publishable_5BG5h0Tq8cN9CwGYYdw-0A_tHzVOQ9n';
+
+function getDeviceId() {
+  try {
+    let id = localStorage.getItem('tt_device_id');
+    if (!id) {
+      id = 'dev_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+      localStorage.setItem('tt_device_id', id);
+    }
+    return id;
+  } catch(e) { return 'unknown'; }
+}
+
+async function autoBackup(sessions, routines, cycle, supps, fatigue) {
+  try {
+    const deviceId = getDeviceId();
+    await fetch(SB_URL_BK + '/rest/v1/backups', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SB_KEY_BK,
+        'Authorization': 'Bearer ' + SB_KEY_BK,
+        'Prefer': 'resolution=merge-duplicates'
+      },
+      body: JSON.stringify({
+        device_id: deviceId,
+        sessions: sessions || [],
+        routines: routines || null,
+        cycle: cycle || null,
+        supps: supps || null,
+        fatigue: fatigue || null,
+        backed_up_at: new Date().toISOString()
+      })
+    });
+  } catch(e) {}
+}
+
 const EXERCISE_NAME_FIXES = {
   'Tirage vertical unilatérale': 'Tirage vertical unilatéral',
   'Leg curl assis': 'Leg curl assis machine',
@@ -997,6 +1038,8 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
     setSessions(updated);
     save(KEYS.sessions, updated);
     try { localStorage.removeItem("it3_current_session"); setSessionRecovered(false); } catch(e) {}
+    // Sauvegarde automatique cloud
+    autoBackup(updated, load(KEYS.routines), load(KEYS.cycle), load(KEYS.supps), load(KEYS.fatigue));
 
     // Analyse post-séance
     const tonnageSession = validExs.reduce((a, ex) => a + ex.sets.reduce((b, s) => b + s.weight * s.reps, 0), 0);
