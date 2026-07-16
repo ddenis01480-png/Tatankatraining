@@ -3030,6 +3030,13 @@ function exportData() {
             <div style={{ fontSize: 9, color: "#333", fontFamily: "monospace", textAlign: "center", marginTop: 4 }}>
               Import = fusion sans perte de donnees existantes
             </div>
+            <button onClick={async () => {
+              const code = prompt('Entre ton code promo :');
+              if (!code) return;
+              try { await window._applyPromoCode(code.trim()); alert('Code appliqué ! Accès premium activé.'); window.location.reload(); } catch(e) { alert(e.message); }
+            }} style={{ width: '100%', background: '#1a0a00', border: '1px solid #FF8C0044', color: '#FF8C00', borderRadius: 10, padding: '12px', fontSize: 12, fontWeight: 700, cursor: 'pointer', marginBottom: 6, marginTop: 10 }}>
+              🎟 CODE PROMO
+            </button>
             <button onClick={() => {
               const d = prompt("Date de début du cycle actuel ? (format AAAA-MM-JJ)", "2026-05-22");
               if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) {
