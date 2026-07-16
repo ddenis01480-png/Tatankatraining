@@ -104,8 +104,8 @@ setTimeout(function(){
       <div style="font-size:11px;color:#444;margin-top:4px;letter-spacing:.1em">PERFORM. PROGRESS.</div>
     </div>
     <div style="display:flex;border:1px solid #222;border-radius:6px;overflow:hidden;margin-bottom:16px">
-      <button id="tt-tab-login" onclick="window._ttMode='login';this.style.background='#c0392b';this.style.color='#fff';document.getElementById('tt-tab-signup').style.background='#111';document.getElementById('tt-tab-signup').style.color='#444';document.getElementById('tt-auth-btn').textContent='SE CONNECTER'" style="flex:1;padding:10px;background:#c0392b;border:none;color:#fff;font-weight:900;font-size:13px;cursor:pointer">CONNEXION</button>
-      <button id="tt-tab-signup" onclick="window._ttMode='signup';this.style.background='#c0392b';this.style.color='#fff';document.getElementById('tt-tab-login').style.background='#111';document.getElementById('tt-tab-login').style.color='#444';document.getElementById('tt-auth-btn').textContent='CRÉER MON COMPTE'" style="flex:1;padding:10px;background:#111;border:none;color:#444;font-weight:900;font-size:13px;cursor:pointer">INSCRIPTION</button>
+      <button id="tt-tab-login" onclick="ttSwitchTab('login')" style="flex:1;padding:10px;background:#c0392b;border:none;color:#fff;font-weight:900;font-size:13px;cursor:pointer">CONNEXION</button>
+      <button id="tt-tab-signup" onclick="ttSwitchTab('signup')" style="flex:1;padding:10px;background:#111;border:none;color:#444;font-weight:900;font-size:13px;cursor:pointer">INSCRIPTION</button>
     </div>
     <div style="margin-bottom:12px">
       <label style="font-size:11px;color:#555;display:block;margin-bottom:4px">EMAIL</label>
@@ -116,9 +116,9 @@ setTimeout(function(){
       <input id="tt-auth-password" type="password" placeholder="••••••••" style="width:100%;background:#111;border:1px solid #222;color:#fff;border-radius:8px;padding:12px;font-size:16px;box-sizing:border-box"/>
     </div>
     <div id="tt-auth-error" style="color:#e74c3c;font-size:12px;margin-bottom:10px;display:none;text-align:center"></div>
-    <button id="tt-auth-btn" style="width:100%;background:#c0392b;border:none;color:#fff;border-radius:10px;padding:14px;font-size:14px;font-weight:900;cursor:pointer;margin-bottom:12px">SE CONNECTER</button>
+    <button id="tt-auth-btn" onclick="ttDoAuth()" style="width:100%;background:#c0392b;border:none;color:#fff;border-radius:10px;padding:14px;font-size:14px;font-weight:900;cursor:pointer;margin-bottom:12px">SE CONNECTER</button>
     <div style="text-align:center">
-      <button id="tt-promo-btn" style="background:none;border:none;color:#666;font-size:12px;cursor:pointer">🎟 Code promo</button>
+      <button onclick="ttPromoCode()" style="background:none;border:none;color:#666;font-size:12px;cursor:pointer">🎟 Code promo</button>
     </div>
   </div>
 </div>
@@ -361,60 +361,64 @@ function _syncFromCloud() {
   } catch(e) {}
 }
 
-// Lancer Supabase IMMÉDIATEMENT - avant DOMContentLoaded
-initSupabase();
+// Fonctions auth globales - même style que Tatanka Nutrition
+var _ttMode = 'login';
 
-document.addEventListener('DOMContentLoaded', function() {
-  window._ttMode = 'login';
+function ttSwitchTab(mode) {
+  _ttMode = mode;
+  var l = document.getElementById('tt-tab-login');
+  var s = document.getElementById('tt-tab-signup');
+  var b = document.getElementById('tt-auth-btn');
+  if (mode === 'login') {
+    l.style.background='#c0392b'; l.style.color='#fff';
+    s.style.background='#111'; s.style.color='#444';
+    b.textContent = 'SE CONNECTER';
+  } else {
+    s.style.background='#c0392b'; s.style.color='#fff';
+    l.style.background='#111'; l.style.color='#444';
+    b.textContent = 'CRÉER MON COMPTE';
+  }
+  document.getElementById('tt-auth-error').style.display = 'none';
+}
 
-  // Event listener bouton auth
-  window._handleAuth = async function() {
-    var mode = window._ttMode || 'login';
-    var email = document.getElementById('tt-auth-email').value.trim();
-    var pw = document.getElementById('tt-auth-password').value;
-    var errEl = document.getElementById('tt-auth-error');
-    var btn = document.getElementById('tt-auth-btn');
-    errEl.style.display = 'none';
-    if (!email || !pw) { errEl.textContent = 'Email et mot de passe requis'; errEl.style.display = 'block'; return; }
-    if (!supabase) { errEl.textContent = 'Chargement en cours... réessaie dans 2 secondes'; errEl.style.display = 'block'; return; }
-    btn.textContent = '...'; btn.disabled = true;
-    try {
-      var r = mode === 'login'
-        ? await supabase.auth.signInWithPassword({ email: email, password: pw })
-        : await supabase.auth.signUp({ email: email, password: pw });
-      if (r.error) {
-        var msg = r.error.message;
-        if (msg.includes('Invalid login')) msg = 'Email ou mot de passe incorrect';
-        if (msg.includes('already registered')) msg = 'Email déjà utilisé — connecte-toi';
-        if (msg.includes('Password')) msg = 'Mot de passe trop court (6 min)';
-        errEl.style.color = '#e74c3c'; errEl.textContent = msg; errEl.style.display = 'block';
-      } else if (mode === 'signup' && !r.data.session) {
-        errEl.style.color = '#00C853';
-        errEl.textContent = 'Compte créé ! Connecte-toi maintenant.';
-        errEl.style.display = 'block';
-        document.getElementById('tt-tab-login').click();
-      }
-    } catch(e) {
-      errEl.style.color = '#e74c3c'; errEl.textContent = 'Erreur réseau'; errEl.style.display = 'block';
+async function ttDoAuth() {
+  if (!supabase) { var e=document.getElementById('tt-auth-error'); e.textContent='Chargement... réessaie'; e.style.display='block'; return; }
+  var email = document.getElementById('tt-auth-email').value.trim();
+  var pw = document.getElementById('tt-auth-password').value;
+  var errEl = document.getElementById('tt-auth-error');
+  var btn = document.getElementById('tt-auth-btn');
+  errEl.style.display = 'none';
+  if (!email || !pw) { errEl.textContent='Email et mot de passe requis'; errEl.style.display='block'; return; }
+  btn.textContent='...'; btn.disabled=true;
+  try {
+    var r = _ttMode === 'login'
+      ? await supabase.auth.signInWithPassword({email:email, password:pw})
+      : await supabase.auth.signUp({email:email, password:pw});
+    if (r.error) {
+      var msg = r.error.message;
+      if (msg.includes('Invalid login')) msg = 'Email ou mot de passe incorrect';
+      if (msg.includes('already registered')) msg = 'Email déjà utilisé — connecte-toi';
+      if (msg.includes('Password')) msg = 'Mot de passe trop court (6 min)';
+      errEl.style.color='#e74c3c'; errEl.textContent=msg; errEl.style.display='block';
+    } else if (_ttMode === 'signup' && !r.data.session) {
+      errEl.style.color='#00C853';
+      errEl.textContent='Compte créé ! Connecte-toi.'; errEl.style.display='block';
+      ttSwitchTab('login');
     }
-    btn.disabled = false;
-    btn.textContent = (window._ttMode === 'login') ? 'SE CONNECTER' : 'CRÉER MON COMPTE';
-  };
-  document.getElementById('tt-auth-btn').addEventListener('click', window._handleAuth);
+  } catch(e) { errEl.style.color='#e74c3c'; errEl.textContent='Erreur réseau'; errEl.style.display='block'; }
+  btn.disabled=false;
+  btn.textContent = _ttMode==='login' ? 'SE CONNECTER' : 'CRÉER MON COMPTE';
+}
 
-  // Code promo
-  document.getElementById('tt-promo-btn').addEventListener('click', async function() {
-    var code = prompt('Entre ton code promo :');
-    if (!code) return;
-    try { await _applyPromoCode(code.trim()); alert('Code appliqué ! Accès premium activé.'); window.location.reload(); }
-    catch(e) { alert(e.message); }
-  });
+async function ttPromoCode() {
+  var code = prompt('Entre ton code promo :');
+  if (!code) return;
+  try { await _applyPromoCode(code.trim()); alert('Code appliqué ! Accès premium activé.'); window.location.reload(); }
+  catch(e) { alert(e.message); }
+}
 
-  // Enter sur les champs
-  ['tt-auth-email','tt-auth-password'].forEach(function(id) {
-    document.getElementById(id).addEventListener('keydown', function(e) { if (e.key === 'Enter') window._handleAuth(); });
-  });
-});
+// Lancer Supabase immédiatement
+initSupabase();
 
 const EXERCISE_NAME_FIXES = {
   'Tirage vertical unilatérale': 'Tirage vertical unilatéral',
