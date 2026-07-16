@@ -367,7 +367,7 @@ document.addEventListener('DOMContentLoaded', function() {
   initSupabase();
 
   // Event listener bouton auth
-  document.getElementById('tt-auth-btn').addEventListener('click', async function() {
+  window._handleAuth = async function() {
     var mode = window._ttMode || 'login';
     var email = document.getElementById('tt-auth-email').value.trim();
     var pw = document.getElementById('tt-auth-password').value;
@@ -375,33 +375,43 @@ document.addEventListener('DOMContentLoaded', function() {
     var btn = document.getElementById('tt-auth-btn');
     errEl.style.display = 'none';
     if (!email || !pw) { errEl.textContent = 'Email et mot de passe requis'; errEl.style.display = 'block'; return; }
+    if (!supabase) { errEl.textContent = 'Chargement en cours... réessaie dans 2 secondes'; errEl.style.display = 'block'; return; }
     btn.textContent = '...'; btn.disabled = true;
     try {
-      var data = await _doAuth(mode, email, pw);
-      if (mode === 'signup' && !data.session) {
+      var r = mode === 'login'
+        ? await supabase.auth.signInWithPassword({ email: email, password: pw })
+        : await supabase.auth.signUp({ email: email, password: pw });
+      if (r.error) {
+        var msg = r.error.message;
+        if (msg.includes('Invalid login')) msg = 'Email ou mot de passe incorrect';
+        if (msg.includes('already registered')) msg = 'Email déjà utilisé — connecte-toi';
+        if (msg.includes('Password')) msg = 'Mot de passe trop court (6 min)';
+        errEl.style.color = '#e74c3c'; errEl.textContent = msg; errEl.style.display = 'block';
+      } else if (mode === 'signup' && !r.data.session) {
         errEl.style.color = '#00C853';
-        errEl.textContent = 'Compte créé ! Connecte-toi.';
+        errEl.textContent = 'Compte créé ! Connecte-toi maintenant.';
         errEl.style.display = 'block';
         document.getElementById('tt-tab-login').click();
       }
     } catch(e) {
-      errEl.style.color = '#e74c3c';
-      errEl.textContent = e.message;
-      errEl.style.display = 'block';
+      errEl.style.color = '#e74c3c'; errEl.textContent = 'Erreur réseau'; errEl.style.display = 'block';
     }
     btn.disabled = false;
     btn.textContent = (window._ttMode === 'login') ? 'SE CONNECTER' : 'CRÉER MON COMPTE';
-  });
+  };
+  document.getElementById('tt-auth-btn').addEventListener('click', window._handleAuth);
 
-  // Event listener code promo
+  // Code promo
   document.getElementById('tt-promo-btn').addEventListener('click', async function() {
     var code = prompt('Entre ton code promo :');
     if (!code) return;
-    try {
-      await _applyPromoCode(code.trim());
-      alert('Code appliqué ! Accès premium activé.');
-      window.location.reload();
-    } catch(e) { alert(e.message); }
+    try { await _applyPromoCode(code.trim()); alert('Code appliqué ! Accès premium activé.'); window.location.reload(); }
+    catch(e) { alert(e.message); }
+  });
+
+  // Enter sur les champs
+  ['tt-auth-email','tt-auth-password'].forEach(function(id) {
+    document.getElementById(id).addEventListener('keydown', function(e) { if (e.key === 'Enter') window._handleAuth(); });
   });
 });
 
