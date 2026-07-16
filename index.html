@@ -981,6 +981,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
           }))
         };
       });
+      if ((!window._isPremium || !window._isPremium()) && sessions.length >= 30) { alert("Limite de 30 séances atteinte.\nPassez Premium pour continuer !\n\n4,99€/mois ou 39,99€/an"); return; }
       setCurrentSets({ routineId: activeRoutine.id, routineName: activeRoutine.name, exercises });
       setActiveRoutine(null);
       setTimeout(() => window.scrollTo({ top: 0, behavior: "smooth" }), 50);
@@ -1107,7 +1108,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
       // Détecter PR
       const currentSet = exSets2[setIdx];
       let isPR = false;
-      if (currentSet && currentSet.weight && currentSet.reps) {
+      if (window._isPremium && window._isPremium() && currentSet && currentSet.weight && currentSet.reps) {
         const currentRM = parseFloat(currentSet.weight) * (1 + parseInt(currentSet.reps) / 30);
         // 1) Comparaison 1RM global (toutes séries confondues) — record absolu sur l exercice
         const pastRM = sessions.flatMap(s => (s.exercises||[]).filter(e=>e.name===ex.name).flatMap(e=>(e.sets||[]).filter(st=>st.weight&&st.reps).map(st=>parseFloat(st.weight)*(1+parseInt(st.reps)/30))));
@@ -1149,7 +1150,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
       const stagSet = exSets2[setIdx];
       if (setIdx === exSets2.length - 1 && stagSet && stagSet.weight && stagSet.reps) {
         const validSets = updatedSets.filter(s => s.weight && s.reps);
-        if (validSets.length > 0) checkStagnation(ex.name, validSets);
+        if (window._isPremium && window._isPremium() && validSets.length > 0) checkStagnation(ex.name, validSets);
       }
     }
   }
@@ -1757,6 +1758,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
               </div>
             )}
             {(() => {
+              if (!window._isPremium || !window._isPremium()) return null;
               const tip = getProgressionTip(ex.lastSets, sessions, ex.name, ex.repsTarget);
               if (!tip) return null;
               return (
@@ -3092,10 +3094,10 @@ function exportData() {
         {tab === "home"     && <HomeTab sessions={sessions} currentSets={currentSets} setTab={setTab} fatigue={fatigue} />}
         {tab === "routines" && <RoutinesTab routines={routines} setRoutines={setRoutines} onStartSession={handleStartSession} view={routineView} setView={setRoutineView} editing={routineEditing} setEditing={setRoutineEditing} />}
         {tab === "session"  && <SessionTab sessions={sessions} setSessions={setSessions} activeRoutine={activeRoutine} setActiveRoutine={setActiveRoutine} routines={routines} currentSets={currentSets} setCurrentSets={setCurrentSets} sessionRecovered={sessionRecovered} setSessionRecovered={setSessionRecovered} setTab={setTab} restSec={restSec} setRestSec={setRestSec} restTarget={restTarget} setRestTarget={setRestTarget} timerOn={timerOn} setTimerOn={setTimerOn} timerDone={timerDone} setTimerDone={setTimerDone} seanceStartTime={seanceStartTime} setSeanceStartTime={setSeanceStartTime} seanceElapsed={seanceElapsed} setSeanceElapsed={setSeanceElapsed} />}
-        {tab === "progress" && <ProgressTab sessions={sessions} />}
-        {tab === "bilan"    && <BilanTab fatigue={fatigue} setFatigue={setFatigue} sessions={sessions} />}
+        {tab === "progress" && (window._isPremium && window._isPremium() ? <ProgressTab sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Indicateurs de progression</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><button onClick={() => alert('Abonnement disponible à 4,99€/mois ou 39,99€/an — contacte-nous !')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 32px",fontSize:14,fontWeight:700,cursor:"pointer"}}>🏆 Passer Premium</button></div>)}
+        {tab === "bilan"    && (window._isPremium && window._isPremium() ? <BilanTab fatigue={fatigue} setFatigue={setFatigue} sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Bilan mensuel & cycle</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><button onClick={() => alert('Abonnement disponible à 4,99€/mois ou 39,99€/an — contacte-nous !')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 32px",fontSize:14,fontWeight:700,cursor:"pointer"}}>🏆 Passer Premium</button></div>)}
         {tab === "supps"    && <SupplTab supps={supps} setSupps={setSupps} />}
-        {tab === "sns"     && <BilanTab fatigue={fatigue} setFatigue={setFatigue} sessions={sessions} />}
+        {tab === "sns"     && (window._isPremium && window._isPremium() ? <BilanTab fatigue={fatigue} setFatigue={setFatigue} sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Score SNS</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><button onClick={() => alert("Abonnement disponible à 4,99€/mois ou 39,99€/an — contacte-nous !")} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 32px",fontSize:14,fontWeight:700,cursor:"pointer"}}>🏆 Passer Premium</button></div>)}
       </div>
 
       <div style={{ position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: "#0a0a0a", borderTop: "1px solid #1a1a1a", display: tab === "home" ? "none" : "flex" }}>
