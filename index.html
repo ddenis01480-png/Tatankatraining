@@ -361,10 +361,11 @@ function _syncFromCloud() {
   } catch(e) {}
 }
 
-// Lancer Supabase dès le chargement
+// Lancer Supabase IMMÉDIATEMENT - avant DOMContentLoaded
+initSupabase();
+
 document.addEventListener('DOMContentLoaded', function() {
   window._ttMode = 'login';
-  initSupabase();
 
   // Event listener bouton auth
   window._handleAuth = async function() {
