@@ -382,7 +382,15 @@ function ttSwitchTab(mode) {
 }
 
 async function ttDoAuth() {
-  if (!supabase) { var e=document.getElementById('tt-auth-error'); e.textContent='Chargement... réessaie'; e.style.display='block'; return; }
+  if (!supabase) {
+    var e=document.getElementById('tt-auth-error');
+    e.textContent='Connexion en cours...';
+    e.style.color='#FF8C00';
+    e.style.display='block';
+    // Réessayer automatiquement dans 2 secondes
+    setTimeout(function() { if(supabase) ttDoAuth(); }, 2000);
+    return;
+  }
   var email = document.getElementById('tt-auth-email').value.trim();
   var pw = document.getElementById('tt-auth-password').value;
   var errEl = document.getElementById('tt-auth-error');
@@ -3094,10 +3102,46 @@ function exportData() {
         {tab === "home"     && <HomeTab sessions={sessions} currentSets={currentSets} setTab={setTab} fatigue={fatigue} />}
         {tab === "routines" && <RoutinesTab routines={routines} setRoutines={setRoutines} onStartSession={handleStartSession} view={routineView} setView={setRoutineView} editing={routineEditing} setEditing={setRoutineEditing} />}
         {tab === "session"  && <SessionTab sessions={sessions} setSessions={setSessions} activeRoutine={activeRoutine} setActiveRoutine={setActiveRoutine} routines={routines} currentSets={currentSets} setCurrentSets={setCurrentSets} sessionRecovered={sessionRecovered} setSessionRecovered={setSessionRecovered} setTab={setTab} restSec={restSec} setRestSec={setRestSec} restTarget={restTarget} setRestTarget={setRestTarget} timerOn={timerOn} setTimerOn={setTimerOn} timerDone={timerDone} setTimerDone={setTimerDone} seanceStartTime={seanceStartTime} setSeanceStartTime={setSeanceStartTime} seanceElapsed={seanceElapsed} setSeanceElapsed={setSeanceElapsed} />}
-        {tab === "progress" && (window._isPremium && window._isPremium() ? <ProgressTab sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Indicateurs de progression</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><button onClick={() => alert('Abonnement disponible à 4,99€/mois ou 39,99€/an — contacte-nous !')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 32px",fontSize:14,fontWeight:700,cursor:"pointer"}}>🏆 Passer Premium</button></div>)}
-        {tab === "bilan"    && (window._isPremium && window._isPremium() ? <BilanTab fatigue={fatigue} setFatigue={setFatigue} sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Bilan mensuel & cycle</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><button onClick={() => alert('Abonnement disponible à 4,99€/mois ou 39,99€/an — contacte-nous !')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 32px",fontSize:14,fontWeight:700,cursor:"pointer"}}>🏆 Passer Premium</button></div>)}
+        {tab === "progress" && (window._isPremium && window._isPremium() ? <ProgressTab sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Indicateurs de progression</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><button onClick={() => (function() {
+  var d = document.createElement('div');
+  d.style.cssText = 'position:fixed;inset:0;background:#000000ee;z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  d.innerHTML = '<div style="background:#111;border-radius:16px;padding:24px;width:100%;max-width:380px;border:1px solid #c0392b33">' +
+    '<div style="text-align:center;margin-bottom:20px"><div style="font-size:40px">🏆</div>' +
+    '<div style="font-size:18px;font-weight:700;color:#fff;margin-bottom:4px">Tatanka Training Premium</div>' +
+    '<div style="font-size:12px;color:#888">Débloque toutes les fonctionnalités</div></div>' +
+    '<a href="https://buy.stripe.com/test_bJe8wRb1s0kcc1l1uQcQU02" style="display:block;text-align:center;background:#c0392b;color:#fff;border-radius:10px;padding:14px;font-size:14px;font-weight:700;text-decoration:none;margin-bottom:10px">4,99€ / mois</a>' +
+    '<a href="https://buy.stripe.com/test_7sY6oJfhI1og1mH3CYcQU04" style="display:block;text-align:center;background:#1a1a1a;border:1px solid #c0392b;color:#fff;border-radius:10px;padding:14px;font-size:14px;font-weight:700;text-decoration:none;margin-bottom:16px">39,99€ / an <span style="color:#FFD600;font-size:11px">— économise 33%</span></a>' +
+    '<div style="text-align:center"><button onclick="this.closest(\'.\').parentNode.remove()" style="background:none;border:none;color:#666;font-size:13px;cursor:pointer">Fermer</button></div></div>';
+  d.onclick = function(e) { if(e.target===d) d.remove(); };
+  document.body.appendChild(d);
+})()} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 32px",fontSize:14,fontWeight:700,cursor:"pointer"}}>🏆 Passer Premium</button></div>)}
+        {tab === "bilan"    && (window._isPremium && window._isPremium() ? <BilanTab fatigue={fatigue} setFatigue={setFatigue} sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Bilan mensuel & cycle</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><button onClick={() => (function() {
+  var d = document.createElement('div');
+  d.style.cssText = 'position:fixed;inset:0;background:#000000ee;z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  d.innerHTML = '<div style="background:#111;border-radius:16px;padding:24px;width:100%;max-width:380px;border:1px solid #c0392b33">' +
+    '<div style="text-align:center;margin-bottom:20px"><div style="font-size:40px">🏆</div>' +
+    '<div style="font-size:18px;font-weight:700;color:#fff;margin-bottom:4px">Tatanka Training Premium</div>' +
+    '<div style="font-size:12px;color:#888">Débloque toutes les fonctionnalités</div></div>' +
+    '<a href="https://buy.stripe.com/test_bJe8wRb1s0kcc1l1uQcQU02" style="display:block;text-align:center;background:#c0392b;color:#fff;border-radius:10px;padding:14px;font-size:14px;font-weight:700;text-decoration:none;margin-bottom:10px">4,99€ / mois</a>' +
+    '<a href="https://buy.stripe.com/test_7sY6oJfhI1og1mH3CYcQU04" style="display:block;text-align:center;background:#1a1a1a;border:1px solid #c0392b;color:#fff;border-radius:10px;padding:14px;font-size:14px;font-weight:700;text-decoration:none;margin-bottom:16px">39,99€ / an <span style="color:#FFD600;font-size:11px">— économise 33%</span></a>' +
+    '<div style="text-align:center"><button onclick="this.closest(\'.\').parentNode.remove()" style="background:none;border:none;color:#666;font-size:13px;cursor:pointer">Fermer</button></div></div>';
+  d.onclick = function(e) { if(e.target===d) d.remove(); };
+  document.body.appendChild(d);
+})()} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 32px",fontSize:14,fontWeight:700,cursor:"pointer"}}>🏆 Passer Premium</button></div>)}
         {tab === "supps"    && <SupplTab supps={supps} setSupps={setSupps} />}
-        {tab === "sns"     && (window._isPremium && window._isPremium() ? <BilanTab fatigue={fatigue} setFatigue={setFatigue} sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Score SNS</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><button onClick={() => alert("Abonnement disponible à 4,99€/mois ou 39,99€/an — contacte-nous !")} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 32px",fontSize:14,fontWeight:700,cursor:"pointer"}}>🏆 Passer Premium</button></div>)}
+        {tab === "sns"     && (window._isPremium && window._isPremium() ? <BilanTab fatigue={fatigue} setFatigue={setFatigue} sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Score SNS</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><button onClick={() => (function() {
+  var d = document.createElement('div');
+  d.style.cssText = 'position:fixed;inset:0;background:#000000ee;z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  d.innerHTML = '<div style="background:#111;border-radius:16px;padding:24px;width:100%;max-width:380px;border:1px solid #c0392b33">' +
+    '<div style="text-align:center;margin-bottom:20px"><div style="font-size:40px">🏆</div>' +
+    '<div style="font-size:18px;font-weight:700;color:#fff;margin-bottom:4px">Tatanka Training Premium</div>' +
+    '<div style="font-size:12px;color:#888">Débloque toutes les fonctionnalités</div></div>' +
+    '<a href="https://buy.stripe.com/test_bJe8wRb1s0kcc1l1uQcQU02" style="display:block;text-align:center;background:#c0392b;color:#fff;border-radius:10px;padding:14px;font-size:14px;font-weight:700;text-decoration:none;margin-bottom:10px">4,99€ / mois</a>' +
+    '<a href="https://buy.stripe.com/test_7sY6oJfhI1og1mH3CYcQU04" style="display:block;text-align:center;background:#1a1a1a;border:1px solid #c0392b;color:#fff;border-radius:10px;padding:14px;font-size:14px;font-weight:700;text-decoration:none;margin-bottom:16px">39,99€ / an <span style="color:#FFD600;font-size:11px">— économise 33%</span></a>' +
+    '<div style="text-align:center"><button onclick="this.closest(\'.\').parentNode.remove()" style="background:none;border:none;color:#666;font-size:13px;cursor:pointer">Fermer</button></div></div>';
+  d.onclick = function(e) { if(e.target===d) d.remove(); };
+  document.body.appendChild(d);
+})()} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 32px",fontSize:14,fontWeight:700,cursor:"pointer"}}>🏆 Passer Premium</button></div>)}
       </div>
 
       <div style={{ position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: "#0a0a0a", borderTop: "1px solid #1a1a1a", display: tab === "home" ? "none" : "flex" }}>
