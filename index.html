@@ -340,19 +340,25 @@ async function autoBackup(sessions, routines, cycle, supps, fatigue) {
     await fetch(SB_URL + '/rest/v1/backups', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Prefer': 'resolution=merge-duplicates' },
-      body: JSON.stringify({ device_id: deviceId, sessions: sessions || [], routines: routines || null, cycle: cycle || null, supps: supps || null, fatigue: fatigue || null, backed_up_at: new Date().toISOString() })
+      body: JSON.stringify({ device_id: deviceId, email: (window.currentUser && window.currentUser.email ? window.currentUser.email.toLowerCase() : null), sessions: sessions || [], routines: routines || null, cycle: cycle || null, supps: supps || null, fatigue: fatigue || null, backed_up_at: new Date().toISOString() })
     });
   } catch(e) {}
 }
 
 function _syncFromCloud() {
-  // Charger backup si localStorage vide
   try {
-    var deviceId = localStorage.getItem('tt_device_id');
-    if (!deviceId) return;
     var localSessions = JSON.parse(localStorage.getItem('it3_sessions') || '[]');
-    if (localSessions.length > 0) return; // Données locales OK
-    fetch(SB_URL + '/rest/v1/backups?device_id=eq.' + encodeURIComponent(deviceId) + '&select=*', {
+    if (localSessions.length > 0) return; // Données locales OK - pas besoin de restaurer
+
+    // Chercher backup par email du compte connecté
+    var email = currentUser && currentUser.email;
+    var deviceId = localStorage.getItem('tt_device_id');
+    var query = email
+      ? 'email=eq.' + encodeURIComponent(email.toLowerCase())
+      : deviceId ? 'device_id=eq.' + encodeURIComponent(deviceId) : null;
+    if (!query) return;
+
+    fetch(SB_URL + '/rest/v1/backups?' + query + '&select=*&order=backed_up_at.desc&limit=1', {
       headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY }
     }).then(function(r) { return r.json(); }).then(function(data) {
       if (data && data[0] && data[0].sessions && data[0].sessions.length > 0) {
@@ -360,7 +366,7 @@ function _syncFromCloud() {
         if (data[0].routines) localStorage.setItem('it3_routines', JSON.stringify(data[0].routines));
         if (data[0].cycle) localStorage.setItem('it3_cycle', JSON.stringify(data[0].cycle));
         if (data[0].supps) localStorage.setItem('it3_supps', JSON.stringify(data[0].supps));
-        window.location.reload(); // Recharger avec les données restaurées
+        window.location.reload();
       }
     }).catch(function(){});
   } catch(e) {}
@@ -368,6 +374,17 @@ function _syncFromCloud() {
 
 // Fonctions auth globales - même style que Tatanka Nutrition
 var _ttMode = 'login';
+
+function isPremiumUser() {
+  if (!window.currentUser) return false;
+  if (!window.userProfile) return false;
+  if (window.userProfile.premium) return true;
+  if (window.userProfile.promo) {
+    if (!window.userProfile.promo_expires_at) return true;
+    if (new Date(window.userProfile.promo_expires_at) > new Date()) return true;
+  }
+  return false;
+}
 
 function showPaywall() {
   var existing = document.getElementById('tt-paywall');
@@ -1021,7 +1038,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
           }))
         };
       });
-      if ((!window._isPremium || !window._isPremium()) && sessions.length >= 30) { alert("Limite de 30 séances atteinte.\nPassez Premium pour continuer !\n\n4,99€/mois ou 39,99€/an"); return; }
+      if ((!isPremiumUser()) && sessions.length >= 30) { alert("Limite de 30 séances atteinte.\nPassez Premium pour continuer !\n\n4,99€/mois ou 39,99€/an"); return; }
       setCurrentSets({ routineId: activeRoutine.id, routineName: activeRoutine.name, exercises });
       setActiveRoutine(null);
       setTimeout(() => window.scrollTo({ top: 0, behavior: "smooth" }), 50);
@@ -1148,7 +1165,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
       // Détecter PR
       const currentSet = exSets2[setIdx];
       let isPR = false;
-      if (window._isPremium && window._isPremium() && currentSet && currentSet.weight && currentSet.reps) {
+      if (isPremiumUser() && currentSet && currentSet.weight && currentSet.reps) {
         const currentRM = parseFloat(currentSet.weight) * (1 + parseInt(currentSet.reps) / 30);
         // 1) Comparaison 1RM global (toutes séries confondues) — record absolu sur l exercice
         const pastRM = sessions.flatMap(s => (s.exercises||[]).filter(e=>e.name===ex.name).flatMap(e=>(e.sets||[]).filter(st=>st.weight&&st.reps).map(st=>parseFloat(st.weight)*(1+parseInt(st.reps)/30))));
@@ -1190,7 +1207,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
       const stagSet = exSets2[setIdx];
       if (setIdx === exSets2.length - 1 && stagSet && stagSet.weight && stagSet.reps) {
         const validSets = updatedSets.filter(s => s.weight && s.reps);
-        if (window._isPremium && window._isPremium() && validSets.length > 0) checkStagnation(ex.name, validSets);
+        if (isPremiumUser() && validSets.length > 0) checkStagnation(ex.name, validSets);
       }
     }
   }
@@ -1798,7 +1815,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
               </div>
             )}
             {(() => {
-              if (!window._isPremium || !window._isPremium()) return null;
+              if (!isPremiumUser()) return null;
               const tip = getProgressionTip(ex.lastSets, sessions, ex.name, ex.repsTarget);
               if (!tip) return null;
               return (
@@ -3134,10 +3151,10 @@ function exportData() {
         {tab === "home"     && <HomeTab sessions={sessions} currentSets={currentSets} setTab={setTab} fatigue={fatigue} />}
         {tab === "routines" && <RoutinesTab routines={routines} setRoutines={setRoutines} onStartSession={handleStartSession} view={routineView} setView={setRoutineView} editing={routineEditing} setEditing={setRoutineEditing} />}
         {tab === "session"  && <SessionTab sessions={sessions} setSessions={setSessions} activeRoutine={activeRoutine} setActiveRoutine={setActiveRoutine} routines={routines} currentSets={currentSets} setCurrentSets={setCurrentSets} sessionRecovered={sessionRecovered} setSessionRecovered={setSessionRecovered} setTab={setTab} restSec={restSec} setRestSec={setRestSec} restTarget={restTarget} setRestTarget={setRestTarget} timerOn={timerOn} setTimerOn={setTimerOn} timerDone={timerDone} setTimerDone={setTimerDone} seanceStartTime={seanceStartTime} setSeanceStartTime={setSeanceStartTime} seanceElapsed={seanceElapsed} setSeanceElapsed={setSeanceElapsed} />}
-        {tab === "progress" && (window._isPremium && window._isPremium() ? <ProgressTab sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Indicateurs de progression</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><button onClick={() => showPaywall()} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 32px",fontSize:14,fontWeight:700,cursor:"pointer"}}>🏆 Passer Premium</button></div>)}
-        {tab === "bilan"    && (window._isPremium && window._isPremium() ? <BilanTab fatigue={fatigue} setFatigue={setFatigue} sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Bilan mensuel & cycle</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><button onClick={() => showPaywall()} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 32px",fontSize:14,fontWeight:700,cursor:"pointer"}}>🏆 Passer Premium</button></div>)}
+        {tab === "progress" && (isPremiumUser() ? <ProgressTab sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Indicateurs de progression</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><button onClick={() => showPaywall()} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 32px",fontSize:14,fontWeight:700,cursor:"pointer"}}>🏆 Passer Premium</button></div>)}
+        {tab === "bilan"    && (isPremiumUser() ? <BilanTab fatigue={fatigue} setFatigue={setFatigue} sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Bilan mensuel & cycle</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><button onClick={() => showPaywall()} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 32px",fontSize:14,fontWeight:700,cursor:"pointer"}}>🏆 Passer Premium</button></div>)}
         {tab === "supps"    && <SupplTab supps={supps} setSupps={setSupps} />}
-        {tab === "sns"     && (window._isPremium && window._isPremium() ? <BilanTab fatigue={fatigue} setFatigue={setFatigue} sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Score SNS</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><button onClick={() => showPaywall()} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 32px",fontSize:14,fontWeight:700,cursor:"pointer"}}>🏆 Passer Premium</button></div>)}
+        {tab === "sns"     && (isPremiumUser() ? <BilanTab fatigue={fatigue} setFatigue={setFatigue} sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Score SNS</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><button onClick={() => showPaywall()} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 32px",fontSize:14,fontWeight:700,cursor:"pointer"}}>🏆 Passer Premium</button></div>)}
       </div>
 
       <div style={{ position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: "#0a0a0a", borderTop: "1px solid #1a1a1a", display: tab === "home" ? "none" : "flex" }}>
