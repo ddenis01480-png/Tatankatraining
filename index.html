@@ -275,6 +275,19 @@ async function _loadProfile(userId, email) {
   } else {
     userProfile = r.data;
   }
+  // Vérifier aussi table subscriptions par email
+  if (!userProfile.premium && !userProfile.promo) {
+    try {
+      var r2 = await supabase.from('subscriptions').select('status,current_period_end').eq('email', email.toLowerCase()).single();
+      if (r2.data && r2.data.status === 'premium') {
+        var ok = !r2.data.current_period_end || new Date(r2.data.current_period_end) > new Date();
+        if (ok) {
+          userProfile = Object.assign({}, userProfile, { premium: true });
+          await supabase.from('profiles').update({ premium: true }).eq('id', userId);
+        }
+      }
+    } catch(e) {}
+  }
 }
 
 function _isPremium() {
