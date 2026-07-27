@@ -261,6 +261,7 @@ function initSupabase() {
         if (session && session.user) {
           currentUser = session.user;
           await _loadProfile(session.user.id, session.user.email);
+          if (window.location.search.includes('payment=success')) { await _activateTrainingPremium(); }
           _hideAuthScreen();
           _syncFromCloud();
         } else {
@@ -292,6 +293,20 @@ function _isPremium() {
     if (!userProfile.promo_expires_at || new Date(userProfile.promo_expires_at) > new Date()) return true;
   }
   return false;
+}
+
+async function _activateTrainingPremium(){
+  if(!supabase||!currentUser)return;
+  await supabase.from('profiles').update({premium_training:true}).eq('id',currentUser.id);
+  if(userProfile)userProfile.premium_training=true;
+  window.history.replaceState({},'',window.location.pathname);
+}
+
+function startCheckout(plan){
+  if(!currentUser){ alert('Connecte-toi d\'abord'); return; }
+  var url=plan==='monthly'?STRIPE_MONTHLY:STRIPE_YEARLY;
+  url+='?prefilled_email='+encodeURIComponent(currentUser.email)+'&client_reference_id='+currentUser.id;
+  window.location.href=url;
 }
 
 function _showAuthScreen() {
@@ -3115,10 +3130,10 @@ function exportData() {
         {tab === "home"     && <HomeTab sessions={sessions} currentSets={currentSets} setTab={setTab} fatigue={fatigue} />}
         {tab === "routines" && <RoutinesTab routines={routines} setRoutines={setRoutines} onStartSession={handleStartSession} view={routineView} setView={setRoutineView} editing={routineEditing} setEditing={setRoutineEditing} />}
         {tab === "session"  && <SessionTab sessions={sessions} setSessions={setSessions} activeRoutine={activeRoutine} setActiveRoutine={setActiveRoutine} routines={routines} currentSets={currentSets} setCurrentSets={setCurrentSets} sessionRecovered={sessionRecovered} setSessionRecovered={setSessionRecovered} setTab={setTab} restSec={restSec} setRestSec={setRestSec} restTarget={restTarget} setRestTarget={setRestTarget} timerOn={timerOn} setTimerOn={setTimerOn} timerDone={timerDone} setTimerDone={setTimerDone} seanceStartTime={seanceStartTime} setSeanceStartTime={setSeanceStartTime} seanceElapsed={seanceElapsed} setSeanceElapsed={setSeanceElapsed} />}
-        {tab === "progress" && (window._isPremium && window._isPremium() ? <ProgressTab sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Indicateurs de progression</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><button onClick={() => alert('Abonnement disponible à 4,99€/mois ou 39,99€/an — contacte-nous !')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 32px",fontSize:14,fontWeight:700,cursor:"pointer"}}>🏆 Passer Premium</button></div>)}
-        {tab === "bilan"    && (window._isPremium && window._isPremium() ? <BilanTab fatigue={fatigue} setFatigue={setFatigue} sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Bilan mensuel & cycle</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><button onClick={() => alert('Abonnement disponible à 4,99€/mois ou 39,99€/an — contacte-nous !')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 32px",fontSize:14,fontWeight:700,cursor:"pointer"}}>🏆 Passer Premium</button></div>)}
+        {tab === "progress" && (window._isPremium && window._isPremium() ? <ProgressTab sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Indicateurs de progression</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><div style={{display:"flex",gap:8}}><button onClick={() => window.startCheckout('monthly')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 20px",fontSize:13,fontWeight:700,cursor:"pointer"}}>4,99€/mois</button><button onClick={() => window.startCheckout('yearly')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 20px",fontSize:13,fontWeight:700,cursor:"pointer"}}>39,99€/an</button></div></div>)}
+        {tab === "bilan"    && (window._isPremium && window._isPremium() ? <BilanTab fatigue={fatigue} setFatigue={setFatigue} sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Bilan mensuel & cycle</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><div style={{display:"flex",gap:8}}><button onClick={() => window.startCheckout('monthly')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 20px",fontSize:13,fontWeight:700,cursor:"pointer"}}>4,99€/mois</button><button onClick={() => window.startCheckout('yearly')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 20px",fontSize:13,fontWeight:700,cursor:"pointer"}}>39,99€/an</button></div></div>)}
         {tab === "supps"    && <SupplTab supps={supps} setSupps={setSupps} />}
-        {tab === "sns"     && (window._isPremium && window._isPremium() ? <BilanTab fatigue={fatigue} setFatigue={setFatigue} sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Score SNS</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><button onClick={() => alert("Abonnement disponible à 4,99€/mois ou 39,99€/an — contacte-nous !")} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 32px",fontSize:14,fontWeight:700,cursor:"pointer"}}>🏆 Passer Premium</button></div>)}
+        {tab === "sns"     && (window._isPremium && window._isPremium() ? <BilanTab fatigue={fatigue} setFatigue={setFatigue} sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Score SNS</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><div style={{display:"flex",gap:8}}><button onClick={() => window.startCheckout('monthly')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 20px",fontSize:13,fontWeight:700,cursor:"pointer"}}>4,99€/mois</button><button onClick={() => window.startCheckout('yearly')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 20px",fontSize:13,fontWeight:700,cursor:"pointer"}}>39,99€/an</button></div></div>)}
       </div>
 
       <div style={{ position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: "#0a0a0a", borderTop: "1px solid #1a1a1a", display: tab === "home" ? "none" : "flex" }}>
