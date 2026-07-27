@@ -278,8 +278,8 @@ async function _loadProfile(userId, email) {
   if (!supabase) return;
   var r = await supabase.from('profiles').select('*').eq('id', userId).single();
   if (!r.data) {
-    await supabase.from('profiles').insert({ id: userId, email: email.toLowerCase(), premium: false, promo: false });
-    userProfile = { premium: false, promo: false };
+    await supabase.from('profiles').insert({ id: userId, email: email.toLowerCase(), premium: false, promo: false, premium_training: false, pack: false });
+    userProfile = { premium: false, promo: false, premium_training: false, pack: false };
   } else {
     userProfile = r.data;
   }
@@ -287,7 +287,7 @@ async function _loadProfile(userId, email) {
 
 function _isPremium() {
   if (!userProfile) return false;
-  if (userProfile.premium) return true;
+  if (userProfile.premium_training || userProfile.pack) return true;
   if (userProfile.promo) {
     if (!userProfile.promo_expires_at || new Date(userProfile.promo_expires_at) > new Date()) return true;
   }
@@ -3101,8 +3101,8 @@ function exportData() {
               if (window.currentUser) {
                 if (window.confirm('Se déconnecter ?')) window._doSignOut();
               }
-            }} style={{ background: window.userProfile && (window.userProfile.premium || window.userProfile.promo) ? "#001a00" : "#1a1a1a", border: window.userProfile && (window.userProfile.premium || window.userProfile.promo) ? "1px solid #00C85333" : "1px solid #2a2a2a", color: window.userProfile && (window.userProfile.premium || window.userProfile.promo) ? "#00C853" : "#888", borderRadius:6, padding:"4px 8px", fontSize:10, cursor:"pointer", fontWeight:700, marginRight:4 }}>
-              {window.currentUser ? (window.userProfile && (window.userProfile.premium || window.userProfile.promo) ? "★ PRO" : "👤") : "🔐"}
+            }} style={{ background: window.userProfile && (window.userProfile.premium_training || window.userProfile.pack || window.userProfile.promo) ? "#001a00" : "#1a1a1a", border: window.userProfile && (window.userProfile.premium_training || window.userProfile.pack || window.userProfile.promo) ? "1px solid #00C85333" : "1px solid #2a2a2a", color: window.userProfile && (window.userProfile.premium_training || window.userProfile.pack || window.userProfile.promo) ? "#00C853" : "#888", borderRadius:6, padding:"4px 8px", fontSize:10, cursor:"pointer", fontWeight:700, marginRight:4 }}>
+              {window.currentUser ? (window.userProfile && (window.userProfile.premium_training || window.userProfile.pack || window.userProfile.promo) ? "★ PRO" : "👤") : "🔐"}
             </button>
             <button onClick={() => setShowDataMenu(true)} style={{ background: "#1a1a1a", border: "1px solid #2a2a2a", color: "#888", borderRadius: 6, padding: "4px 8px", fontSize: 10, cursor: "pointer", fontWeight: 700 }}>
               DATA
