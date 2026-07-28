@@ -3129,6 +3129,9 @@ function exportData() {
             }} style={{ background: window.userProfile && (window.userProfile.premium_training || window.userProfile.pack || window.userProfile.promo) ? "#001a00" : "#1a1a1a", border: window.userProfile && (window.userProfile.premium_training || window.userProfile.pack || window.userProfile.promo) ? "1px solid #00C85333" : "1px solid #2a2a2a", color: window.userProfile && (window.userProfile.premium_training || window.userProfile.pack || window.userProfile.promo) ? "#00C853" : "#888", borderRadius:6, padding:"4px 8px", fontSize:10, cursor:"pointer", fontWeight:700, marginRight:4 }}>
               {window.currentUser ? (window.userProfile && (window.userProfile.premium_training || window.userProfile.pack || window.userProfile.promo) ? "★ PRO" : "👤") : "🔐"}
             </button>
+            {window.currentUser && window.userProfile && (window.userProfile.premium_training || window.userProfile.promo) && !window.userProfile.pack &&
+              <button onClick={() => window.startPackCheckout('monthly')} style={{ background: "#3a1200", border: "1px solid #ff4c0055", color: "#ff4c00", borderRadius:6, padding:"4px 8px", fontSize:9, cursor:"pointer", fontWeight:900, marginRight:4 }}>PACK</button>
+            }
             <button onClick={() => setShowDataMenu(true)} style={{ background: "#1a1a1a", border: "1px solid #2a2a2a", color: "#888", borderRadius: 6, padding: "4px 8px", fontSize: 10, cursor: "pointer", fontWeight: 700 }}>
               DATA
             </button>
