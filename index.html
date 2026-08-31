@@ -991,7 +991,22 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
     }
     document.addEventListener("touchstart", unlockAudio, { once: true });
     document.addEventListener("click", unlockAudio, { once: true });
-    return () => { document.removeEventListener("touchstart", unlockAudio); document.removeEventListener("click", unlockAudio); };
+    // Réveille l'AudioContext quand l'app revient au premier plan
+    // (iOS/Android suspendent le contexte audio en arrière-plan/écran verrouillé,
+    // ce qui coupait le bip du minuteur de repos une fois sur deux)
+    function resumeOnForeground() {
+      if (document.visibilityState === "visible" && audioCtxRef.current && audioCtxRef.current.state === "suspended") {
+        audioCtxRef.current.resume().catch(() => {});
+      }
+    }
+    document.addEventListener("visibilitychange", resumeOnForeground);
+    window.addEventListener("focus", resumeOnForeground);
+    return () => {
+      document.removeEventListener("touchstart", unlockAudio);
+      document.removeEventListener("click", unlockAudio);
+      document.removeEventListener("visibilitychange", resumeOnForeground);
+      window.removeEventListener("focus", resumeOnForeground);
+    };
   }, []);
 
   function playBeeps() {
@@ -1077,23 +1092,49 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
     }
   }, [activeRoutine]);
 
+  const restStartRef = useRef(null);
+
+  function tickTimer() {
+    if (restStartRef.current == null) return;
+    const elapsed = Math.floor((Date.now() - restStartRef.current) / 1000);
+    if (elapsed >= restTarget) {
+      clearInterval(timerRef.current);
+      setTimerOn(false);
+      setTimerDone(true);
+      setRestSec(restTarget);
+      playBeeps();
+      try { if (navigator.vibrate) navigator.vibrate([120, 60, 120]); } catch(e) {}
+    } else {
+      setRestSec(elapsed);
+    }
+  }
+
   useEffect(() => {
     if (timerOn) {
       setTimerDone(false);
-      timerRef.current = setInterval(() => {
-        setRestSec(s => {
-          if (s >= restTarget) { clearInterval(timerRef.current); setTimerOn(false); setTimerDone(true); playBeeps(); return restTarget; }
-          return s + 1;
-        });
-      }, 1000);
+      // Recalcule immédiatement au cas où le timer aurait tourné en arrière-plan
+      tickTimer();
+      timerRef.current = setInterval(tickTimer, 1000);
     }
     return () => clearInterval(timerRef.current);
+  }, [timerOn, restTarget]);
+
+  // Resynchronise le décompte dès que l'app revient au premier plan
+  // (les navigateurs mobiles suspendent le setInterval en arrière-plan,
+  // ce qui figeait le minuteur au lieu de le laisser courir en temps réel)
+  useEffect(() => {
+    function handleVisible() {
+      if (document.visibilityState === "visible" && timerOn) tickTimer();
+    }
+    document.addEventListener("visibilitychange", handleVisible);
+    return () => document.removeEventListener("visibilitychange", handleVisible);
   }, [timerOn, restTarget]);
 
   function startTimer(exName, setNum, duration) {
     clearInterval(timerRef.current);
     setRestSec(0);
     if (duration) setRestTarget(duration);
+    restStartRef.current = Date.now();
     setTimerOn(true); setTimerDone(false);
     if (exName) setLastSetInfo({ exName, setNum });
   }
@@ -1685,7 +1726,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
             <div style={{ fontSize: 11, color: "#888", fontFamily: "monospace", minWidth: 34, textAlign: "center" }}>{Math.floor(restTarget/60)}:{String(restTarget%60).padStart(2,"0")}</div>
             <button onClick={() => setRestTarget(t => Math.min(300, t + 15))} style={{ background: "#1a1a1a", border: "1px solid #2a2a2a", color: "#888", borderRadius: 6, padding: "10px 16px", fontSize: 14, cursor: "pointer", fontWeight: 900 }}>+15</button>
             {timerOn
-              ? <button onClick={() => { clearInterval(timerRef.current); setTimerOn(false); setRestSec(0); }} style={{ background: "#1a1a1a", border: "1px solid #2a2a2a", color: "#555", borderRadius: 6, padding: "4px 10px", fontSize: 10, cursor: "pointer", fontWeight: 700 }}>STOP</button>
+              ? <button onClick={() => { clearInterval(timerRef.current); setTimerOn(false); setRestSec(0); restStartRef.current = null; }} style={{ background: "#1a1a1a", border: "1px solid #2a2a2a", color: "#555", borderRadius: 6, padding: "4px 10px", fontSize: 10, cursor: "pointer", fontWeight: 700 }}>STOP</button>
               : <button onClick={() => startTimer()} style={{ background: "linear-gradient(135deg,#ff6600,#ff3300)", border: "none", color: "#fff", borderRadius: 6, padding: "5px 10px", fontSize: 10, cursor: "pointer", fontWeight: 900 }}>GO</button>
             }
           </div>
