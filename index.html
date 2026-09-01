@@ -2773,14 +2773,23 @@ function IronTraining() {
     } catch(e) {}
   }
 
+  // restTargetRef/timerOnRef : lus depuis tickTimer et depuis le listener de
+  // visibilité, pour toujours avoir la valeur à jour même si l'interval a été
+  // créé il y a plusieurs secondes/minutes (évite les closures périmées).
+  const restTargetRef = useRef(restTarget);
+  useEffect(() => { restTargetRef.current = restTarget; }, [restTarget]);
+  const timerOnRef = useRef(false);
+
   function tickTimer() {
     if (restStartRef.current == null) return;
     const elapsed = Math.floor((Date.now() - restStartRef.current) / 1000);
-    if (elapsed >= restTarget) {
+    if (elapsed >= restTargetRef.current) {
       clearInterval(timerRef.current);
+      timerRef.current = null;
+      timerOnRef.current = false;
       setTimerOn(false);
       setTimerDone(true);
-      setRestSec(restTarget);
+      setRestSec(restTargetRef.current);
       playBeeps();
       try { if (navigator.vibrate) navigator.vibrate([120, 60, 120]); } catch(e) {}
     } else {
@@ -2788,34 +2797,36 @@ function IronTraining() {
     }
   }
 
-  useEffect(() => {
-    if (timerOn) {
-      setTimerDone(false);
-      tickTimer();
-      timerRef.current = setInterval(tickTimer, 1000);
-    }
-    return () => clearInterval(timerRef.current);
-  }, [timerOn, restTarget]);
-
+  // L'intervalle est démarré/arrêté directement par startTimer/stopTimer,
+  // jamais via un useEffect dépendant de timerOn/restTarget : si on valide une
+  // nouvelle série avec exactement le même temps de repos que la précédente
+  // (cas très courant : mêmes séries du même exercice), timerOn et restTarget
+  // ne changent pas de valeur -> un effect keyé dessus ne se redéclenche pas
+  // -> l'ancien intervalle était coupé sans qu'un nouveau ne soit recréé ->
+  // minuteur figé en silence, sans bip. C'était la cause du bug "aléatoire".
   useEffect(() => {
     function handleVisible() {
-      if (document.visibilityState === "visible" && timerOn) tickTimer();
+      if (document.visibilityState === "visible" && timerOnRef.current) tickTimer();
     }
     document.addEventListener("visibilitychange", handleVisible);
-    return () => document.removeEventListener("visibilitychange", handleVisible);
-  }, [timerOn, restTarget]);
+    return () => { document.removeEventListener("visibilitychange", handleVisible); clearInterval(timerRef.current); };
+  }, []);
 
   function startTimer(exName, setNum, duration) {
     clearInterval(timerRef.current);
     setRestSec(0);
-    if (duration) setRestTarget(duration);
+    if (duration) { setRestTarget(duration); restTargetRef.current = duration; }
     restStartRef.current = Date.now();
+    timerOnRef.current = true;
     setTimerOn(true); setTimerDone(false);
     if (exName) setLastSetInfo({ exName, setNum });
+    timerRef.current = setInterval(tickTimer, 1000);
   }
 
   function stopTimer() {
     clearInterval(timerRef.current);
+    timerRef.current = null;
+    timerOnRef.current = false;
     setTimerOn(false);
     setRestSec(0);
     restStartRef.current = null;
