@@ -1729,6 +1729,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
               ? <button onClick={() => { clearInterval(timerRef.current); setTimerOn(false); setRestSec(0); restStartRef.current = null; }} style={{ background: "#1a1a1a", border: "1px solid #2a2a2a", color: "#555", borderRadius: 6, padding: "4px 10px", fontSize: 10, cursor: "pointer", fontWeight: 700 }}>STOP</button>
               : <button onClick={() => startTimer()} style={{ background: "linear-gradient(135deg,#ff6600,#ff3300)", border: "none", color: "#fff", borderRadius: 6, padding: "5px 10px", fontSize: 10, cursor: "pointer", fontWeight: 900 }}>GO</button>
             }
+            <button onClick={() => playBeeps()} title="Tester le son" style={{ background: "#1a1a1a", border: "1px solid #2a2a2a", color: "#888", borderRadius: 6, padding: "5px 8px", fontSize: 12, cursor: "pointer" }}>🔊</button>
           </div>
         </div>
         {timerOn && (
