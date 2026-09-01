@@ -898,10 +898,9 @@ function RoutinesTab({ routines, setRoutines, onStartSession, view, setView, edi
   );
 }
 
-function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, routines, currentSets, setCurrentSets, sessionRecovered, setSessionRecovered, setTab, restSec, setRestSec, restTarget, setRestTarget, timerOn, setTimerOn, timerDone, setTimerDone, seanceStartTime, setSeanceStartTime, seanceElapsed, setSeanceElapsed }) {
+function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, routines, currentSets, setCurrentSets, sessionRecovered, setSessionRecovered, setTab, restSec, setRestSec, restTarget, setRestTarget, timerOn, setTimerOn, timerDone, setTimerDone, seanceStartTime, setSeanceStartTime, seanceElapsed, setSeanceElapsed, lastSetInfo, startTimer, stopTimer, playBeeps }) {
   const [showPicker, setShowPicker] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
-  const [lastSetInfo, setLastSetInfo] = useState(null);
   const [stagAlert, setStagAlert] = useState(null);
   const [replaceIdx, setReplaceIdx] = useState(null);
   const [showExSettings, setShowExSettings] = useState(null);
@@ -923,7 +922,6 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
     return () => clearInterval(interval);
   }, [currentSets, seanceStartTime]);
   const [toast, setToast] = useState(null);
-  const timerRef = useRef(null);
   const wakeLockRef = useRef(null);
   useEffect(() => {
     async function requestWakeLock() {
@@ -978,54 +976,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
     });
   }
 
-  const audioCtxRef = useRef(null);
-  // Débloque l'AudioContext iOS au premier touch
-  useEffect(() => {
-    function unlockAudio() {
-      if (!audioCtxRef.current) {
-        try { audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) {}
-      }
-      if (audioCtxRef.current && audioCtxRef.current.state === "suspended") {
-        audioCtxRef.current.resume().catch(() => {});
-      }
-    }
-    document.addEventListener("touchstart", unlockAudio, { once: true });
-    document.addEventListener("click", unlockAudio, { once: true });
-    // Réveille l'AudioContext quand l'app revient au premier plan
-    // (iOS/Android suspendent le contexte audio en arrière-plan/écran verrouillé,
-    // ce qui coupait le bip du minuteur de repos une fois sur deux)
-    function resumeOnForeground() {
-      if (document.visibilityState === "visible" && audioCtxRef.current && audioCtxRef.current.state === "suspended") {
-        audioCtxRef.current.resume().catch(() => {});
-      }
-    }
-    document.addEventListener("visibilitychange", resumeOnForeground);
-    window.addEventListener("focus", resumeOnForeground);
-    return () => {
-      document.removeEventListener("touchstart", unlockAudio);
-      document.removeEventListener("click", unlockAudio);
-      document.removeEventListener("visibilitychange", resumeOnForeground);
-      window.removeEventListener("focus", resumeOnForeground);
-    };
-  }, []);
 
-  function playBeeps() {
-    try {
-      const ctx = audioCtxRef.current || new (window.AudioContext || window.webkitAudioContext)();
-      if (!audioCtxRef.current) audioCtxRef.current = ctx;
-      const resume = ctx.state === "suspended" ? ctx.resume() : Promise.resolve();
-      resume.then(() => {
-        [0, 200, 400].forEach((delay, i) => {
-          const osc = ctx.createOscillator(); const gain = ctx.createGain();
-          osc.connect(gain); gain.connect(ctx.destination);
-          osc.frequency.value = i === 2 ? 1100 : 880; osc.type = "sine";
-          const t = ctx.currentTime + delay / 1000;
-          gain.gain.setValueAtTime(0.4, t); gain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
-          osc.start(t); osc.stop(t + 0.3);
-        });
-      });
-    } catch(e) {}
-  }
 
   useEffect(() => {
     if (activeRoutine) {
@@ -1092,52 +1043,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
     }
   }, [activeRoutine]);
 
-  const restStartRef = useRef(null);
-
-  function tickTimer() {
-    if (restStartRef.current == null) return;
-    const elapsed = Math.floor((Date.now() - restStartRef.current) / 1000);
-    if (elapsed >= restTarget) {
-      clearInterval(timerRef.current);
-      setTimerOn(false);
-      setTimerDone(true);
-      setRestSec(restTarget);
-      playBeeps();
-      try { if (navigator.vibrate) navigator.vibrate([120, 60, 120]); } catch(e) {}
-    } else {
-      setRestSec(elapsed);
-    }
-  }
-
-  useEffect(() => {
-    if (timerOn) {
-      setTimerDone(false);
-      // Recalcule immédiatement au cas où le timer aurait tourné en arrière-plan
-      tickTimer();
-      timerRef.current = setInterval(tickTimer, 1000);
-    }
-    return () => clearInterval(timerRef.current);
-  }, [timerOn, restTarget]);
-
-  // Resynchronise le décompte dès que l'app revient au premier plan
-  // (les navigateurs mobiles suspendent le setInterval en arrière-plan,
-  // ce qui figeait le minuteur au lieu de le laisser courir en temps réel)
-  useEffect(() => {
-    function handleVisible() {
-      if (document.visibilityState === "visible" && timerOn) tickTimer();
-    }
-    document.addEventListener("visibilitychange", handleVisible);
-    return () => document.removeEventListener("visibilitychange", handleVisible);
-  }, [timerOn, restTarget]);
-
-  function startTimer(exName, setNum, duration) {
-    clearInterval(timerRef.current);
-    setRestSec(0);
-    if (duration) setRestTarget(duration);
-    restStartRef.current = Date.now();
-    setTimerOn(true); setTimerDone(false);
-    if (exName) setLastSetInfo({ exName, setNum });
-  }
+  // Minuteur de repos géré au niveau du composant parent (persiste même si on change d'onglet)
 
   function checkStagnation(exName, newSets) {
     // Pas d'analyse stagnation sur séries longues (30-50 reps) — 1RM instable
@@ -1726,7 +1632,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
             <div style={{ fontSize: 11, color: "#888", fontFamily: "monospace", minWidth: 34, textAlign: "center" }}>{Math.floor(restTarget/60)}:{String(restTarget%60).padStart(2,"0")}</div>
             <button onClick={() => setRestTarget(t => Math.min(300, t + 15))} style={{ background: "#1a1a1a", border: "1px solid #2a2a2a", color: "#888", borderRadius: 6, padding: "10px 16px", fontSize: 14, cursor: "pointer", fontWeight: 900 }}>+15</button>
             {timerOn
-              ? <button onClick={() => { clearInterval(timerRef.current); setTimerOn(false); setRestSec(0); restStartRef.current = null; }} style={{ background: "#1a1a1a", border: "1px solid #2a2a2a", color: "#555", borderRadius: 6, padding: "4px 10px", fontSize: 10, cursor: "pointer", fontWeight: 700 }}>STOP</button>
+              ? <button onClick={stopTimer} style={{ background: "#1a1a1a", border: "1px solid #2a2a2a", color: "#555", borderRadius: 6, padding: "4px 10px", fontSize: 10, cursor: "pointer", fontWeight: 700 }}>STOP</button>
               : <button onClick={() => startTimer()} style={{ background: "linear-gradient(135deg,#ff6600,#ff3300)", border: "none", color: "#fff", borderRadius: 6, padding: "5px 10px", fontSize: 10, cursor: "pointer", fontWeight: 900 }}>GO</button>
             }
             <button onClick={() => playBeeps()} title="Tester le son" style={{ background: "#1a1a1a", border: "1px solid #2a2a2a", color: "#888", borderRadius: 6, padding: "5px 8px", fontSize: 12, cursor: "pointer" }}>🔊</button>
@@ -2813,6 +2719,108 @@ function IronTraining() {
   const [restTarget, setRestTarget] = useState(105);
   const [timerOn, setTimerOn] = useState(false);
   const [timerDone, setTimerDone] = useState(false);
+  const [lastSetInfo, setLastSetInfo] = useState(null);
+
+  // ── Minuteur de repos + son : gérés ici (composant toujours monté) plutôt que
+  // dans SessionTab, qui se démonte à chaque changement d'onglet — sinon le
+  // décompte et le bip s'interrompaient silencieusement dès qu'on quittait
+  // l'onglet Séance pendant le repos.
+  const timerRef = useRef(null);
+  const restStartRef = useRef(null);
+  const audioCtxRef = useRef(null);
+
+  useEffect(() => {
+    function unlockAudio() {
+      if (!audioCtxRef.current) {
+        try { audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) {}
+      }
+      if (audioCtxRef.current && audioCtxRef.current.state === "suspended") {
+        audioCtxRef.current.resume().catch(() => {});
+      }
+    }
+    document.addEventListener("touchstart", unlockAudio, { once: true });
+    document.addEventListener("click", unlockAudio, { once: true });
+    function resumeOnForeground() {
+      if (document.visibilityState === "visible" && audioCtxRef.current && audioCtxRef.current.state === "suspended") {
+        audioCtxRef.current.resume().catch(() => {});
+      }
+    }
+    document.addEventListener("visibilitychange", resumeOnForeground);
+    window.addEventListener("focus", resumeOnForeground);
+    return () => {
+      document.removeEventListener("touchstart", unlockAudio);
+      document.removeEventListener("click", unlockAudio);
+      document.removeEventListener("visibilitychange", resumeOnForeground);
+      window.removeEventListener("focus", resumeOnForeground);
+    };
+  }, []);
+
+  function playBeeps() {
+    try {
+      const ctx = audioCtxRef.current || new (window.AudioContext || window.webkitAudioContext)();
+      if (!audioCtxRef.current) audioCtxRef.current = ctx;
+      const resume = ctx.state === "suspended" ? ctx.resume() : Promise.resolve();
+      resume.then(() => {
+        [0, 200, 400].forEach((delay, i) => {
+          const osc = ctx.createOscillator(); const gain = ctx.createGain();
+          osc.connect(gain); gain.connect(ctx.destination);
+          osc.frequency.value = i === 2 ? 1100 : 880; osc.type = "sine";
+          const t = ctx.currentTime + delay / 1000;
+          gain.gain.setValueAtTime(0.4, t); gain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+          osc.start(t); osc.stop(t + 0.3);
+        });
+      });
+    } catch(e) {}
+  }
+
+  function tickTimer() {
+    if (restStartRef.current == null) return;
+    const elapsed = Math.floor((Date.now() - restStartRef.current) / 1000);
+    if (elapsed >= restTarget) {
+      clearInterval(timerRef.current);
+      setTimerOn(false);
+      setTimerDone(true);
+      setRestSec(restTarget);
+      playBeeps();
+      try { if (navigator.vibrate) navigator.vibrate([120, 60, 120]); } catch(e) {}
+    } else {
+      setRestSec(elapsed);
+    }
+  }
+
+  useEffect(() => {
+    if (timerOn) {
+      setTimerDone(false);
+      tickTimer();
+      timerRef.current = setInterval(tickTimer, 1000);
+    }
+    return () => clearInterval(timerRef.current);
+  }, [timerOn, restTarget]);
+
+  useEffect(() => {
+    function handleVisible() {
+      if (document.visibilityState === "visible" && timerOn) tickTimer();
+    }
+    document.addEventListener("visibilitychange", handleVisible);
+    return () => document.removeEventListener("visibilitychange", handleVisible);
+  }, [timerOn, restTarget]);
+
+  function startTimer(exName, setNum, duration) {
+    clearInterval(timerRef.current);
+    setRestSec(0);
+    if (duration) setRestTarget(duration);
+    restStartRef.current = Date.now();
+    setTimerOn(true); setTimerDone(false);
+    if (exName) setLastSetInfo({ exName, setNum });
+  }
+
+  function stopTimer() {
+    clearInterval(timerRef.current);
+    setTimerOn(false);
+    setRestSec(0);
+    restStartRef.current = null;
+  }
+
   const [seanceStartTime, setSeanceStartTime] = useState(null);
   const [seanceElapsed, setSeanceElapsed] = useState(0);
   const [currentSets, setCurrentSets] = useState(() => {
@@ -3184,7 +3192,7 @@ function exportData() {
       <div>
         {tab === "home"     && <HomeTab sessions={sessions} currentSets={currentSets} setTab={setTab} fatigue={fatigue} />}
         {tab === "routines" && <RoutinesTab routines={routines} setRoutines={setRoutines} onStartSession={handleStartSession} view={routineView} setView={setRoutineView} editing={routineEditing} setEditing={setRoutineEditing} />}
-        {tab === "session"  && <SessionTab sessions={sessions} setSessions={setSessions} activeRoutine={activeRoutine} setActiveRoutine={setActiveRoutine} routines={routines} currentSets={currentSets} setCurrentSets={setCurrentSets} sessionRecovered={sessionRecovered} setSessionRecovered={setSessionRecovered} setTab={setTab} restSec={restSec} setRestSec={setRestSec} restTarget={restTarget} setRestTarget={setRestTarget} timerOn={timerOn} setTimerOn={setTimerOn} timerDone={timerDone} setTimerDone={setTimerDone} seanceStartTime={seanceStartTime} setSeanceStartTime={setSeanceStartTime} seanceElapsed={seanceElapsed} setSeanceElapsed={setSeanceElapsed} />}
+        {tab === "session"  && <SessionTab sessions={sessions} setSessions={setSessions} activeRoutine={activeRoutine} setActiveRoutine={setActiveRoutine} routines={routines} currentSets={currentSets} setCurrentSets={setCurrentSets} sessionRecovered={sessionRecovered} setSessionRecovered={setSessionRecovered} setTab={setTab} restSec={restSec} setRestSec={setRestSec} restTarget={restTarget} setRestTarget={setRestTarget} timerOn={timerOn} setTimerOn={setTimerOn} timerDone={timerDone} setTimerDone={setTimerDone} seanceStartTime={seanceStartTime} setSeanceStartTime={setSeanceStartTime} seanceElapsed={seanceElapsed} setSeanceElapsed={setSeanceElapsed} lastSetInfo={lastSetInfo} startTimer={startTimer} stopTimer={stopTimer} playBeeps={playBeeps} />}
         {tab === "progress" && (window._isPremium && window._isPremium() ? <ProgressTab sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Indicateurs de progression</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><div style={{display:"flex",flexDirection:"column",gap:10,alignItems:"center"}}><div style={{display:"flex",gap:8}}><button onClick={() => window.startCheckout('monthly')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 20px",fontSize:13,fontWeight:700,cursor:"pointer"}}>4,99€/mois</button><button onClick={() => window.startCheckout('yearly')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 20px",fontSize:13,fontWeight:700,cursor:"pointer"}}>39,99€/an</button></div><div style={{fontSize:11,color:"#888"}}>ou <span onClick={() => window.startPackCheckout('monthly')} style={{color:"#ff4c00",fontWeight:700,cursor:"pointer",textDecoration:"underline"}}>débloquer les 3 apps (Pack 9,99€/mois)</span></div></div></div>)}
         {tab === "bilan"    && (window._isPremium && window._isPremium() ? <BilanTab fatigue={fatigue} setFatigue={setFatigue} sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Bilan mensuel & cycle</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><div style={{display:"flex",flexDirection:"column",gap:10,alignItems:"center"}}><div style={{display:"flex",gap:8}}><button onClick={() => window.startCheckout('monthly')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 20px",fontSize:13,fontWeight:700,cursor:"pointer"}}>4,99€/mois</button><button onClick={() => window.startCheckout('yearly')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 20px",fontSize:13,fontWeight:700,cursor:"pointer"}}>39,99€/an</button></div><div style={{fontSize:11,color:"#888"}}>ou <span onClick={() => window.startPackCheckout('monthly')} style={{color:"#ff4c00",fontWeight:700,cursor:"pointer",textDecoration:"underline"}}>débloquer les 3 apps (Pack 9,99€/mois)</span></div></div></div>)}
         {tab === "supps"    && <SupplTab supps={supps} setSupps={setSupps} />}
