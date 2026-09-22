@@ -365,15 +365,16 @@ async function _applyPromoCode(code) {
 
 async function autoBackup(sessions, routines, cycle, supps, fatigue) {
   try {
+    if (!currentUser || !supabase) return;
     var deviceId = (function() {
       var id = localStorage.getItem('tt_device_id');
       if (!id) { id = 'dev_' + Date.now() + '_' + Math.random().toString(36).substr(2,9); localStorage.setItem('tt_device_id', id); }
       return id;
     })();
-    await fetch(SB_URL + '/rest/v1/backups', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Prefer': 'resolution=merge-duplicates' },
-      body: JSON.stringify({ device_id: deviceId, sessions: sessions || [], routines: routines || null, cycle: cycle || null, supps: supps || null, fatigue: fatigue || null, backed_up_at: new Date().toISOString() })
+    // Le POST direct vers /rest/v1/backups est bloqué par RLS — passage par
+    // l'Edge Function training-backup (JWT), seule modification de ce patch.
+    await supabase.functions.invoke('training-backup', {
+      body: { device_id: deviceId, sessions: sessions || [], routines: routines || null, cycle: cycle || null, supps: supps || null, fatigue: fatigue || null }
     });
   } catch(e) {}
 }
