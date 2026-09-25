@@ -159,10 +159,18 @@ const DB = {
 };
 const ALL_EXERCISES = Object.values(DB).flat();
 var _customEx = [];
-try { _customEx = JSON.parse(localStorage.getItem("it3_customEx") || "[]"); } catch(e) {}
+try { _customEx = JSON.parse(lsGetNs("it3_customEx") || "[]"); } catch(e) {}
 var CUSTOM_EXERCISES = _customEx;
 function saveCustomEx() {
-  try { localStorage.setItem("it3_customEx", JSON.stringify(CUSTOM_EXERCISES)); } catch(e) {}
+  try { lsSetNs("it3_customEx", JSON.stringify(CUSTOM_EXERCISES)); } catch(e) {}
+}
+function reloadCustomEx() {
+  try {
+    var v = lsGetNs("it3_customEx");
+    var arr = v ? JSON.parse(v) : [];
+    CUSTOM_EXERCISES.length = 0;
+    Array.prototype.push.apply(CUSTOM_EXERCISES, arr);
+  } catch(e) {}
 }
 function addCustomExercise(name) {
   var n = name.trim();
@@ -250,6 +258,39 @@ var currentUser = null;
 var userProfile = null;
 var _sbInited = false;
 
+// ============================================================
+// ISOLATION DES DONNEES LOCALES PAR COMPTE (namespacing localStorage)
+// ============================================================
+function nsKey(base) {
+  return (currentUser && currentUser.id) ? (base + "_u_" + currentUser.id) : base;
+}
+function lsGetNs(base) {
+  try { return localStorage.getItem(nsKey(base)); } catch(e) { return null; }
+}
+function lsSetNs(base, value) {
+  try { localStorage.setItem(nsKey(base), value); } catch(e) {}
+}
+function lsRemoveNs(base) {
+  try { localStorage.removeItem(nsKey(base)); } catch(e) {}
+}
+
+// Migration legacy : uniquement pour le compte historique ddenis01@free.fr
+var LEGACY_USER_ID = "00e6db68-34dd-4f97-afea-1a91eef02886";
+var LEGACY_KEYS = ["it3_sessions","it3_routines","it3_fatigue","it3_cycle","it3_supps","it3_customEx","it3_current_session","it3_prog_version","it3_sns_reset"];
+function migrateLegacyDataForUser(userId) {
+  if (userId !== LEGACY_USER_ID) return;
+  if (localStorage.getItem("it3_legacy_migrated")) return;
+  try {
+    LEGACY_KEYS.forEach(function(base) {
+      var nsK = nsKey(base);
+      if (localStorage.getItem(nsK) !== null) return; // ne pas ecraser une donnee namespaced existante
+      var legacyVal = localStorage.getItem(base);
+      if (legacyVal !== null) localStorage.setItem(nsK, legacyVal); // copie, sans supprimer la cle legacy
+    });
+    localStorage.setItem("it3_legacy_migrated", "1");
+  } catch(e) {}
+}
+
 function initSupabase() {
   if (_sbInited) return;
   _sbInited = true;
@@ -262,6 +303,8 @@ function initSupabase() {
       supabase.auth.onAuthStateChange(async function(event, session) {
         if (session && session.user) {
           currentUser = session.user;
+          migrateLegacyDataForUser(session.user.id);
+          if (typeof reloadCustomEx === "function") reloadCustomEx();
           await _loadProfile(session.user.id, session.user.email);
           if (window.location.search.includes('payment=success')) { await _activateTrainingPremium(); }
           _hideAuthScreen();
@@ -479,10 +522,10 @@ function normalizeSessions(sessions) {
 }
 
 const KEYS = { routines: "it3_routines", sessions: "it3_sessions", fatigue: "it3_fatigue", cycle: "it3_cycle", supps: "it3_supps", customEx: "it3_customEx" };
-function load(k) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : null; } catch(e) { return null; } }
+function load(k) { try { const v = lsGetNs(k); return v ? JSON.parse(v) : null; } catch(e) { return null; } }
 function save(k, v) {
   try {
-    localStorage.setItem(k, JSON.stringify(v));
+    lsSetNs(k, JSON.stringify(v));
   } catch(e) {
     if (e.name === "QuotaExceededError" || e.code === 22) {
       alert("Stockage plein ! Exportez vos données via DATA puis supprimez les anciennes séances.");
@@ -1027,7 +1070,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
       const recovColor = { optimal: "#00C853", bon: "#4FC3F7", moyen: "#FFD600", insuffisant: "#FF4444" }[recovScore];
 
       // Adaptation dynamique SNS — lire depuis localStorage
-      const snsScore = Object.values((function(){ try{ return JSON.parse(localStorage.getItem("it3_fatigue")||"{}"); }catch(e){return{};} })()).reduce((a,b)=>a+(parseInt(b)||0),0);
+      const snsScore = Object.values((function(){ try{ return JSON.parse(lsGetNs("it3_fatigue")||"{}"); }catch(e){return{};} })()).reduce((a,b)=>a+(parseInt(b)||0),0);
       if (snsScore >= 8) {
         setAdaptModal({
           score: snsScore,
@@ -1078,7 +1121,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
         )
       };
       // Auto-save en cours de séance pour ne pas perdre les données
-      try { localStorage.setItem("it3_current_session", JSON.stringify(updated)); } catch(e) {}
+      try { lsSetNs("it3_current_session", JSON.stringify(updated)); } catch(e) {}
       return updated;
     });
     // Analyse post-sauvegarde uniquement
@@ -1217,7 +1260,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
     const updated = [...sessions, session];
     setSessions(updated);
     save(KEYS.sessions, updated);
-    try { localStorage.removeItem("it3_current_session"); setSessionRecovered(false); } catch(e) {}
+    try { lsRemoveNs("it3_current_session"); setSessionRecovered(false); } catch(e) {}
     // Sauvegarde automatique cloud
     autoBackup(updated, load(KEYS.routines), load(KEYS.cycle), load(KEYS.supps), load(KEYS.fatigue));
 
@@ -2670,16 +2713,16 @@ function IronTraining() {
       const rawRoutines = load(KEYS.routines) || [];
       const hasCorrupt = rawRoutines.some(r => !r || !r.name || !r.exercises || !Array.isArray(r.exercises));
       if (hasCorrupt) {
-        localStorage.removeItem(KEYS.routines);
-        localStorage.removeItem("it3_prog_version");
+        lsRemoveNs(KEYS.routines);
+        lsRemoveNs("it3_prog_version");
       }
-      const savedVersion = localStorage.getItem("it3_prog_version");
-      const saved = JSON.parse(localStorage.getItem(KEYS.routines));
+      const savedVersion = lsGetNs("it3_prog_version");
+      const saved = JSON.parse(lsGetNs(KEYS.routines));
       if (saved && saved.length > 0 && savedVersion === PROG_VERSION) return saved;
     } catch(e) {}
     const fresh = PROGRAMME.map(p => ({ id: p.id, name: p.name, day: p.day, color: p.color, exercises: p.exercises.map(ex => ({ name: ex.name, sets: ex.sets, repsTarget: ex.repsTarget, note: ex.note, rest: ex.rest || 90, warmupSets: ex.warmupSets || 0, warmupLabel: ex.warmupLabel || "" })) }));
     save(KEYS.routines, fresh);
-    localStorage.setItem("it3_prog_version", PROG_VERSION);
+    lsSetNs("it3_prog_version", PROG_VERSION);
     return fresh;
   };
 
@@ -2703,14 +2746,14 @@ function IronTraining() {
   });
   const [fatigue, setFatigue] = useState(() => {
     const saved = load(KEYS.fatigue) || { sleep: 0, appetite: 0, motivation: 0, repLoss: 0, techDegrades: 0, heavyFeel: 0 };
-    const lastReset = localStorage.getItem("it3_sns_reset");
+    const lastReset = lsGetNs("it3_sns_reset");
     const now = new Date();
     const dayOfWeek = now.getDay(); // 0=dim, 1=lun
     const monday = new Date(now); monday.setDate(now.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
     const mondayStr = monday.toISOString().split("T")[0];
     if (lastReset !== mondayStr) {
       const fresh = { sleep: 0, appetite: 0, motivation: 0, repLoss: 0, techDegrades: 0, heavyFeel: 0 };
-      save(KEYS.fatigue, fresh); localStorage.setItem("it3_sns_reset", mondayStr);
+      save(KEYS.fatigue, fresh); lsSetNs("it3_sns_reset", mondayStr);
       return fresh;
     }
     return saved;
@@ -2837,16 +2880,16 @@ function IronTraining() {
   const [seanceElapsed, setSeanceElapsed] = useState(0);
   const [currentSets, setCurrentSets] = useState(() => {
     try {
-      const v = localStorage.getItem("it3_current_session");
+      const v = lsGetNs("it3_current_session");
       if (!v) return null;
       const p = JSON.parse(v);
-      if (!p || !Array.isArray(p.exercises)) { localStorage.removeItem("it3_current_session"); return null; }
+      if (!p || !Array.isArray(p.exercises)) { lsRemoveNs("it3_current_session"); return null; }
       // Nettoyer les exercices corrompus
       p.exercises = p.exercises.filter(e => e && e.name && Array.isArray(e.sets));
       return p;
-    } catch(e) { localStorage.removeItem("it3_current_session"); return null; }
+    } catch(e) { lsRemoveNs("it3_current_session"); return null; }
   });
-  const [sessionRecovered, setSessionRecovered] = useState(() => { try { return !!localStorage.getItem("it3_current_session"); } catch(e) { return false; } });
+  const [sessionRecovered, setSessionRecovered] = useState(() => { try { return !!lsGetNs("it3_current_session"); } catch(e) { return false; } });
   const [routineView, setRoutineView] = useState("list");
   const [routineEditing, setRoutineEditing] = useState(null);
 
@@ -3031,7 +3074,7 @@ function exportData() {
           if (!routines.length) { alert("Aucune seance trouvee dans le CSV."); return; }
           if (!confirm(routines.length + " seance(s) trouvee(s). Remplacer les routines ?")) return;
           setRoutines(routines); save(KEYS.routines, routines);
-          localStorage.setItem("it3_prog_version", "imported-" + Date.now());
+          lsSetNs("it3_prog_version", "imported-" + Date.now());
           alert("Import CSV OK : " + routines.length + " routine(s) creee(s).");
           setShowDataMenu(false);
         } catch(err) { alert("Erreur CSV : " + err.message); }
@@ -3049,7 +3092,7 @@ function exportData() {
           if (!routines.length) { alert("Aucune seance trouvee dans le fichier Excel."); return; }
           if (!confirm(routines.length + " seance(s) trouvee(s). Remplacer les routines ?")) return;
           setRoutines(routines); save(KEYS.routines, routines);
-          localStorage.setItem("it3_prog_version", "imported-" + Date.now());
+          lsSetNs("it3_prog_version", "imported-" + Date.now());
           alert("Import Excel OK : " + routines.length + " routine(s) creee(s).");
           setShowDataMenu(false);
         } catch(err) { alert("Erreur Excel : " + err.message); }
@@ -3189,7 +3232,7 @@ function exportData() {
             </button>
             <button onClick={() => {
               if (confirm("Réparer l'app ? Les routines seront réinitialisées, vos séances sont conservées.")) {
-                ["it3_current_session","it3_prog_version",KEYS.routines].forEach(k => { try { localStorage.removeItem(k); } catch(e) {} });
+                ["it3_current_session","it3_prog_version",KEYS.routines].forEach(k => { try { lsRemoveNs(k); } catch(e) {} });
                 window.location.reload();
               }
             }} style={{ width: "100%", background: "#1a1000", border: "1px solid #333300", color: "#FFD600", borderRadius: 10, padding: "12px", fontSize: 12, fontWeight: 700, cursor: "pointer", marginBottom: 6, marginTop: 10 }}>
