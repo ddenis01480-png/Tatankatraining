@@ -301,6 +301,10 @@ function initSupabase() {
     try {
       supabase = window.supabase.createClient(SB_URL, SB_KEY);
       supabase.auth.onAuthStateChange(async function(event, session) {
+        // Reinitialise la garde anti-boucle au demarrage (INITIAL_SESSION), avant tout reload eventuel.
+        if (event === 'INITIAL_SESSION') {
+          try { sessionStorage.removeItem('it3_signout_reload_guard'); } catch(e) {}
+        }
         if (session && session.user) {
           currentUser = session.user;
           migrateLegacyDataForUser(session.user.id);
@@ -309,10 +313,37 @@ function initSupabase() {
           if (window.location.search.includes('payment=success')) { await _activateTrainingPremium(); }
           _hideAuthScreen();
           _syncFromCloud();
+
+          // Recharge la page uniquement si l'identite connectee change reellement
+          // (jamais sur INITIAL_SESSION ni TOKEN_REFRESHED).
+          if (event === 'SIGNED_IN') {
+            var lastUid = null;
+            try { lastUid = localStorage.getItem('it3_loaded_uid'); } catch(e) {}
+            if (lastUid !== session.user.id) {
+              try { localStorage.setItem('it3_loaded_uid', session.user.id); } catch(e) {}
+              window.location.reload();
+              return;
+            }
+          } else {
+            try { localStorage.setItem('it3_loaded_uid', session.user.id); } catch(e) {}
+          }
         } else {
           currentUser = null;
           userProfile = null;
           _showAuthScreen();
+
+          // Recharge une seule fois apres deconnexion, avec garde anti-boucle.
+          if (event === 'SIGNED_OUT') {
+            var guarded = false;
+            try { guarded = sessionStorage.getItem('it3_signout_reload_guard') === '1'; } catch(e) {}
+            if (!guarded) {
+              try {
+                sessionStorage.setItem('it3_signout_reload_guard', '1');
+                localStorage.removeItem('it3_loaded_uid');
+              } catch(e) {}
+              window.location.reload();
+            }
+          }
         }
       });
     } catch(e) { console.error('Supabase init error:', e); }
