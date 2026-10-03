@@ -264,14 +264,22 @@ var _sbInited = false;
 function nsKey(base) {
   return (currentUser && currentUser.id) ? (base + "_u_" + currentUser.id) : base;
 }
+// uid dont les donnees sont actuellement chargees dans l'etat React (null tant qu'aucune hydratation).
+var _stateUid = null;
+// Ecriture autorisee seulement si l'identite est connue ET que l'etat React appartient a cet utilisateur :
+// jamais de sauvegarde depuis un etat charge avant l'identification (ou appartenant a un autre compte).
+function _canWriteUserData() {
+  return !!(currentUser && currentUser.id && _stateUid === currentUser.id);
+}
+// Sans identite, la cle legacy n'est JAMAIS une source de verite : on ne lit rien.
 function lsGetNs(base) {
-  try { return localStorage.getItem(nsKey(base)); } catch(e) { return null; }
+  try { return (currentUser && currentUser.id) ? localStorage.getItem(nsKey(base)) : null; } catch(e) { return null; }
 }
 function lsSetNs(base, value) {
-  try { localStorage.setItem(nsKey(base), value); } catch(e) {}
+  try { if (!_canWriteUserData()) return; localStorage.setItem(nsKey(base), value); } catch(e) {}
 }
 function lsRemoveNs(base) {
-  try { localStorage.removeItem(nsKey(base)); } catch(e) {}
+  try { if (!_canWriteUserData()) return; localStorage.removeItem(nsKey(base)); } catch(e) {}
 }
 
 // Migration legacy : uniquement pour le compte historique ddenis01@free.fr
@@ -308,6 +316,7 @@ function initSupabase() {
         if (session && session.user) {
           currentUser = session.user;
           migrateLegacyDataForUser(session.user.id);
+          if (typeof window._hydrateUserState === "function") window._hydrateUserState();
           if (typeof reloadCustomEx === "function") reloadCustomEx();
           await _loadProfile(session.user.id, session.user.email);
           if (window.location.search.includes('payment=success')) { await _activateTrainingPremium(); }
@@ -329,6 +338,7 @@ function initSupabase() {
           }
         } else {
           currentUser = null;
+          _stateUid = null;
           userProfile = null;
           _showAuthScreen();
 
@@ -439,7 +449,7 @@ async function _applyPromoCode(code) {
 
 async function autoBackup(sessions, routines, cycle, supps, fatigue) {
   try {
-    if (!currentUser || !supabase) return;
+    if (!currentUser || !supabase || !_canWriteUserData()) return;
     var deviceId = (function() {
       var id = localStorage.getItem('tt_device_id');
       if (!id) { id = 'dev_' + Date.now() + '_' + Math.random().toString(36).substr(2,9); localStorage.setItem('tt_device_id', id); }
@@ -2731,8 +2741,11 @@ function BilanTab({ fatigue, setFatigue, sessions }) {
 }
 
 function IronTraining() {
+  // Si l'identite est deja connue au premier rendu, l'etat initial lui appartient.
+  if (_stateUid === null && currentUser && currentUser.id) _stateUid = currentUser.id;
   const [tab, setTab] = useState("home");
-  const [supps, setSupps] = useState(() => { try { return load(KEYS.supps) || []; } catch(e) { return []; } });
+  const readSuppsState = () => { try { return load(KEYS.supps) || []; } catch(e) { return []; } };
+  const [supps, setSupps] = useState(readSuppsState);
   const [showDataMenu, setShowDataMenu] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const importRef = useRef(null);
@@ -2758,7 +2771,7 @@ function IronTraining() {
   };
 
   const [routines, setRoutines] = useState(initRoutines);
-  const [sessions, setSessions] = useState(() => {
+  const readSessionsState = () => {
     try {
       const raw = load(KEYS.sessions) || [];
       return normalizeSessions(raw.filter(s => s && s.date && Array.isArray(s.exercises)).map(s => ({
@@ -2774,8 +2787,9 @@ function IronTraining() {
         }))
       })));
     } catch(e) { return []; }
-  });
-  const [fatigue, setFatigue] = useState(() => {
+  };
+  const [sessions, setSessions] = useState(readSessionsState);
+  const readFatigueState = () => {
     const saved = load(KEYS.fatigue) || { sleep: 0, appetite: 0, motivation: 0, repLoss: 0, techDegrades: 0, heavyFeel: 0 };
     const lastReset = lsGetNs("it3_sns_reset");
     const now = new Date();
@@ -2788,7 +2802,8 @@ function IronTraining() {
       return fresh;
     }
     return saved;
-  });
+  };
+  const [fatigue, setFatigue] = useState(readFatigueState);
   const [activeRoutine, setActiveRoutine] = useState(null);
   const [restSec, setRestSec] = useState(0);
   const [restTarget, setRestTarget] = useState(105);
@@ -2909,7 +2924,7 @@ function IronTraining() {
 
   const [seanceStartTime, setSeanceStartTime] = useState(null);
   const [seanceElapsed, setSeanceElapsed] = useState(0);
-  const [currentSets, setCurrentSets] = useState(() => {
+  const readCurrentSets = () => {
     try {
       const v = lsGetNs("it3_current_session");
       if (!v) return null;
@@ -2919,10 +2934,34 @@ function IronTraining() {
       p.exercises = p.exercises.filter(e => e && e.name && Array.isArray(e.sets));
       return p;
     } catch(e) { lsRemoveNs("it3_current_session"); return null; }
-  });
+  };
+  const [currentSets, setCurrentSets] = useState(readCurrentSets);
   const [sessionRecovered, setSessionRecovered] = useState(() => { try { return !!lsGetNs("it3_current_session"); } catch(e) { return false; } });
   const [routineView, setRoutineView] = useState("list");
   const [routineEditing, setRoutineEditing] = useState(null);
+
+  // Hydratation : relit depuis le namespace de l'utilisateur des que l'identite est connue
+  // (ou change). Ne fait que lire puis mettre a jour l'etat : aucune ecriture de valeur vide.
+  // Le cycle n'est pas un etat React : il est relu depuis le namespace a chaque rendu.
+  function hydrateUserState() {
+    if (!currentUser || !currentUser.id) return;
+    const uid = currentUser.id;
+    if (_stateUid === uid) return; // deja charge pour cet utilisateur
+    const switched = _stateUid !== null; // changement de compte dans la meme page
+    _stateUid = uid;
+    setSessions(readSessionsState());
+    setRoutines(initRoutines());
+    setFatigue(readFatigueState());
+    setSupps(readSuppsState());
+    const cs = readCurrentSets();
+    setCurrentSets(prev => (switched ? cs : (prev || cs)));
+    setSessionRecovered(!!cs);
+  }
+  useEffect(() => {
+    window._hydrateUserState = hydrateUserState;
+    hydrateUserState();
+    return () => { if (window._hydrateUserState === hydrateUserState) delete window._hydrateUserState; };
+  }, []);
 
   useEffect(() => { save(KEYS.routines, routines); }, [routines]);
 
