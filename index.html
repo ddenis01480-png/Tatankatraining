@@ -319,6 +319,7 @@ function initSupabase() {
           if (typeof window._hydrateUserState === "function") window._hydrateUserState();
           if (typeof reloadCustomEx === "function") reloadCustomEx();
           await _loadProfile(session.user.id, session.user.email);
+          _refreshCoach();
           if (window.location.search.includes('payment=success')) { await _activateTrainingPremium(); }
           _hideAuthScreen();
           _syncFromCloud();
@@ -340,6 +341,7 @@ function initSupabase() {
           currentUser = null;
           _stateUid = null;
           userProfile = null;
+          window._coach = resolveCoach(null, null);
           _showAuthScreen();
 
           // Recharge une seule fois apres deconnexion, avec garde anti-boucle.
@@ -379,6 +381,73 @@ function _isPremium() {
     if (!userProfile.promo_expires_at || new Date(userProfile.promo_expires_at) > new Date()) return true;
   }
   return false;
+}
+
+// ── Droits et versions du Coach ─────────────────────────────────────────────
+// Deux notions DISTINCTES : le PLAN (free / premium / premium_plus = ce qui est paye) et le CANAL du Coach
+// (stable / lab = quel moteur tourne). Le canal et le plan sont ecrits uniquement cote serveur (voir supabase/002).
+// Regle fail-safe : tout cas anormal (profil absent, flags absents, erreur reseau, valeur inconnue) => Coach V1.
+var _PLAN_RANKS = ['free', 'premium', 'premium_plus'];
+function _planRank(x) { var i = _PLAN_RANKS.indexOf(x); return i; } // -1 si inconnu
+function planOf(profile) {
+  var rank = 0;
+  try {
+    if (profile && typeof profile === 'object') {
+      var r = _planRank(profile.plan); if (r > rank) rank = r;
+      // Abonnements existants (colonnes historiques) => au moins "premium", comme _isPremium()
+      var legacy = !!(profile.premium_training || profile.pack);
+      if (!legacy && profile.promo) legacy = !profile.promo_expires_at || new Date(profile.promo_expires_at) > new Date();
+      if (legacy && rank < 1) rank = 1;
+    }
+  } catch(e) {}
+  return _PLAN_RANKS[rank];
+}
+// Point unique de decision. Fonction pure. flags = { cle: { state: 'off'|'lab'|'published', min_plan } }.
+// off => personne ; lab => canal lab uniquement ; published => canal lab, ou plan >= min_plan.
+function resolveCoach(profile, flags) {
+  var safe = { engine: 'v1', channel: 'stable', plan: 'free', features: {} };
+  try {
+    if (!profile || typeof profile !== 'object') return safe;
+    var channel = profile.coach_channel === 'lab' ? 'lab' : 'stable';
+    var plan = planOf(profile);
+    var out = { engine: 'v1', channel: channel, plan: plan, features: {} };
+    if (!flags || typeof flags !== 'object') return out;
+    Object.keys(flags).forEach(function(k) {
+      var f = flags[k]; if (!f || typeof f !== 'object') return;
+      var on = false;
+      if (f.state === 'lab') on = channel === 'lab';
+      else if (f.state === 'published') {
+        var need = _planRank(f.min_plan);
+        on = channel === 'lab' || (need >= 0 && _planRank(plan) >= need);
+      }
+      if (on) out.features[k] = true;
+    });
+    if (out.features.coach_v2 === true) out.engine = 'v2';
+    return out;
+  } catch(e) { return safe; }
+}
+window._coach = resolveCoach(null, null);
+async function _loadFlags() {
+  var map = {};
+  try {
+    if (!supabase) return map;
+    var res = await Promise.race([
+      supabase.from('feature_flags').select('key,state,min_plan'),
+      new Promise(function(resolve) { setTimeout(function() { resolve(null); }, 4000); })
+    ]);
+    if (res && !res.error && Array.isArray(res.data)) {
+      res.data.forEach(function(f) { if (f && typeof f.key === 'string') map[f.key] = { state: f.state, min_plan: f.min_plan }; });
+    }
+  } catch(e) {}
+  return map;
+}
+// Ne bloque jamais le demarrage (appelee sans await) ; ignore le resultat si le compte a change entre-temps.
+async function _refreshCoach() {
+  var uid = currentUser && currentUser.id;
+  var flags = await _loadFlags();
+  if (!currentUser || currentUser.id !== uid) { window._coach = resolveCoach(null, null); return; }
+  window._featureFlags = flags;
+  window._coach = resolveCoach(userProfile, flags);
 }
 
 async function _activateTrainingPremium(){
@@ -434,16 +503,12 @@ async function _doSignOut() {
 
 async function _applyPromoCode(code) {
   if (!currentUser) throw new Error('Connecte-toi d abord');
-  var r = await fetch(SB_URL + '/rest/v1/promo_codes?code=eq.' + encodeURIComponent(code.toUpperCase()) + '&active=eq.true&select=*', {
-    headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY }
-  });
-  var promos = r.ok ? await r.json() : null;
-  if (!promos || !promos[0]) throw new Error('Code invalide ou expiré');
-  var p = promos[0];
-  if (p.email.toLowerCase() !== currentUser.email.toLowerCase()) throw new Error("Ce code n'est pas lié à cet email");
-  if (p.expires_at && new Date(p.expires_at) < new Date()) throw new Error('Code expiré');
-  await supabase.from('profiles').upsert({ id: currentUser.id, email: currentUser.email.toLowerCase(), promo: true, promo_expires_at: p.expires_at || null });
-  userProfile = { ...userProfile, promo: true, promo_expires_at: p.expires_at || null };
+  if (!supabase) throw new Error('Service indisponible');
+  // Validation (code, email, expiration) et activation faites cote serveur : le navigateur n'ecrit plus promo.
+  var r = await supabase.rpc('apply_promo', { p_code: String(code || '') });
+  if (r.error) throw new Error(r.error.message || 'Code invalide ou expiré');
+  var d = r.data || {};
+  userProfile = { ...userProfile, promo: true, promo_expires_at: d.promo_expires_at || null };
   return true;
 }
 
