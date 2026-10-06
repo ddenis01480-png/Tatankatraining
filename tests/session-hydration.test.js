@@ -16,7 +16,7 @@ function fnSrc(sig) {
   let d = 0;
   for (let p = SRC.indexOf('{', i); p < SRC.length; p++) { if (SRC[p] === '{') d++; if (SRC[p] === '}' && --d === 0) return SRC.slice(i, p + 1); }
 }
-const COACH_BLOCK = (() => { const a = SRC.indexOf('var _PLAN_RANKS'); if (a < 0) return ''; return SRC.slice(a, SRC.indexOf('window._coach = resolveCoach(null, null);', a)) + 'window._coach = resolveCoach(null, null);\n' + ['async function _loadFlags()', 'async function _refreshCoach()'].map(fnSrc).join('\n'); })();
+const COACH_BLOCK = (() => { const a = SRC.indexOf('var _PLAN_RANKS'); if (a < 0) return ''; return SRC.slice(a, SRC.indexOf('window._coach = resolveCoach(null, null);', a)) + 'window._coach = resolveCoach(null, null);\n' + ['async function _loadFlags()', 'function _renderCoachBadge()', 'async function _refreshCoach()'].map(fnSrc).join('\n'); })();
 const GLOBALS = cut('var supabase = null;', 'function initSupabase()') + '\n' + COACH_BLOCK + '\n' +
   ['function initSupabase()', 'async function _loadProfile(', 'function _showAuthScreen()', 'function _hideAuthScreen()', 'async function autoBackup(', 'function _syncFromCloud()', 'function normalizeSessions('].map(fnSrc).join('\n') + '\n' +
   cut('const EXERCISE_NAME_FIXES', 'function save(k, v) {') + fnSrc('function save(k, v) {');

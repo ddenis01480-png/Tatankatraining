@@ -7,7 +7,7 @@ function fnSrc(sig) { const i = SRC.indexOf(sig); if (i < 0) throw new Error('in
   for (let p = SRC.indexOf('{', i); p < SRC.length; p++) { if (SRC[p] === '{') d++; if (SRC[p] === '}' && --d === 0) return SRC.slice(i, p + 1); } }
 const CODE = ['var supabase = null;', 'var currentUser = null;', 'var userProfile = null;'].join('\n') + '\n' +
   (() => { const a = SRC.indexOf('var _PLAN_RANKS'); return SRC.slice(a, SRC.indexOf('window._coach = resolveCoach(null, null);', a)); })() + 'window._coach = resolveCoach(null, null);\n' +
-  ['async function _loadFlags()', 'async function _refreshCoach()', 'function _isPremium()', 'async function _applyPromoCode('].map(fnSrc).join('\n');
+  ['async function _loadFlags()', 'function _renderCoachBadge()', 'async function _refreshCoach()', 'function _isPremium()', 'async function _applyPromoCode('].map(fnSrc).join('\n');
 function ctx(extra) { const c = Object.assign({ console, Promise, Date, Array, Object, String, Error, setTimeout, window: {} }, extra || {}); vm.createContext(c);
   vm.runInContext(CODE + '\nthis.__set=(a,b,c)=>{if(a!==undefined)supabase=a;if(b!==undefined)currentUser=b;if(c!==undefined)userProfile=c;};', c); return c; }
 const tests = []; const t = (n, f) => tests.push([n, f]);
@@ -57,6 +57,20 @@ t('_applyPromoCode : passe par le RPC apply_promo, n\'ecrit plus profiles ni ne 
 t('_applyPromoCode : erreurs serveur propagees avec leur message ; non connecte refuse', async () => {
   const c = ctx(); c.__set({ rpc: async () => ({ data: null, error: { message: 'Code expiré' } }) }, { id: 'u1', email: 'a@b.c' }, P());
   await assert.rejects(vm.runInContext('_applyPromoCode("X")', c), /Code expiré/); c.__set(undefined, null, P()); await assert.rejects(vm.runInContext('_applyPromoCode("X")', c), /Connecte-toi/); });
+function fakeDoc() { const els = {}; return { els, body: { appendChild: e => { els[e.id] = e; } }, getElementById: id => els[id] || null, createElement: () => ({ style: {}, textContent: '' }) }; }
+t('badge ?coach=debug : invisible sans le parametre, aucun element cree', async () => { const doc = fakeDoc(); const c = ctx({ document: doc, window: { location: { search: '' } } });
+  c.__set({ from: () => ({ select: () => Promise.resolve({ data: [{ key: 'coach_v2', state: 'lab', min_plan: 'premium_plus' }], error: null }) }) }, { id: 'u1' }, P({ coach_channel: 'lab' }));
+  await vm.runInContext('_refreshCoach()', c); assert.strictEqual(Object.keys(doc.els).length, 0); assert.strictEqual(vm.runInContext('window._coach.engine', c), 'v2'); });
+t('badge ?coach=debug : compte lab => V2 / canal lab ; compte stable => V1 ; erreur flags => V1', async () => {
+  const run = async (profile, res) => { const doc = fakeDoc(); const c = ctx({ document: doc, window: { location: { search: '?coach=debug' } } });
+    c.__set({ from: () => ({ select: () => res }) }, { id: 'u1' }, profile); await vm.runInContext('_refreshCoach()', c); return doc.els['tt-coach-debug'].textContent; };
+  const ok = Promise.resolve({ data: [{ key: 'coach_v2', state: 'lab', min_plan: 'premium_plus' }], error: null });
+  const lab = await run(P({ coach_channel: 'lab' }), ok); assert.ok(lab.includes('Coach : V2') && lab.includes('canal lab') && lab.includes('coach_v2=lab'), lab);
+  const stable = await run(P({ plan: 'premium_plus', cohort: 'beta' }), ok); assert.ok(stable.includes('Coach : V1') && stable.includes('canal stable') && stable.includes('plan premium_plus'), stable);
+  const err = await run(P({ coach_channel: 'lab' }), Promise.resolve({ data: null, error: { message: 'x' } })); assert.ok(err.includes('Coach : V1') && err.includes('flags : aucun'), err); });
+t('badge : une erreur d\'affichage (document casse) ne perturbe jamais le choix du moteur', async () => { const c = ctx({ document: { get body() { throw new Error('dom'); } }, window: { location: { search: '?coach=debug' } } });
+  c.__set({ from: () => ({ select: () => Promise.resolve({ data: [{ key: 'coach_v2', state: 'lab', min_plan: 'premium_plus' }], error: null }) }) }, { id: 'u1' }, P({ coach_channel: 'lab' }));
+  await vm.runInContext('_refreshCoach()', c); assert.strictEqual(vm.runInContext('window._coach.engine', c), 'v2'); });
 t('V1 INCHANGE : _isPremium + moteur de progression (getProgressionTip) identiques a main, sur entrees fixes', () => {
   const { execSync } = require('child_process'); const base = execSync('git show 0bc456c:index.html', { cwd: __dirname + '/..', maxBuffer: 1e8 }).toString();
   const grab = (src, sig) => { const i = src.indexOf(sig); let d = 0; for (let p = src.indexOf('{', i); p < src.length; p++) { if (src[p] === '{') d++; if (src[p] === '}' && --d === 0) return src.slice(i, p + 1); } };
