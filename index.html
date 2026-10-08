@@ -562,6 +562,90 @@ function normalizeSessions(sessions) {
   return (sessions||[]).map(s => ({ ...s, exercises: (s.exercises||[]).map(e => ({ ...e, name: normalizeExName(e.name) })) }));
 }
 
+// ── Regle d'architecture : « Ma donnee reste ma donnee. Un import ajoute. Seul l'utilisateur decide de supprimer ou remplacer. »
+// Toute source d'import (JSON, CSV/Excel, futur Tatanka Morphologie, sources externes) passe par ces fonctions :
+// jamais d'ecrasement ni de suppression ; doublon identique => ignore ; conflit d'identifiant => nouvel identifiant.
+function _jsonSig(x) { try { return JSON.stringify(x); } catch(e) { return "?" + Math.random(); } }
+function sessionSignature(s) {
+  return [String(s.date), String(s.routineName || s.routineId || ""),
+    _jsonSig((s.exercises || []).map(function(e) { return [e && normalizeExName(e.name), ((e && e.sets) || []).map(function(x) { return [x && x.weight, x && x.reps, x && x.rir]; })]; }))].join("|");
+}
+function routineSignature(r) {
+  return _jsonSig([r.name, (r.exercises || []).map(function(e) { return [e && e.name, e && e.sets, e && e.repsTarget, e && e.rest, e && e.warmupSets, e && e.note]; })]);
+}
+function _newId(used) { var n = Date.now(); while (used[String(n)]) n++; used[String(n)] = 1; return n; }
+function mergeSessionsNonDestructive(existing, incoming) {
+  var merged = Array.isArray(existing) ? existing.slice() : [];
+  var res = { merged: merged, added: 0, duplicates: 0, conflicts: 0, invalid: 0 };
+  var ids = {}, sigs = {};
+  merged.forEach(function(x) { if (!x || typeof x !== "object") return; if (x.id !== undefined && x.id !== null) ids[String(x.id)] = 1; sigs[sessionSignature(x)] = 1; });
+  (Array.isArray(incoming) ? incoming : []).forEach(function(inc) {
+    if (!inc || typeof inc !== "object" || typeof inc.date !== "string" || !Array.isArray(inc.exercises)) { res.invalid++; return; }
+    var sig = sessionSignature(inc);
+    if (sigs[sig]) { res.duplicates++; return; }
+    var item = inc;
+    if (inc.id === undefined || inc.id === null) { item = Object.assign({}, inc, { id: _newId(ids) }); }
+    else if (ids[String(inc.id)]) { item = Object.assign({}, inc, { id: _newId(ids) }); res.conflicts++; }
+    else ids[String(inc.id)] = 1;
+    sigs[sig] = 1;
+    var i = merged.length;
+    while (i > 0 && String(merged[i - 1] && merged[i - 1].date) > String(item.date)) i--;
+    merged.splice(i, 0, item); res.added++;
+  });
+  return res;
+}
+function mergeRoutinesNonDestructive(existing, incoming) {
+  var merged = Array.isArray(existing) ? existing.slice() : [];
+  var res = { merged: merged, added: 0, duplicates: 0, renamed: 0, invalid: 0 };
+  var ids = {}, names = {}, sigs = {};
+  merged.forEach(function(r) { if (!r || typeof r !== "object") return; if (r.id !== undefined && r.id !== null) ids[String(r.id)] = 1; names[String(r.name).toLowerCase()] = 1; sigs[routineSignature(r)] = 1; });
+  (Array.isArray(incoming) ? incoming : []).forEach(function(inc) {
+    if (!inc || typeof inc !== "object" || typeof inc.name !== "string" || !inc.name || !Array.isArray(inc.exercises)) { res.invalid++; return; }
+    var sig = routineSignature(inc);
+    if (sigs[sig]) { res.duplicates++; return; }
+    var item = Object.assign({}, inc);
+    if (item.id === undefined || item.id === null || ids[String(item.id)]) item.id = _newId(ids); else ids[String(item.id)] = 1;
+    if (names[item.name.toLowerCase()]) {
+      var base = item.name + " (import)", n = base, k = 2;
+      while (names[n.toLowerCase()]) { n = base + " " + k; k++; }
+      item.name = n; res.renamed++;
+    }
+    names[item.name.toLowerCase()] = 1; sigs[sig] = 1;
+    merged.push(item); res.added++;
+  });
+  return res;
+}
+function mergeSuppsNonDestructive(existing, incoming) {
+  var merged = Array.isArray(existing) ? existing.slice() : [];
+  var res = { merged: merged, added: 0 };
+  var ids = {}, sigs = {};
+  merged.forEach(function(x) { if (x && x.id !== undefined && x.id !== null) ids[String(x.id)] = 1; sigs[_jsonSig(x)] = 1; });
+  (Array.isArray(incoming) ? incoming : []).forEach(function(x) {
+    if (!x || typeof x !== "object") return;
+    if (sigs[_jsonSig(x)] || (x.id !== undefined && x.id !== null && ids[String(x.id)])) return;
+    merged.push(x); res.added++;
+  });
+  return res;
+}
+// Calcule le resultat d'un import SANS rien ecrire. current = { sessions, routines, supps, fatigue, cycle } (valeurs stockees).
+// opts.routines === false : ne touche pas aux routines. Fatigue et cycle : renseignes seulement s'ils sont absents.
+function applyImport(data, current, opts) {
+  opts = opts || {}; current = current || {}; data = (data && typeof data === "object") ? data : {};
+  var sm = mergeSessionsNonDestructive(current.sessions || [], data.sessions);
+  var rm = opts.routines === false ? { merged: current.routines, added: 0, duplicates: 0, renamed: 0, invalid: 0 } : mergeRoutinesNonDestructive(current.routines || [], data.routines);
+  var pm = mergeSuppsNonDestructive(current.supps || [], data.supps);
+  var out = { sessions: sm.merged, routines: rm.merged, supps: pm.merged, fatigue: current.fatigue, cycle: current.cycle, changed: {},
+    summary: { sessionsAdded: sm.added, sessionsDuplicates: sm.duplicates, sessionsConflicts: sm.conflicts, sessionsInvalid: sm.invalid,
+      routinesAdded: rm.added, routinesDuplicates: rm.duplicates, routinesRenamed: rm.renamed, suppsAdded: pm.added } };
+  if (sm.added > 0) out.changed.sessions = true;
+  if (rm.added > 0) out.changed.routines = true;
+  if (pm.added > 0) out.changed.supps = true;
+  if (!current.fatigue && data.fatigue && typeof data.fatigue === "object") { out.fatigue = data.fatigue; out.changed.fatigue = true; }
+  if (!current.cycle && data.cycle && data.cycle.startDate) { out.cycle = data.cycle; out.changed.cycle = true; }
+  return out;
+}
+// ── fin des helpers d'import non destructif
+
 const KEYS = { routines: "it3_routines", sessions: "it3_sessions", fatigue: "it3_fatigue", cycle: "it3_cycle", supps: "it3_supps", customEx: "it3_customEx" };
 function load(k) { try { const v = lsGetNs(k); return v ? JSON.parse(v) : null; } catch(e) { return null; } }
 function save(k, v) {
@@ -2752,18 +2836,21 @@ function IronTraining() {
 
   const PROG_VERSION = "v6-notes-2026d";
   const initRoutines = () => {
+    // Regle : « Ma donnee reste ma donnee ». Si le compte a deja des routines valides, RIEN ne peut les remplacer
+    // automatiquement : ni version absente, ni ancienne, ni « imported-... ». Aucune ecriture dans ce cas.
+    // Seule l'absence de routine exploitable declenche le programme par defaut (avec copie de securite de l'ancien contenu).
+    let rawStr = null;
     try {
-      // Purge routines corrompues
-      const rawRoutines = load(KEYS.routines) || [];
-      const hasCorrupt = rawRoutines.some(r => !r || !r.name || !r.exercises || !Array.isArray(r.exercises));
-      if (hasCorrupt) {
-        lsRemoveNs(KEYS.routines);
-        lsRemoveNs("it3_prog_version");
+      rawStr = lsGetNs(KEYS.routines);
+      const parsed = rawStr ? JSON.parse(rawStr) : null;
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const valid = parsed.filter(r => r && r.name && Array.isArray(r.exercises));
+        if (valid.length === parsed.length) return parsed;
+        lsSetNs(KEYS.routines + "_backup_" + Date.now(), rawStr);
+        if (valid.length > 0) { save(KEYS.routines, valid); return valid; }
+        rawStr = null;
       }
-      const savedVersion = lsGetNs("it3_prog_version");
-      const saved = JSON.parse(lsGetNs(KEYS.routines));
-      if (saved && saved.length > 0 && savedVersion === PROG_VERSION) return saved;
-    } catch(e) {}
+    } catch(e) { if (rawStr) lsSetNs(KEYS.routines + "_backup_" + Date.now(), rawStr); }
     const fresh = PROGRAMME.map(p => ({ id: p.id, name: p.name, day: p.day, color: p.color, exercises: p.exercises.map(ex => ({ name: ex.name, sets: ex.sets, repsTarget: ex.repsTarget, note: ex.note, rest: ex.rest || 90, warmupSets: ex.warmupSets || 0, warmupLabel: ex.warmupLabel || "" })) }));
     save(KEYS.routines, fresh);
     lsSetNs("it3_prog_version", PROG_VERSION);
@@ -3130,6 +3217,27 @@ function exportData() {
     return Object.values(map).map((s, i) => ({ ...s, id: Date.now() + i }));
   }
 
+  // Applique un import de facon NON destructive (voir applyImport) : ajoute, ignore les doublons, ne remplace ni ne supprime rien.
+  function applyImportToApp(data, opts) {
+    const r = applyImport(data, { sessions: load(KEYS.sessions), routines: load(KEYS.routines), supps: load(KEYS.supps), fatigue: load(KEYS.fatigue), cycle: load(KEYS.cycle) }, opts);
+    if (r.changed.sessions) { save(KEYS.sessions, r.sessions); setSessions(normalizeSessions(r.sessions)); }
+    if (r.changed.routines) { save(KEYS.routines, r.routines); setRoutines(r.routines); }
+    if (r.changed.supps) { save(KEYS.supps, r.supps); setSupps(r.supps); }
+    if (r.changed.fatigue) { save(KEYS.fatigue, r.fatigue); setFatigue(r.fatigue); }
+    if (r.changed.cycle) { save(KEYS.cycle, r.cycle); }
+    if (data && Array.isArray(data.customEx)) { data.customEx.forEach(n => { if (typeof n === "string") addCustomExercise(n); }); }
+    return r.summary;
+  }
+  function importSummaryText(sm) {
+    return "Import terminé (rien n'a été supprimé ni remplacé).\n- Séances ajoutées : " + sm.sessionsAdded + " (déjà présentes, ignorées : " + sm.sessionsDuplicates + (sm.sessionsConflicts ? " ; ajoutées avec un nouvel identifiant : " + sm.sessionsConflicts : "") + ")" +
+      "\n- Routines ajoutées : " + sm.routinesAdded + (sm.routinesDuplicates ? " (déjà présentes : " + sm.routinesDuplicates + ")" : "") + (sm.routinesRenamed ? " ; renommées « (import) » : " + sm.routinesRenamed : "");
+  }
+  function addImportedRoutines(routines, label) {
+    const m = mergeRoutinesNonDestructive(load(KEYS.routines) || [], routines);
+    if (m.added > 0) { save(KEYS.routines, m.merged); setRoutines(m.merged); }
+    alert("Import " + label + " terminé (rien n'a été supprimé ni remplacé) : " + m.added + " routine(s) ajoutée(s)" + (m.duplicates ? ", " + m.duplicates + " déjà présente(s)" : "") + (m.renamed ? ", " + m.renamed + " renommée(s) « (import) »" : "") + ".");
+    setShowDataMenu(false);
+  }
   function importData(e) {
     const file = e.target.files[0]; if (!file) return;
     const ext = file.name.split(".").pop().toLowerCase();
@@ -3143,11 +3251,8 @@ function exportData() {
           const lines = text.split("\n").map(l => l.split(sep).map(c => c.replace(/^"|"$/g,"").trim())).filter(l => l.some(c => c));
           const routines = parseRowsToProgramme(lines);
           if (!routines.length) { alert("Aucune seance trouvee dans le CSV."); return; }
-          if (!confirm(routines.length + " seance(s) trouvee(s). Remplacer les routines ?")) return;
-          setRoutines(routines); save(KEYS.routines, routines);
-          lsSetNs("it3_prog_version", "imported-" + Date.now());
-          alert("Import CSV OK : " + routines.length + " routine(s) creee(s).");
-          setShowDataMenu(false);
+          if (!confirm(routines.length + " routine(s) trouvée(s). Les ajouter à tes routines actuelles ? Rien ne sera supprimé ni remplacé.")) return;
+          addImportedRoutines(routines, "CSV");
         } catch(err) { alert("Erreur CSV : " + err.message); }
       };
       reader.readAsText(file, "UTF-8"); e.target.value = ""; return;
@@ -3161,11 +3266,8 @@ function exportData() {
           const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
           const routines = parseRowsToProgramme(rows);
           if (!routines.length) { alert("Aucune seance trouvee dans le fichier Excel."); return; }
-          if (!confirm(routines.length + " seance(s) trouvee(s). Remplacer les routines ?")) return;
-          setRoutines(routines); save(KEYS.routines, routines);
-          lsSetNs("it3_prog_version", "imported-" + Date.now());
-          alert("Import Excel OK : " + routines.length + " routine(s) creee(s).");
-          setShowDataMenu(false);
+          if (!confirm(routines.length + " routine(s) trouvée(s). Les ajouter à tes routines actuelles ? Rien ne sera supprimé ni remplacé.")) return;
+          addImportedRoutines(routines, "Excel");
         } catch(err) { alert("Erreur Excel : " + err.message); }
       };
       reader.readAsArrayBuffer(file); e.target.value = ""; return;
@@ -3179,21 +3281,8 @@ function exportData() {
             alert("Fichier non reconnu. Exportez d'abord depuis Tatanka Training.");
             return;
           }
-          if (!confirm("Restaurer les données depuis ce fichier ? Les données actuelles seront remplacées.")) return;
-          if (data.sessions && data.sessions.length) {
-            save(KEYS.sessions, data.sessions);
-            setSessions(normalizeSessions(data.sessions));
-          }
-          if (data.routines && data.routines.length) {
-            save(KEYS.routines, data.routines);
-            setRoutines(data.routines);
-          }
-          if (data.supps) { save(KEYS.supps, data.supps); setSupps(data.supps); }
-          if (data.fatigue) { save(KEYS.fatigue, data.fatigue); setFatigue(data.fatigue); }
-          const cycleToRestore = (data.cycle && data.cycle.startDate) ? data.cycle : { startDate: (data.sessions && data.sessions[0] && data.sessions[0].date) || today(), num: 1 };
-          save(KEYS.cycle, cycleToRestore);
-          if (Array.isArray(data.customEx)) { data.customEx.forEach(n => { if (typeof n === "string") addCustomExercise(n); }); }
-          alert("Restauration réussie ! " + (data.sessions||[]).length + " séance(s) importée(s).");
+          if (!confirm("Ajouter les données de ce fichier à tes données actuelles ? Rien ne sera supprimé ni remplacé : les doublons sont ignorés.")) return;
+          alert(importSummaryText(applyImportToApp(data, {})));
           setShowDataMenu(false);
         } catch(err) { alert("Erreur JSON : " + err.message); }
       };
@@ -3207,10 +3296,8 @@ function exportData() {
         const data = JSON.parse(ev.target.result);
         const importedSessions = data.sessions || (Array.isArray(data) ? data : null);
         if (!importedSessions) { alert("Format non reconnu."); return; }
-        const existing = load(KEYS.sessions) || [];
-        const existingIds = new Set(existing.map(s => s.id || s.date + s.routineName));
         const validSessions = importedSessions
-          .filter(s => s.date && Array.isArray(s.exercises))
+          .filter(s => s && s.date && Array.isArray(s.exercises))
           .map(s => ({
             ...s,
             exercises: (s.exercises || []).map(ex => ({
@@ -3223,14 +3310,8 @@ function exportData() {
               }))
             }))
           }));
-        const newSessions = validSessions.filter(s => !existingIds.has(s.id || s.date + s.routineName));
-        const merged = [...existing, ...newSessions].sort((a, b) => a.date.localeCompare(b.date));
-        const mergedNorm = normalizeSessions(merged); setSessions(mergedNorm); save(KEYS.sessions, mergedNorm);
-        if (data.fatigue) { setFatigue(data.fatigue); save(KEYS.fatigue, data.fatigue); }
-        if (data.cycle && data.cycle.startDate) { save(KEYS.cycle, data.cycle); }
-        if (data.supps && Array.isArray(data.supps)) { setSupps(data.supps); save(KEYS.supps, data.supps); }
-        // NE PAS écraser les routines depuis un backup JSON — elles sont gérées via import CSV/Excel
-        alert(newSessions.length + " seance(s) importee(s). Total : " + merged.length);
+        const sm = applyImportToApp({ sessions: validSessions, supps: Array.isArray(data.supps) ? data.supps : [], fatigue: data.fatigue, cycle: data.cycle }, { routines: false });
+        alert(importSummaryText(sm));
         setShowDataMenu(false);
       } catch(err) { alert("Erreur JSON : " + err.message); }
     };
