@@ -570,8 +570,11 @@ function sessionSignature(s) {
   return [String(s.date), String(s.routineName || s.routineId || ""),
     _jsonSig((s.exercises || []).map(function(e) { return [e && normalizeExName(e.name), ((e && e.sets) || []).map(function(x) { return [x && x.weight, x && x.reps, x && x.rir]; })]; }))].join("|");
 }
+// Le suffixe « (import) » / « (import N) » ajoute lors d'une fusion ne compte pas dans la comparaison :
+// reimporter le meme fichier retrouve la routine deja ajoutee et n'en cree pas une nouvelle copie.
+function _baseRoutineName(n) { return String(n).replace(/ \(import(?: \d+)?\)$/i, ""); }
 function routineSignature(r) {
-  return _jsonSig([r.name, (r.exercises || []).map(function(e) { return [e && e.name, e && e.sets, e && e.repsTarget, e && e.rest, e && e.warmupSets, e && e.note]; })]);
+  return _jsonSig([_baseRoutineName(r.name), (r.exercises || []).map(function(e) { return [e && e.name, e && e.sets, e && e.repsTarget, e && e.rest, e && e.warmupSets, e && e.note]; })]);
 }
 function _newId(used) { var n = Date.now(); while (used[String(n)]) n++; used[String(n)] = 1; return n; }
 function mergeSessionsNonDestructive(existing, incoming) {
@@ -606,8 +609,8 @@ function mergeRoutinesNonDestructive(existing, incoming) {
     var item = Object.assign({}, inc);
     if (item.id === undefined || item.id === null || ids[String(item.id)]) item.id = _newId(ids); else ids[String(item.id)] = 1;
     if (names[item.name.toLowerCase()]) {
-      var base = item.name + " (import)", n = base, k = 2;
-      while (names[n.toLowerCase()]) { n = base + " " + k; k++; }
+      var base = item.name, n = base + " (import)", k = 2;
+      while (names[n.toLowerCase()]) { n = base + " (import " + k + ")"; k++; }
       item.name = n; res.renamed++;
     }
     names[item.name.toLowerCase()] = 1; sigs[sig] = 1;

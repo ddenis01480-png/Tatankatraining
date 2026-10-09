@@ -117,6 +117,12 @@ t('IMPORT JSON routines : identique ignoree, meme nom mais contenu different = a
   assert.ok(r[6].name.endsWith('(import)') && r[6].exercises[0].name === 'Exo different'); assert.strictEqual(r[7].name, 'PROGRAMME MORPHO');
   assert.strictEqual(new Set(r.map(x => String(x.id))).size, 8, 'identifiants de routines uniques'); assert.strictEqual(app.state('routines').length, 8);
 });
+t('REIMPORT du meme fichier (routine homonyme differente + seance en conflit) : aucune nouvelle copie, ni routine « (import 2) », ni seance', async () => {
+  const { ls, app } = await importCtx(); const imp = importer(app); const orig = clone(EXP.routines);
+  const file = withVersion({ sessions: [Object.assign(clone(EXP.sessions[3]), { exercises: [{ name: 'Autre', sets: [] }] })], routines: [Object.assign(clone(orig[1]), { exercises: [{ name: 'Different', sets: 5, repsTarget: '5' }] }), { id: 9001, name: 'NOUVELLE', exercises: [{ name: 'N', sets: 3 }] }] });
+  imp.run('b.json', file); const after1 = snap(ls); assert.strictEqual(JSON.parse(after1[NS('it3_routines')]).length, 8); assert.strictEqual(JSON.parse(after1[NS('it3_sessions')]).length, EXP.sessions.length + 1);
+  imp.run('b.json', file); imp.run('b.json', file); assert.deepStrictEqual(snap(ls), after1, 'reimporter le meme fichier ne change plus rien');
+});
 t('IMPORT JSON : supps, fatigue et cycle existants ne sont jamais remplaces ; renseignes seulement s\'ils sont absents', async () => {
   let { ls, app } = await importCtx(); const before = snap(ls); importer(app).run('b.json', withVersion({ supps: [{ id: 555, name: 'Autre' }], fatigue: { sleep: 3 }, cycle: { startDate: '2020-01-01', num: 9 } }));
   assert.strictEqual(ls.getItem(NS('it3_fatigue')), before[NS('it3_fatigue')]); assert.strictEqual(ls.getItem(NS('it3_cycle')), before[NS('it3_cycle')]);
@@ -169,6 +175,7 @@ t('PROPRIETE (600 cas aleatoires) : l\'existant est toujours conserve a l\'ident
     const r2 = c.mergeSessionsNonDestructive(r.merged, incoming); assert.strictEqual(r2.added, 0, 'import idempotent'); assert.strictEqual(r2.merged.length, r.merged.length);
     const rr = c.mergeRoutinesNonDestructive([{ id: 1, name: 'A', exercises: [] }], [{ id: 1, name: 'A', exercises: [{ name: 'x' }] }, { id: 2, name: 'a', exercises: [{ name: 'y' }] }]);
     assert.strictEqual(rr.merged[0].name, 'A'); assert.strictEqual(new Set(rr.merged.map(x => x.name.toLowerCase())).size, rr.merged.length, 'pas de noms identiques');
+    const rr2 = c.mergeRoutinesNonDestructive(rr.merged, [{ id: 1, name: 'A', exercises: [{ name: 'x' }] }, { id: 2, name: 'a', exercises: [{ name: 'y' }] }]); assert.strictEqual(rr2.added, 0, 'reimport de routines homonymes : aucune copie supplementaire');
   } });
 t('applyImport ne modifie jamais ses entrees et renvoie les memes objets pour tout ce qui n\'est pas touche', () => {
   const c = pure(); const cur = { sessions: clone(EXP.sessions), routines: clone(EXP.routines), supps: clone(EXP.supps || []), fatigue: { sleep: 1 }, cycle: { startDate: '2026-01-01', num: 1 } };
