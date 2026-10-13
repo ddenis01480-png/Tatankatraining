@@ -341,6 +341,7 @@ function initSupabase() {
           currentUser = null;
           _stateUid = null;
           userProfile = null;
+          _betaLast = null;
           window._coach = resolveCoach(null, null);
           window._featureFlags = {};
           _renderCoachBadge();
@@ -374,10 +375,32 @@ async function _loadProfile(userId, email) {
   } else {
     userProfile = r.data;
   }
+  // Beta fermee : decision prise par le SERVEUR (heure serveur, fonction get_my_beta). Les colonnes brutes beta_* du profil
+  // ne servent jamais a decider ; seul beta_active, calcule par le serveur, compte. Echec / hors ligne / fonction absente => pas de beta.
+  userProfile = Object.assign({}, userProfile, await _fetchBeta(userId));
+}
+// Dernier resultat serveur CONFIRME pour le compte connecte : evite de perdre l'acces a cause d'un simple rate reseau en cours de session.
+// Jamais reutilise pour un autre compte, apres deconnexion, ni apres un rechargement de la page.
+var _betaLast = null;
+async function _fetchBeta(userId) {
+  var none = { beta_active: false, beta_started_at: null, beta_expires_at: null };
+  try {
+    var res = await Promise.race([
+      supabase.rpc('get_my_beta'),
+      new Promise(function(resolve) { setTimeout(function() { resolve(null); }, 4000); })
+    ]);
+    if (res && !res.error && res.data && typeof res.data === 'object') {
+      var v = { beta_active: res.data.active === true, beta_started_at: res.data.started_at || null, beta_expires_at: res.data.expires_at || null };
+      _betaLast = { uid: userId, v: v };
+      return v;
+    }
+  } catch(e) {}
+  return (_betaLast && _betaLast.uid === userId) ? _betaLast.v : none;
 }
 
 function _isPremium() {
   if (!userProfile) return false;
+  if (userProfile.beta_active === true) return true; // beta fermee : verifiee par le serveur (voir _fetchBeta)
   if (userProfile.premium_training || userProfile.pack) return true;
   if (userProfile.promo) {
     if (!userProfile.promo_expires_at || new Date(userProfile.promo_expires_at) > new Date()) return true;
@@ -397,7 +420,7 @@ function planOf(profile) {
     if (profile && typeof profile === 'object') {
       var r = _planRank(profile.plan); if (r > rank) rank = r;
       // Abonnements existants (colonnes historiques) => au moins "premium", comme _isPremium()
-      var legacy = !!(profile.premium_training || profile.pack);
+      var legacy = !!(profile.premium_training || profile.pack || profile.beta_active === true);
       if (!legacy && profile.promo) legacy = !profile.promo_expires_at || new Date(profile.promo_expires_at) > new Date();
       if (legacy && rank < 1) rank = 1;
     }
@@ -648,6 +671,420 @@ function normalizeExName(name) { return EXERCISE_NAME_FIXES[name] || name; }
 function normalizeSessions(sessions) {
   return (sessions||[]).map(s => ({ ...s, exercises: (s.exercises||[]).map(e => ({ ...e, name: normalizeExName(e.name) })) }));
 }
+
+// « Programme exemple Tatanka » : propose (facultatif) aux comptes SANS routine. 6 routines, AUCUNE donnee personnelle,
+// aucune seance, aucun historique, aucune performance. Charge par fusion non destructive, marque example:true,
+// supprimable en un geste ; modifier une routine exemple la transforme en routine personnelle.
+const EXAMPLE_PROGRAM = [
+ {
+  "id": "ex1",
+  "name": "PUSH 1 - Epaules / Pecs / Triceps",
+  "day": "LUNDI",
+  "color": "#FF6600",
+  "exercises": [
+   {
+    "name": "Élévations latérales haltères",
+    "sets": 3,
+    "repsTarget": "30-50",
+    "rest": 60,
+    "warmupSets": 2,
+    "warmupLabel": "1-2",
+    "note": ""
+   },
+   {
+    "name": "Élévations latérales câble unilatéral",
+    "sets": 3,
+    "repsTarget": "15-25",
+    "rest": 60,
+    "warmupSets": 2,
+    "warmupLabel": "1-2",
+    "note": "Lance le temps de repos après le premier côté effectué."
+   },
+   {
+    "name": "Développé militaire haltères",
+    "sets": 3,
+    "repsTarget": "8-12",
+    "rest": 180,
+    "warmupSets": 3,
+    "warmupLabel": "2-3",
+    "note": "Conserve la même variante pour la surcharge progressive."
+   },
+   {
+    "name": "Développé couché haltères",
+    "sets": 3,
+    "repsTarget": "8-12",
+    "rest": 180,
+    "warmupSets": 2,
+    "warmupLabel": "1-2",
+    "note": "Coude proche du buste. Prise neutre ou semi-pronation."
+   },
+   {
+    "name": "Pec deck (Butterfly)",
+    "sets": 3,
+    "repsTarget": "10-12",
+    "rest": 90,
+    "warmupSets": 2,
+    "warmupLabel": "1-2",
+    "note": ""
+   },
+   {
+    "name": "Extension triceps overhead câble",
+    "sets": 3,
+    "repsTarget": "10-15",
+    "rest": 120,
+    "warmupSets": 1,
+    "warmupLabel": "0-1",
+    "note": "Utilise une corde."
+   }
+  ]
+ },
+ {
+  "id": "ex2",
+  "name": "PULL 1 - Delto post / Dos / Biceps / Mollets",
+  "day": "MARDI",
+  "color": "#4CAF50",
+  "exercises": [
+   {
+    "name": "Oiseau haltères buste penché",
+    "sets": 3,
+    "repsTarget": "30-50",
+    "rest": 60,
+    "warmupSets": 2,
+    "warmupLabel": "1-2",
+    "note": "Banc incliné à 30°."
+   },
+   {
+    "name": "Oiseau poulie unilatéral",
+    "sets": 3,
+    "repsTarget": "15-25",
+    "rest": 60,
+    "warmupSets": 1,
+    "warmupLabel": "0-1",
+    "note": "Lance le temps de repos après le premier côté effectué."
+   },
+   {
+    "name": "Tractions lestées prise large",
+    "sets": 3,
+    "repsTarget": "8-12",
+    "rest": 180,
+    "warmupSets": 3,
+    "warmupLabel": "2-3",
+    "note": ""
+   },
+   {
+    "name": "Tirage poulie haute prise large",
+    "sets": 3,
+    "repsTarget": "8-12",
+    "rest": 150,
+    "warmupSets": 2,
+    "warmupLabel": "1-2",
+    "note": ""
+   },
+   {
+    "name": "Pull-over câble bras tendus",
+    "sets": 3,
+    "repsTarget": "15-20",
+    "rest": 90,
+    "warmupSets": 1,
+    "warmupLabel": "0-1",
+    "note": "Version stretch. Buste penché en avant. Amplitude maximale."
+   },
+   {
+    "name": "Curl câble unilatéral",
+    "sets": 3,
+    "repsTarget": "15-20",
+    "rest": 60,
+    "warmupSets": 2,
+    "warmupLabel": "1-2",
+    "note": "Dos à la poulie. (Pull 1) / Face à la poulie. (Pull 2)"
+   },
+   {
+    "name": "Mollets debout machine",
+    "sets": 3,
+    "repsTarget": "30-50",
+    "rest": 60,
+    "warmupSets": 1,
+    "warmupLabel": "0-1",
+    "note": ""
+   }
+  ]
+ },
+ {
+  "id": "ex3",
+  "name": "LEGS 1 - Quad / Ischios / Fessiers / Mollets",
+  "day": "MERCREDI",
+  "color": "#FFC107",
+  "exercises": [
+   {
+    "name": "Adducteurs machine",
+    "sets": 3,
+    "repsTarget": "30-50",
+    "rest": 60,
+    "warmupSets": 3,
+    "warmupLabel": "2-3",
+    "note": ""
+   },
+   {
+    "name": "Leg extension machine",
+    "sets": 3,
+    "repsTarget": "15-25",
+    "rest": 60,
+    "warmupSets": 3,
+    "warmupLabel": "2-3",
+    "note": "Sors la cage thoracique sans cambrer les lombaires. Regarde devant."
+   },
+   {
+    "name": "Hack squat machine",
+    "sets": 3,
+    "repsTarget": "10-15",
+    "rest": 150,
+    "warmupSets": 3,
+    "warmupLabel": "2-3",
+    "note": "Amplitude partielle. Arrête juste avant la parallèle."
+   },
+   {
+    "name": "Leg press 45°",
+    "sets": 3,
+    "repsTarget": "15-20",
+    "rest": 120,
+    "warmupSets": 2,
+    "warmupLabel": "1-2",
+    "note": "Amplitude partielle. Arrête à la parallèle."
+   },
+   {
+    "name": "Leg curl assis machine",
+    "sets": 3,
+    "repsTarget": "8-12",
+    "rest": 120,
+    "warmupSets": 3,
+    "warmupLabel": "2-3",
+    "note": "Garde le dos au contact du banc sans sortir la cage thoracique."
+   },
+   {
+    "name": "Leg curl couché machine",
+    "sets": 3,
+    "repsTarget": "10-15",
+    "rest": 90,
+    "warmupSets": 3,
+    "warmupLabel": "2-3",
+    "note": "Pose les avant-bras sur le dossier de la machine pour avoir de l'appui."
+   },
+   {
+    "name": "Mollets debout machine",
+    "sets": 3,
+    "repsTarget": "30-50",
+    "rest": 60,
+    "warmupSets": 1,
+    "warmupLabel": "0-1",
+    "note": ""
+   },
+   {
+    "name": "Belt squat",
+    "sets": 3,
+    "repsTarget": "8-12",
+    "rest": 90,
+    "warmupSets": 0,
+    "warmupLabel": "",
+    "note": ""
+   }
+  ]
+ },
+ {
+  "id": "ex4",
+  "name": "PUSH 2 - Epaules / Pecs / Triceps",
+  "day": "JEUDI",
+  "color": "#9C27B0",
+  "exercises": [
+   {
+    "name": "Élévations latérales haltères",
+    "sets": 3,
+    "repsTarget": "30-50",
+    "rest": 60,
+    "warmupSets": 3,
+    "warmupLabel": "2-3",
+    "note": ""
+   },
+   {
+    "name": "Élévations latérales câble unilatéral",
+    "sets": 3,
+    "repsTarget": "15-25",
+    "rest": 60,
+    "warmupSets": 2,
+    "warmupLabel": "1-2",
+    "note": "Lance le temps de repos après le premier côté effectué."
+   },
+   {
+    "name": "Développé couché haltères",
+    "sets": 3,
+    "repsTarget": "8-12",
+    "rest": 180,
+    "warmupSets": 3,
+    "warmupLabel": "2-3",
+    "note": "Coude proche du buste. Prise neutre ou semi-pronation."
+   },
+   {
+    "name": "Écarté couché haltères",
+    "sets": 3,
+    "repsTarget": "10-15",
+    "rest": 120,
+    "warmupSets": 3,
+    "warmupLabel": "2-3",
+    "note": ""
+   },
+   {
+    "name": "Dips lestés",
+    "sets": 3,
+    "repsTarget": "8-12",
+    "rest": 180,
+    "warmupSets": 2,
+    "warmupLabel": "1-2",
+    "note": ""
+   },
+   {
+    "name": "Extension triceps overhead câble",
+    "sets": 3,
+    "repsTarget": "10-15",
+    "rest": 120,
+    "warmupSets": 1,
+    "warmupLabel": "0-1",
+    "note": "Utilise une corde."
+   }
+  ]
+ },
+ {
+  "id": "ex5",
+  "name": "PULL 2 - Delto post / Dos / Biceps",
+  "day": "VENDREDI",
+  "color": "#2196F3",
+  "exercises": [
+   {
+    "name": "Oiseau haltères buste penché",
+    "sets": 3,
+    "repsTarget": "30-50",
+    "rest": 60,
+    "warmupSets": 2,
+    "warmupLabel": "1-2",
+    "note": "Banc incliné à 30°."
+   },
+   {
+    "name": "Oiseau poulie unilatéral",
+    "sets": 3,
+    "repsTarget": "15-25",
+    "rest": 60,
+    "warmupSets": 1,
+    "warmupLabel": "0-1",
+    "note": "Lance le temps de repos après le premier côté effectué."
+   },
+   {
+    "name": "Tirage vertical unilatéral",
+    "sets": 3,
+    "repsTarget": "8-12",
+    "rest": 150,
+    "warmupSets": 3,
+    "warmupLabel": "2-3",
+    "note": "Lance le temps de repos après le premier côté effectué."
+   },
+   {
+    "name": "Rowing machine dos haut",
+    "sets": 3,
+    "repsTarget": "8-12",
+    "rest": 150,
+    "warmupSets": 2,
+    "warmupLabel": "1-2",
+    "note": "Coude ouvert. Prise large pronation."
+   },
+   {
+    "name": "Pull-over câble bras tendus",
+    "sets": 3,
+    "repsTarget": "15-20",
+    "rest": 90,
+    "warmupSets": 1,
+    "warmupLabel": "0-1",
+    "note": "Version stretch. Buste penché en avant. Amplitude maximale."
+   },
+   {
+    "name": "Curl marteau haltères",
+    "sets": 3,
+    "repsTarget": "10-15",
+    "rest": 90,
+    "warmupSets": 1,
+    "warmupLabel": "0-1",
+    "note": ""
+   },
+   {
+    "name": "Curl câble unilatéral face poulie",
+    "sets": 3,
+    "repsTarget": "10-12",
+    "rest": 90,
+    "warmupSets": 2,
+    "warmupLabel": "1-2",
+    "note": ""
+   }
+  ]
+ },
+ {
+  "id": "ex6",
+  "name": "LEGS 2 - Quad / Ischios / Mollets",
+  "day": "SAMEDI",
+  "color": "#F44336",
+  "exercises": [
+   {
+    "name": "Adducteurs machine",
+    "sets": 3,
+    "repsTarget": "30-50",
+    "rest": 60,
+    "warmupSets": 3,
+    "warmupLabel": "2-3",
+    "note": ""
+   },
+   {
+    "name": "Leg extension machine",
+    "sets": 3,
+    "repsTarget": "15-25",
+    "rest": 60,
+    "warmupSets": 3,
+    "warmupLabel": "2-3",
+    "note": "Sors la cage thoracique sans cambrer les lombaires. Regarde devant."
+   },
+   {
+    "name": "Leg press 45°",
+    "sets": 3,
+    "repsTarget": "15-20",
+    "rest": 120,
+    "warmupSets": 2,
+    "warmupLabel": "1-2",
+    "note": "Amplitude partielle. Arrête à la parallèle."
+   },
+   {
+    "name": "Leg curl assis machine",
+    "sets": 3,
+    "repsTarget": "8-12",
+    "rest": 120,
+    "warmupSets": 3,
+    "warmupLabel": "2-3",
+    "note": "Garde le dos au contact du banc sans sortir la cage thoracique."
+   },
+   {
+    "name": "Leg curl couché machine",
+    "sets": 3,
+    "repsTarget": "10-15",
+    "rest": 90,
+    "warmupSets": 3,
+    "warmupLabel": "2-3",
+    "note": "Pose les avant-bras sur le dossier de la machine pour avoir de l'appui."
+   },
+   {
+    "name": "Mollets debout machine",
+    "sets": 3,
+    "repsTarget": "30-50",
+    "rest": 60,
+    "warmupSets": 1,
+    "warmupLabel": "0-1",
+    "note": ""
+   }
+  ]
+ }
+];
 
 // ── Regle d'architecture : « Ma donnee reste ma donnee. Un import ajoute. Seul l'utilisateur decide de supprimer ou remplacer. »
 // Toute source d'import (JSON, CSV/Excel, futur Tatanka Morphologie, sources externes) passe par ces fonctions :
@@ -1043,13 +1480,30 @@ function StagnationAlert({ diag, onClose, onNext }) {
 
 function RoutinesTab({ routines, setRoutines, onStartSession, view, setView, editing, setEditing }) {
   const [showPicker, setShowPicker] = useState(false);
+  const [exampleDismissed, setExampleDismissed] = useState(() => { try { return lsGetNs("it3_example_dismissed") === "1"; } catch(e) { return false; } });
+  const validRoutines = (routines || []).filter(r => r && r.name);
+  const exampleRoutines = validRoutines.filter(r => r.example === true);
+  const offerExample = validRoutines.length === 0; // propose uniquement quand le compte n'a AUCUNE routine
+  function loadExample() {
+    const incoming = EXAMPLE_PROGRAM.map(r => ({ ...JSON.parse(JSON.stringify(r)), example: true }));
+    const m = mergeRoutinesNonDestructive(routines || [], incoming);
+    if (m.added > 0) { setRoutines(m.merged); save(KEYS.routines, m.merged); }
+  }
+  function dismissExample() { try { lsSetNs("it3_example_dismissed", "1"); } catch(e) {} setExampleDismissed(true); }
+  function deleteExample() {
+    if (!confirm("Supprimer le programme exemple Tatanka ? Tes autres routines et toutes tes séances restent intactes.")) return;
+    const updated = (routines || []).filter(r => !(r && r.example === true));
+    setRoutines(updated); save(KEYS.routines, updated);
+  }
   const DC = { "LUNDI": "#FF6600", "MARDI": "#4CAF50", "MERCREDI": "#FFC107", "JEUDI": "#FF6600", "VENDREDI": "#4CAF50" };
 
   function newRoutine() { setEditing({ id: Date.now(), name: "", day: "", exercises: [] }); setView("edit"); }
   function editRoutine(r) { setEditing(JSON.parse(JSON.stringify(r))); setView("edit"); }
   function saveRoutine() {
     if (!editing.name.trim()) return alert("Donne un nom");
-    const updated = routines.find(r => r.id === editing.id) ? routines.map(r => r.id === editing.id ? editing : r) : [...routines, editing];
+    // Modifier une routine exemple en fait ta routine personnelle : elle n'est plus supprimee avec le programme exemple.
+    const toSave = editing.example ? (({ example, ...rest }) => rest)(editing) : editing;
+    const updated = routines.find(r => r.id === editing.id) ? routines.map(r => r.id === editing.id ? toSave : r) : [...routines, toSave];
     setRoutines(updated); save(KEYS.routines, updated); setView("list");
   }
   function deleteRoutine(id) {
@@ -1070,11 +1524,35 @@ function RoutinesTab({ routines, setRoutines, onStartSession, view, setView, edi
         <div style={{ fontSize: 9, color: "#555", fontFamily: "monospace", letterSpacing: "0.12em" }}>PROGRAMME</div>
         <h2 style={{ margin: "3px 0 0", fontSize: 22, fontWeight: 900, color: "#ff6600" }}>MES ROUTINES</h2>
       </div>
+      {offerExample && (
+        <Card>
+          <div style={{ fontSize: 9, color: "#ff6600", fontFamily: "monospace", fontWeight: 900, letterSpacing: "0.12em", marginBottom: 6 }}>PROGRAMME EXEMPLE TATANKA</div>
+          {exampleDismissed ? (
+            <Btn small label="CHARGER LE PROGRAMME EXEMPLE TATANKA" onClick={loadExample} />
+          ) : (
+            <div>
+              <div style={{ fontSize: 12, color: "#aaa", lineHeight: 1.5, marginBottom: 10 }}>Pour découvrir l'appli, tu peux charger un programme exemple (6 routines). Il ne contient aucune donnée : ton historique, tes performances et tes statistiques restent vides tant que tu ne t'entraînes pas. Tu peux aussi l'ignorer et créer ton propre programme.</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <Btn primary label="CHARGER LE PROGRAMME EXEMPLE" onClick={loadExample} style={{ flex: 1 }} />
+                <Btn small label="IGNORER" onClick={dismissExample} />
+              </div>
+            </div>
+          )}
+        </Card>
+      )}
+      {exampleRoutines.length > 0 && (
+        <Card>
+          <div style={{ fontSize: 9, color: "#00E5FF", fontFamily: "monospace", fontWeight: 900, letterSpacing: "0.12em", marginBottom: 6 }}>PROGRAMME EXEMPLE TATANKA</div>
+          <div style={{ fontSize: 12, color: "#aaa", lineHeight: 1.5, marginBottom: 10 }}>Les routines marquées EXEMPLE ne sont pas ton programme personnel. Modifie-en une pour en faire la tienne, ou supprime tout le programme exemple en un geste.</div>
+          <Btn small danger label="SUPPRIMER LE PROGRAMME EXEMPLE" onClick={deleteExample} />
+        </Card>
+      )}
       {(routines || []).filter(r => r && r.name).map(r => (
         <Card key={r.id}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div style={{ flex: 1 }}>
-              {r.day && <div style={{ fontSize: 9, color: DC[r.day] || "#ff6600", fontFamily: "monospace", fontWeight: 900, marginBottom: 2 }}>{r.day}</div>}
+              {r.example === true && <div style={{ fontSize: 9, color: "#00E5FF", fontFamily: "monospace", fontWeight: 900, marginBottom: 2 }}>EXEMPLE TATANKA</div>}
+            {r.day && <div style={{ fontSize: 9, color: DC[r.day] || "#ff6600", fontFamily: "monospace", fontWeight: 900, marginBottom: 2 }}>{r.day}</div>}
               <div style={{ fontSize: 14, fontWeight: 800, color: "#fff" }}>{r.name}</div>
               <div style={{ fontSize: 10, color: "#444", marginTop: 2 }}>{r.exercises.length} exercices</div>
             </div>
@@ -2928,23 +3406,22 @@ function IronTraining() {
   const initRoutines = () => {
     // Regle : « Ma donnee reste ma donnee ». Si le compte a deja des routines valides, RIEN ne peut les remplacer
     // automatiquement : ni version absente, ni ancienne, ni « imported-... ». Aucune ecriture dans ce cas.
-    // Seule l'absence de routine exploitable declenche le programme par defaut (avec copie de securite de l'ancien contenu).
-    let rawStr = null;
+    // Un compte SANS routine exploitable demarre VIDE : aucune donnee inventee, rien d'ecrit pour un compte neuf.
+    // Le « Programme exemple Tatanka » est propose (facultatif) dans l'ecran Programme.
+    // Contenu illisible ou abime : copie de securite conservee avant de ne garder que les entrees valides.
+    let rawStr = null, backedUp = false;
     try {
       rawStr = lsGetNs(KEYS.routines);
       const parsed = rawStr ? JSON.parse(rawStr) : null;
       if (Array.isArray(parsed) && parsed.length > 0) {
         const valid = parsed.filter(r => r && r.name && Array.isArray(r.exercises));
         if (valid.length === parsed.length) return parsed;
-        lsSetNs(KEYS.routines + "_backup_" + Date.now(), rawStr);
+        lsSetNs(KEYS.routines + "_backup_" + Date.now(), rawStr); backedUp = true;
         if (valid.length > 0) { save(KEYS.routines, valid); return valid; }
-        rawStr = null;
       }
-    } catch(e) { if (rawStr) lsSetNs(KEYS.routines + "_backup_" + Date.now(), rawStr); }
-    const fresh = PROGRAMME.map(p => ({ id: p.id, name: p.name, day: p.day, color: p.color, exercises: p.exercises.map(ex => ({ name: ex.name, sets: ex.sets, repsTarget: ex.repsTarget, note: ex.note, rest: ex.rest || 90, warmupSets: ex.warmupSets || 0, warmupLabel: ex.warmupLabel || "" })) }));
-    save(KEYS.routines, fresh);
-    lsSetNs("it3_prog_version", PROG_VERSION);
-    return fresh;
+    } catch(e) { if (rawStr) { lsSetNs(KEYS.routines + "_backup_" + Date.now(), rawStr); backedUp = true; } }
+    if (backedUp) save(KEYS.routines, []);
+    return [];
   };
 
   const [routines, setRoutines] = useState(initRoutines);
@@ -3474,7 +3951,8 @@ function exportData() {
               📅 RÉINITIALISER DATE DU CYCLE
             </button>
             <button onClick={() => {
-              if (confirm("Réparer l'app ? Les routines seront réinitialisées, vos séances sont conservées.")) {
+              if (confirm("Réparer l'app ? Tes routines seront remises à zéro (une copie de sécurité est conservée), tes séances sont conservées. Tu pourras recharger le programme exemple.")) {
+                try { const cur = lsGetNs(KEYS.routines); if (cur) lsSetNs(KEYS.routines + "_backup_" + Date.now(), cur); } catch(e) {}
                 ["it3_current_session","it3_prog_version",KEYS.routines].forEach(k => { try { lsRemoveNs(k); } catch(e) {} });
                 window.location.reload();
               }

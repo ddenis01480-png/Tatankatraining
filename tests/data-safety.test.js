@@ -66,14 +66,14 @@ t('routines partiellement corrompues : les valides sont conservees, la copie de 
   const bk = Object.keys(ls._m).filter(k => k.startsWith(NS('it3_routines_backup_')) || k.startsWith('it3_routines_backup_')); assert.strictEqual(bk.length, 1, 'une copie de securite'); assert.strictEqual(ls.getItem(bk[0]), raw);
   assert.strictEqual(ls.getItem(NS('it3_sessions')), JSON.stringify(EXP.sessions));
 });
-t('routines illisibles (JSON casse) : copie de securite conservee avant de repartir du programme par defaut ; seances intactes', async () => {
+t('routines illisibles (JSON casse) : copie de securite conservee avant de repartir a vide ; seances intactes', async () => {
   const ls = existingAccount({ [NS('it3_routines')]: '{casse' }); await boot(ls, false);
   const bk = Object.keys(ls._m).filter(k => k.includes('it3_routines_backup_')); assert.strictEqual(bk.length, 1); assert.strictEqual(ls.getItem(bk[0]), '{casse');
   assert.strictEqual(ls.getItem(NS('it3_sessions')), JSON.stringify(EXP.sessions));
 });
-t('compte avec seances mais SANS routine : seances intactes (comportement par defaut conserve pour les routines)', async () => {
+t('compte avec seances mais SANS routine : seances intactes, demarre VIDE (programme exemple facultatif), aucune routine inventee ni ecrite', async () => {
   const ls = existingAccount(); ls.removeItem(NS('it3_routines')); const app = await boot(ls, false);
-  assert.strictEqual(ls.getItem(NS('it3_sessions')), JSON.stringify(EXP.sessions)); assert.ok(app.state('routines').length >= 1);
+  assert.strictEqual(ls.getItem(NS('it3_sessions')), JSON.stringify(EXP.sessions)); assert.strictEqual(app.state('routines').length, 0); assert.ok([null, '[]'].includes(ls.getItem(NS('it3_routines'))), 'jamais de routine inventee : stockage vide ou []');
 });
 
 // ───────── 2. IMPORT = AJOUT (vrai gestionnaire importData) ─────────

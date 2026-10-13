@@ -17,8 +17,8 @@ function fnSrc(sig) {
   for (let p = SRC.indexOf('{', i); p < SRC.length; p++) { if (SRC[p] === '{') d++; if (SRC[p] === '}' && --d === 0) return SRC.slice(i, p + 1); }
 }
 const COACH_BLOCK = (() => { const a = SRC.indexOf('var _PLAN_RANKS'); if (a < 0) return ''; return SRC.slice(a, SRC.indexOf('window._coach = resolveCoach(null, null);', a)) + 'window._coach = resolveCoach(null, null);\n' + ['async function _loadFlags()', 'function _renderCoachBadge()', 'async function _refreshCoach()'].map(fnSrc).join('\n'); })();
-const GLOBALS = cut('var supabase = null;', 'function initSupabase()') + '\n' + COACH_BLOCK + '\n' +
-  ['function initSupabase()', 'async function _loadProfile(', 'function _showAuthScreen()', 'function _hideAuthScreen()', 'async function autoBackup(', 'function _syncFromCloud()', 'function normalizeSessions('].map(fnSrc).join('\n') + '\n' +
+const GLOBALS = cut('var supabase = null;', 'function initSupabase()') + '\n' + 'var _betaLast = null;\n' + COACH_BLOCK + '\n' +
+  ['function initSupabase()', 'async function _loadProfile(', 'async function _fetchBeta(', 'function _isPremium()', 'function _showAuthScreen()', 'function _hideAuthScreen()', 'async function autoBackup(', 'function _syncFromCloud()', 'function normalizeSessions('].map(fnSrc).join('\n') + '\n' +
   cut('const EXERCISE_NAME_FIXES', 'function save(k, v) {') + fnSrc('function save(k, v) {');
 const COMP_HEAD = cut('function IronTraining() {', 'useEffect(() => { save(KEYS.routines, routines); }, [routines]);', true);
 const STATE_NAMES = [...COMP_HEAD.matchAll(/const \[(\w+), (\w+)\] = useState/g)].map(m => m[1]);
@@ -31,8 +31,10 @@ function openApp(ls) {
   const backups = [], nav = { reloads: 0 }, cells = [], effects = [];
   let authCb = null, n = 0, scriptEl = {}, writes = 0; const prevDeps = [];
   const lsSpy = { getItem: k => ls.getItem(k), setItem: (k, v) => { writes++; ls.setItem(k, v); }, removeItem: k => { writes++; ls.removeItem(k); } };
+  const backend = { profile: { premium: false }, rpc: null };
   const sb = { auth: { onAuthStateChange: cb => { authCb = cb; } },
-    from: () => ({ select: () => ({ eq: () => ({ single: async () => ({ data: { premium: false } }) }) }), insert: async () => ({}), update: () => ({ eq: async () => ({}) }) }),
+    rpc: async (n, a) => (backend.rpc ? backend.rpc(n, a) : { data: null, error: { message: 'absent' } }),
+    from: () => ({ select: () => ({ eq: () => ({ single: async () => ({ data: backend.profile }) }) }), insert: async () => ({}), update: () => ({ eq: async () => ({}) }) }),
     functions: { invoke: async (_, o) => { backups.push(JSON.parse(JSON.stringify(o.body))); return {}; } } };
   const ctx = { console, JSON, Math, Date, Array, Object, parseInt, parseFloat, encodeURIComponent, setTimeout, Promise, Error, String, Number,
     localStorage: lsSpy, sessionStorage: mkStore(), alert() {}, confirm: () => true, fetch: () => new Promise(() => {}),
@@ -44,7 +46,7 @@ function openApp(ls) {
   ctx.addEventListener = () => {}; ctx.window = ctx; ctx.window.location = { search: '', reload: () => { nav.reloads++; } }; 
   vm.createContext(ctx);
   vm.runInContext(GLOBALS + '\nthis.__KEYS=KEYS; this.__setUser=u=>{currentUser=u};', ctx);
-  const app = { ctx, ls, backups, nav, get writes() { return writes; }, resetWrites() { writes = 0; },
+  const app = { ctx, ls, backups, nav, backend, get writes() { return writes; }, resetWrites() { writes = 0; },
     state: name => cells[STATE_NAMES.indexOf(name)].v, setState: (name, v) => cells[STATE_NAMES.indexOf(name)].set(v),
     mount(user) { // rendu initial du VRAI composant ; `user` = identite deja connue au demarrage (ou null)
       if (user) ctx.__setUser(user);

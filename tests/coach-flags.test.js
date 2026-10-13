@@ -71,10 +71,21 @@ t('badge ?coach=debug : compte lab => V2 / canal lab ; compte stable => V1 ; err
 t('badge : une erreur d\'affichage (document casse) ne perturbe jamais le choix du moteur', async () => { const c = ctx({ document: { get body() { throw new Error('dom'); } }, window: { location: { search: '?coach=debug' } } });
   c.__set({ from: () => ({ select: () => Promise.resolve({ data: [{ key: 'coach_v2', state: 'lab', min_plan: 'premium_plus' }], error: null }) }) }, { id: 'u1' }, P({ coach_channel: 'lab' }));
   await vm.runInContext('_refreshCoach()', c); assert.strictEqual(vm.runInContext('window._coach.engine', c), 'v2'); });
+t('_isPremium : comportement IDENTIQUE a main pour tout profil sans beta_active (equivalence sur 400 profils), et vrai uniquement avec beta_active === true', () => {
+  const { execSync } = require('child_process'); const base = execSync('git show 0bc456c:index.html', { cwd: __dirname + '/..', maxBuffer: 1e8 }).toString();
+  const grab = (src, sig) => { const i = src.indexOf(sig); let d = 0; for (let p = src.indexOf('{', i); p < src.length; p++) { if (src[p] === '{') d++; if (src[p] === '}' && --d === 0) return src.slice(i, p + 1); } };
+  const old = ctx(); vm.runInContext('var userProfile = null;', old); vm.runInContext(grab(base, 'function _isPremium()'), old); const cur = ctx();
+  const past = '2020-01-01T00:00:00Z', fut = '2999-01-01T00:00:00Z'; let n = 0;
+  for (const pt of [false, true]) for (const pk of [false, true]) for (const pr of [false, true]) for (const pe of [null, past, fut]) for (const bx of [undefined, false, null, 0, 'true', 1, {}, []]) for (const pl of ['free', 'premium', 'premium_plus', undefined]) {
+    const prof = { premium_training: pt, pack: pk, promo: pr, promo_expires_at: pe, plan: pl, beta_active: bx, beta_expires_at: fut, beta_started_at: past };
+    old.__set(undefined, undefined, prof); cur.__set(undefined, undefined, prof); n++;
+    assert.strictEqual(vm.runInContext('_isPremium()', cur), vm.runInContext('_isPremium()', old), JSON.stringify(prof)); }
+  cur.__set(undefined, undefined, { beta_active: true }); assert.strictEqual(vm.runInContext('_isPremium()', cur), true); assert.ok(n >= 400);
+});
 t('V1 INCHANGE : _isPremium + moteur de progression (getProgressionTip) identiques a main, sur entrees fixes', () => {
   const { execSync } = require('child_process'); const base = execSync('git show 0bc456c:index.html', { cwd: __dirname + '/..', maxBuffer: 1e8 }).toString();
   const grab = (src, sig) => { const i = src.indexOf(sig); let d = 0; for (let p = src.indexOf('{', i); p < src.length; p++) { if (src[p] === '{') d++; if (src[p] === '}' && --d === 0) return src.slice(i, p + 1); } };
-  for (const sig of ['function _isPremium()', 'function getProgressionTip(', 'function checkStagnation(', 'function normalizeSessions(', 'async function autoBackup(', 'function _syncFromCloud()'])
+  for (const sig of ['function getProgressionTip(', 'function checkStagnation(', 'function normalizeSessions(', 'async function autoBackup(', 'function _syncFromCloud()'])
     assert.strictEqual(grab(SRC, sig), grab(base, sig), sig + ' modifie');
   const h = s => crypto.createHash('sha1').update(s).digest('hex');
   // le bloc "Coach" (progression, adaptations de fatigue, onglets) est octet pour octet identique
