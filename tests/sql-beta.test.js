@@ -128,5 +128,47 @@ t('coexistence future avec 001+002+003 : la garde bêta et la garde générale c
   assert.deepStrictEqual([p.beta_expires_at, p.plan], [null, 'free']); await adm(base); await base.exec(`select public.beta_grant('alice@test.fr')`); p = await prof(base, A); assert.ok(p.beta_expires_at !== null);
   assert.strictEqual((await beta(base, A)).active, true); await adm(base); await base.exec(sql('006_beta_access.sql'));
 });
+// --- Correctif beta_extend : active = prolongeable ; expiree / revoquee = jamais reactivee (-> beta_grant) ---
+const days = (a, b) => (new Date(a) - new Date(b)) / 86400000;
+t('extend A. bêta ACTIVE : prolongeable, durée totale depuis le début, début et cohorte inchangés, accès toujours actif', async () => {
+  const db = await fresh(); await adm(db); await db.exec(`select public.beta_grant('alice@test.fr')`); const p0 = await prof(db, A);
+  const msg = (await one(db, `select public.beta_extend('alice@test.fr', 60) as m`)).m; assert.ok(msg.includes('60 jours'), msg);
+  const p = await prof(db, A); assert.ok(Math.abs(days(p.beta_expires_at, p0.beta_started_at) - 60) < 0.001); assert.strictEqual(+new Date(p.beta_started_at), +new Date(p0.beta_started_at)); assert.strictEqual(p.cohort, 'beta');
+  assert.strictEqual((await beta(db, A)).active, true);
+});
+t('extend B. bêta EXPIRÉE : beta_extend refuse, renvoie vers beta_grant, ne réactive rien, ne modifie rien', async () => {
+  const db = await fresh(); await adm(db); await db.exec(`select public.beta_grant('alice@test.fr')`);
+  await db.exec(`update public.profiles set beta_started_at = now() - interval '40 days', beta_expires_at = now() - interval '10 days' where id='${A}'`); const before = await prof(db, A);
+  await denied(db.query(`select public.beta_extend('alice@test.fr', 90)`), 'beta_grant'); await denied(db.query(`select public.beta_extend('alice@test.fr', 90, true)`), 'beta_grant');
+  const after = await prof(db, A); assert.deepStrictEqual([after.beta_started_at, after.beta_expires_at, after.cohort], [before.beta_started_at, before.beta_expires_at, before.cohort]);
+  assert.strictEqual((await beta(db, A)).active, false);
+});
+t('extend C. bêta RÉVOQUÉE : beta_extend refuse (message beta_grant), accès toujours coupé, données du profil intactes', async () => {
+  const db = await fresh(); await adm(db); await db.exec(`select public.beta_grant('alice@test.fr')`); await db.exec(`select public.beta_revoke('alice@test.fr')`);
+  await denied(db.query(`select public.beta_extend('alice@test.fr', 90)`), 'beta_grant'); await denied(db.query(`select public.beta_extend('alice@test.fr', 90, true)`), 'beta_grant');
+  assert.strictEqual((await beta(db, A)).active, false); const p = await prof(db, A); assert.deepStrictEqual(p.prefs, { kcal: 2500 }); assert.ok(p.beta_started_at !== null);
+});
+t('extend D. prolongation qui RACCOURCIRAIT : refusée sans changement ; autorisée seulement avec true et tant que la date reste dans le futur', async () => {
+  const db = await fresh(); await adm(db); await db.exec(`select public.beta_grant('alice@test.fr', 60)`); const p0 = await prof(db, A);
+  await denied(db.query(`select public.beta_extend('alice@test.fr', 30)`), 'raccourcirait'); let p = await prof(db, A); assert.strictEqual(+new Date(p.beta_expires_at), +new Date(p0.beta_expires_at), 'inchangé après refus');
+  await db.exec(`select public.beta_extend('alice@test.fr', 45, true)`); p = await prof(db, A); assert.ok(Math.abs(days(p.beta_expires_at, p0.beta_started_at) - 45) < 0.001); assert.strictEqual((await beta(db, A)).active, true);
+  await adm(db); await db.exec(`update public.profiles set beta_started_at = now() - interval '20 days' where id='${A}'`); const p1 = await prof(db, A);
+  await denied(db.query(`select public.beta_extend('alice@test.fr', 10, true)`), 'beta_revoke'); p = await prof(db, A); assert.strictEqual(+new Date(p.beta_expires_at), +new Date(p1.beta_expires_at), 'pas de coupure déguisée');
+  assert.strictEqual((await beta(db, A)).active, true);
+});
+t('extend E. nouvelle attribution APRÈS RÉVOCATION : beta_grant donne 30 jours à partir de maintenant, accès actif, données intactes', async () => {
+  const db = await fresh(); await adm(db); await db.exec(`select public.beta_grant('alice@test.fr', 90)`); const p0 = await prof(db, A); await new Promise(r => setTimeout(r, 50));
+  await db.exec(`select public.beta_revoke('alice@test.fr')`); assert.strictEqual((await beta(db, A)).active, false);
+  await adm(db); const msg = (await one(db, `select public.beta_grant('alice@test.fr') as m`)).m; assert.ok(msg.includes('Bêta accordée') && msg.includes('30 jours'), msg);
+  const p = await prof(db, A); const now = (await one(db, 'select now() as n')).n;
+  assert.ok(secs(p.beta_started_at, now) < 5, 'début = maintenant'); assert.ok(+new Date(p.beta_started_at) > +new Date(p0.beta_started_at)); assert.ok(Math.abs(days(p.beta_expires_at, p.beta_started_at) - 30) < 0.001, '30 jours exactement');
+  assert.strictEqual((await beta(db, A)).active, true); assert.deepStrictEqual(p.prefs, { kcal: 2500 });
+});
+t('extend F. nouvelle attribution APRÈS EXPIRATION : beta_grant repart de maintenant pour 30 jours (pas de l\'ancienne date)', async () => {
+  const db = await fresh(); await adm(db); await db.exec(`select public.beta_grant('alice@test.fr')`);
+  await db.exec(`update public.profiles set beta_started_at = now() - interval '80 days', beta_expires_at = now() - interval '50 days' where id='${A}'`);
+  await db.exec(`select public.beta_grant('alice@test.fr')`); const p = await prof(db, A); const now = (await one(db, 'select now() as n')).n;
+  assert.ok(secs(p.beta_started_at, now) < 5); assert.ok(Math.abs(days(p.beta_expires_at, p.beta_started_at) - 30) < 0.001); assert.strictEqual((await beta(db, A)).active, true);
+});
 (async () => { let fail = 0; for (const [n, f] of tests) { try { await f(); console.log('OK   ' + n); } catch (e) { fail++; console.log('FAIL ' + n + '\n       -> ' + String(e.message).split('\n')[0]); } }
   console.log(`\n${tests.length - fail}/${tests.length} tests passes`); process.exit(fail ? 1 : 0); })();

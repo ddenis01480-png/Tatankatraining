@@ -63,7 +63,8 @@ begin
 end $$;
 
 -- beta_extend('mail', 90)     -> fixe la DURÉE TOTALE à 90 jours depuis le début de la bêta (pas 90 jours de plus).
---                                Refuse de raccourcir, sauf beta_extend('mail', 10, true).
+--                                Ne fonctionne que sur une bêta ACTIVE. Refuse de raccourcir, sauf beta_extend('mail', 10, true).
+--                                Une bêta expirée ou révoquée n'est jamais réactivée ici : message -> utilise beta_grant.
 create or replace function public.beta_extend(p_email text, p_total_days integer, p_allow_shorter boolean default false) returns text
 language plpgsql security definer set search_path = public, auth as $$
 declare v_id uuid; v_start timestamptz; v_exp timestamptz; v_new timestamptz;
@@ -74,13 +75,18 @@ begin
   select p.beta_started_at, p.beta_expires_at into v_start, v_exp from public.profiles p where p.id = v_id;
   if not found then raise exception 'Profil introuvable'; end if;
   if v_start is null then raise exception 'Ce compte n''a jamais eu la bêta : utilise beta_grant d''abord'; end if;
+  if v_exp is null or v_exp <= now() then
+    raise exception 'Bêta expirée ou révoquée : beta_extend ne réactive jamais un accès. Utilise beta_grant pour réattribuer l''accès (30 jours à partir de maintenant)';
+  end if;
   v_new := v_start + make_interval(days => p_total_days);
-  if v_exp is not null and v_new < v_exp and not p_allow_shorter then
+  if v_new <= now() then
+    raise exception 'Cette durée serait déjà passée : beta_extend ne coupe pas l''accès. Pour retirer l''accès : beta_revoke';
+  end if;
+  if v_new < v_exp and not p_allow_shorter then
     raise exception 'Cette durée raccourcirait la bêta (actuellement jusqu''au % UTC). Pour raccourcir volontairement : beta_extend(mail, jours, true)', to_char(v_exp at time zone 'UTC', 'YYYY-MM-DD HH24:MI');
   end if;
   update public.profiles set beta_expires_at = v_new where id = v_id;
-  return 'Durée totale : ' || p_total_days || ' jours, jusqu''au ' || to_char(v_new at time zone 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC'
-         || case when v_new <= now() then ' (déjà passée : la bêta reste expirée)' else '' end;
+  return 'Durée totale : ' || p_total_days || ' jours, jusqu''au ' || to_char(v_new at time zone 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC';
 end $$;
 
 -- beta_revoke('mail')         -> retire l'accès tout de suite. Aucune donnée du testeur n'est touchée.

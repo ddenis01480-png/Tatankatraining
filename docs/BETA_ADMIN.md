@@ -16,10 +16,17 @@ Le testeur doit avoir **créé son compte et ouvert l'appli une fois** (connect�
 |---|---|
 | Donner 30 jours **à partir de maintenant** | `select beta_grant('testeur@mail.fr');` |
 | Donner une autre durée (ex. 45 jours) | `select beta_grant('testeur@mail.fr', 45);` |
-| Fixer la durée **totale** à 60 / 90 jours depuis le début | `select beta_extend('testeur@mail.fr', 90);` |
-| Raccourcir volontairement | `select beta_extend('testeur@mail.fr', 10, true);` |
-| Retirer l'accès tout de suite | `select beta_revoke('testeur@mail.fr');` |
+| Prolonger une bêta **active** : fixer la durée **totale** à 60 / 90 jours depuis le début | `select beta_extend('testeur@mail.fr', 90);` |
+| Raccourcir volontairement une bêta active (la nouvelle date doit rester dans le futur) | `select beta_extend('testeur@mail.fr', 60, true);` |
+| Retirer l'accès tout de suite (aucune donnée supprimée) | `select beta_revoke('testeur@mail.fr');` |
+| Réattribuer l'accès après expiration ou révocation (30 jours **à partir de maintenant**) | `select beta_grant('testeur@mail.fr');` |
 | Voir tous les testeurs | `select * from beta_testers;` |
+
+Règles à retenir :
+- `beta_extend` ne marche **que sur une bêta active**. Sur une bêta **expirée ou révoquée**, il refuse et affiche un message te renvoyant vers `beta_grant` : il ne réactive jamais un accès.
+- `beta_extend` refuse de **raccourcir** la durée déjà accordée (sauf avec `true`), et ne sert jamais à couper l'accès : pour cela, `beta_revoke`.
+- `beta_grant` sur un compte **déjà actif** ne change rien (utilise `beta_extend`). Sur un compte expiré ou révoqué, il repart de maintenant pour 30 jours (ou la durée donnée).
+- `beta_revoke` ne supprime ni ne masque aucune donnée du testeur : séances, routines, suppléments, historique et export restent intacts.
 
 `beta_testers` affiche : e-mail, cohorte, début, expiration, **jours restants**, statut (actif / expiré / jamais).
 Modifier directement `beta_expires_at` dans Table Editor reste possible pour du dépannage, sans être nécessaire.
