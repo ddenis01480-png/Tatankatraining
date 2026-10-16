@@ -170,5 +170,58 @@ t('extend F. nouvelle attribution APRÈS EXPIRATION : beta_grant repart de maint
   await db.exec(`select public.beta_grant('alice@test.fr')`); const p = await prof(db, A); const now = (await one(db, 'select now() as n')).n;
   assert.ok(secs(p.beta_started_at, now) < 5); assert.ok(Math.abs(days(p.beta_expires_at, p.beta_started_at) - 30) < 0.001); assert.strictEqual((await beta(db, A)).active, true);
 });
+// --- Environnement « réel » (constaté en lecture seule sur le projet Supabase) : profiles sans colonnes bêta, RLS avec SEULE policy SELECT,
+//     droits par défaut Supabase (EXECUTE sur fonctions + ALL sur tables donnés à anon/authenticated/service_role), trigger de création de profil à l'inscription.
+async function freshReal() {
+  const db = new PGlite();
+  await db.exec(`
+    create role anon nologin; create role authenticated nologin; create role service_role nologin bypassrls;
+    create schema auth; create table auth.users (id uuid primary key, email text);
+    create function auth.jwt() returns jsonb language sql stable as $$ select coalesce(nullif(current_setting('request.jwt.claims', true),''),'{}')::jsonb $$;
+    create function auth.uid() returns uuid language sql stable as $$ select nullif(auth.jwt()->>'sub','')::uuid $$;
+    grant usage on schema auth to anon, authenticated, service_role; grant usage on schema public to anon, authenticated, service_role;
+    alter default privileges for role postgres in schema public grant all on tables to anon, authenticated, service_role;
+    alter default privileges for role postgres in schema public grant execute on functions to anon, authenticated, service_role;
+    create table public.profiles (id uuid primary key references auth.users(id), email text unique, premium boolean default false, lifetime boolean default false, blocked boolean default false,
+      created_at timestamptz default now(), prefs jsonb, promo boolean default false, promo_expires_at timestamptz, premium_nutrition boolean default false, premium_training boolean default false, premium_progress boolean default false, pack boolean default false);
+    alter table public.profiles enable row level security;
+    create policy "Users can view their own profile" on public.profiles for select to authenticated using ((select auth.uid()) = id);
+    create function public.handle_new_user_profile() returns trigger language plpgsql security definer set search_path to 'public' as $$ begin
+      insert into public.profiles (id,email,premium,lifetime,blocked,promo,premium_nutrition,premium_training,premium_progress,pack) values (new.id,lower(new.email),false,false,false,false,false,false,false,false)
+      on conflict (id) do update set email=excluded.email; return new; end $$;
+    revoke all on function public.handle_new_user_profile() from public, anon, authenticated;
+    create trigger on_auth_user_created_profile after insert on auth.users for each row execute function public.handle_new_user_profile();
+    insert into auth.users values ('${A}','Alice@Test.fr'), ('${B}','bob@test.fr');
+    update public.profiles set prefs='{"kcal":2500}' where id='${A}';
+  `);
+  await db.exec(sql('006_beta_access.sql')); return db;
+}
+t('réel 1. migration sur la structure réelle : idempotente, profils créés par le trigger d\'inscription restent sans bêta', async () => {
+  const db = await freshReal(); await db.exec(sql('006_beta_access.sql')); await adm(db);
+  await db.exec(`insert into auth.users values ('${C}','New@Test.fr')`); const p = await prof(db, C); assert.deepStrictEqual([p.email, p.beta_started_at, p.beta_expires_at, p.cohort], ['new@test.fr', null, null, null]);
+  assert.strictEqual((await beta(db, C)).active, false);
+});
+t('réel 2. avec les droits par défaut Supabase, authenticated/anon ne peuvent appeler NI beta_grant/extend/revoke NI lire beta_testers ; get_my_beta reste réservé à authenticated', async () => {
+  const db = await fresh0(); for (const role of ['authenticated', 'anon']) { await as(db, A, role);
+    await denied(db.query(`select public.beta_grant('alice@test.fr')`), 'permission denied'); await denied(db.query(`select public.beta_extend('alice@test.fr', 60)`), 'permission denied');
+    await denied(db.query(`select public.beta_extend('alice@test.fr', 60, true)`), 'permission denied'); await denied(db.query(`select public.beta_revoke('alice@test.fr')`), 'permission denied'); await denied(db.query('select * from public.beta_testers'), 'permission denied'); }
+  await as(db, null, 'anon'); await denied(db.query('select public.get_my_beta()'), 'permission denied'); assert.strictEqual((await beta(db, A)).active, false);
+  async function fresh0() { return freshReal(); }
+});
+t('réel 3. avec la RLS réelle (SELECT seul), aucune écriture client ne touche aux colonnes bêta : UPDATE, INSERT, upsert', async () => {
+  const db = await freshReal(); await adm(db); await db.exec(`select public.beta_grant('alice@test.fr', 30)`); const before = await prof(db, A);
+  await as(db, A); await db.exec(`update public.profiles set beta_expires_at = now() + interval '9 years', cohort='lab' where id='${A}'`);
+  await denied(db.query(`insert into public.profiles (id,email,beta_expires_at) values ('${A}','alice@test.fr', now() + interval '5 years') on conflict (id) do update set beta_expires_at = excluded.beta_expires_at`));
+  const after = await prof(db, A); assert.deepStrictEqual([after.beta_started_at, after.beta_expires_at, after.cohort], [before.beta_started_at, before.beta_expires_at, before.cohort]);
+  await as(db, A); assert.strictEqual((await one(db, 'select count(*)::int n from public.profiles')).n, 1, 'chacun ne voit que son profil');
+});
+t('réel 4. flux complet sur la structure réelle : grant 30 j -> extend -> shorten refusé -> revoke -> extend refusé (beta_grant) -> nouveau grant 30 j ; données intactes', async () => {
+  const db = await fresh0(); async function fresh0() { return freshReal(); }
+  await adm(db); await db.exec(`select public.beta_grant(' ALICE@test.fr ')`); let p = await prof(db, A); assert.ok(Math.abs(days(p.beta_expires_at, p.beta_started_at) - 30) < 0.001);
+  await db.exec(`select public.beta_extend('alice@test.fr', 60)`); await denied(db.query(`select public.beta_extend('alice@test.fr', 20)`), 'raccourcirait'); await denied(db.query(`select public.beta_extend('alice@test.fr', 0)`), 'Durée invalide');
+  await db.exec(`select public.beta_revoke('alice@test.fr')`); await denied(db.query(`select public.beta_extend('alice@test.fr', 90)`), 'beta_grant'); assert.strictEqual((await beta(db, A)).active, false);
+  await adm(db); await db.exec(`select public.beta_grant('alice@test.fr')`); p = await prof(db, A); assert.ok(Math.abs(days(p.beta_expires_at, p.beta_started_at) - 30) < 0.001); assert.strictEqual((await beta(db, A)).active, true);
+  assert.deepStrictEqual(p.prefs, { kcal: 2500 }); assert.strictEqual(p.premium, false, 'aucun droit de paiement modifié'); assert.strictEqual(p.pack, false);
+});
 (async () => { let fail = 0; for (const [n, f] of tests) { try { await f(); console.log('OK   ' + n); } catch (e) { fail++; console.log('FAIL ' + n + '\n       -> ' + String(e.message).split('\n')[0]); } }
   console.log(`\n${tests.length - fail}/${tests.length} tests passes`); process.exit(fail ? 1 : 0); })();
