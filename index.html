@@ -118,7 +118,7 @@ setTimeout(function(){
     <div id="tt-auth-error" style="color:#e74c3c;font-size:12px;margin-bottom:10px;display:none;text-align:center"></div>
     <button id="tt-auth-btn" onclick="ttDoAuth()" style="width:100%;background:#c0392b;border:none;color:#fff;border-radius:10px;padding:14px;font-size:14px;font-weight:900;cursor:pointer;margin-bottom:12px">SE CONNECTER</button>
     <div style="text-align:center">
-      <button onclick="ttPromoCode()" style="background:none;border:none;color:#666;font-size:12px;cursor:pointer">🎟 Code promo</button>
+      <button onclick="ttPromoCode()" style="display:none;background:none;border:none;color:#666;font-size:12px;cursor:pointer">🎟 Code promo</button>
     </div>
   </div>
 </div>
@@ -244,6 +244,8 @@ var supabase = null;
 var currentUser = null;
 var userProfile = null;
 var _sbInited = false;
+// Beta gratuite : aucun paiement, aucun abonnement, aucun code promo (code conserve, desactive).
+var COMMERCE_ENABLED = false;
 
 // ============================================================
 // ISOLATION DES DONNEES LOCALES PAR COMPTE (namespacing localStorage)
@@ -307,7 +309,6 @@ function initSupabase() {
           if (typeof reloadCustomEx === "function") reloadCustomEx();
           await _loadProfile(session.user.id, session.user.email);
           _refreshCoach();
-          if (window.location.search.includes('payment=success')) { await _activateTrainingPremium(); }
           _hideAuthScreen();
           _syncFromCloud();
 
@@ -482,14 +483,18 @@ async function _refreshCoach() {
   _renderCoachBadge();
 }
 
+// Desactivee : l'adresse de retour Stripe n'accorde plus le Premium.
 async function _activateTrainingPremium(){
+  return;
   if(!supabase||!currentUser)return;
   await supabase.from('profiles').update({premium_training:true}).eq('id',currentUser.id);
   if(userProfile)userProfile.premium_training=true;
   window.history.replaceState({},'',window.location.pathname);
 }
 
+function _commerceDisabledNotice(){ alert("Aucun paiement pendant la bêta : l'accès Premium est offert aux testeurs."); }
 function startCheckout(plan){
+  if(!COMMERCE_ENABLED){ _commerceDisabledNotice(); return; }
   if(!currentUser){ alert('Connecte-toi d\'abord'); return; }
   var url=plan==='monthly'?STRIPE_MONTHLY:STRIPE_YEARLY;
   url+='?prefilled_email='+encodeURIComponent(currentUser.email)+'&client_reference_id='+currentUser.id;
@@ -497,6 +502,7 @@ function startCheckout(plan){
 }
 
 function startPackCheckout(plan){
+  if(!COMMERCE_ENABLED){ _commerceDisabledNotice(); return; }
   if(!currentUser){ alert('Connecte-toi d\'abord'); return; }
   var url=plan==='monthly'?PACK_MONTHLY:PACK_YEARLY;
   url+='?prefilled_email='+encodeURIComponent(currentUser.email)+'&client_reference_id='+currentUser.id;
@@ -534,6 +540,7 @@ async function _doSignOut() {
 }
 
 async function _applyPromoCode(code) {
+  if (!COMMERCE_ENABLED) throw new Error('Pas de code promo pendant la bêta.');
   if (!currentUser) throw new Error('Connecte-toi d abord');
   if (!supabase) throw new Error('Service indisponible');
   // Validation (code, email, expiration) et activation faites cote serveur : le navigateur n'ecrit plus promo.
@@ -1709,7 +1716,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
           }))
         };
       });
-      if ((!window._isPremium || !window._isPremium()) && sessions.length >= 30) { alert("Limite de 30 séances atteinte.\nPassez Premium pour continuer !\n\n4,99€/mois ou 39,99€/an"); return; }
+      if ((!window._isPremium || !window._isPremium()) && sessions.length >= 30) { alert(window.COMMERCE_ENABLED ? "Limite de 30 séances atteinte.\nPassez Premium pour continuer !\n\n4,99€/mois ou 39,99€/an" : "Limite de 30 séances atteinte en accès gratuit.\nTes séances sont conservées ; contacte l'organisateur de la bêta."); return; }
       setCurrentSets({ routineId: activeRoutine.id, routineName: activeRoutine.name, exercises });
       setActiveRoutine(null);
       setTimeout(() => window.scrollTo({ top: 0, behavior: "smooth" }), 50);
@@ -3909,6 +3916,7 @@ function exportData() {
             <div style={{ fontSize: 9, color: "#333", fontFamily: "monospace", textAlign: "center", marginTop: 4 }}>
               Import = fusion sans perte de donnees existantes
             </div>
+            {window.COMMERCE_ENABLED && (
             <button onClick={async () => {
               const code = prompt('Entre ton code promo :');
               if (!code) return;
@@ -3916,6 +3924,7 @@ function exportData() {
             }} style={{ width: '100%', background: '#1a0a00', border: '1px solid #FF8C0044', color: '#FF8C00', borderRadius: 10, padding: '12px', fontSize: 12, fontWeight: 700, cursor: 'pointer', marginBottom: 6, marginTop: 10 }}>
               🎟 CODE PROMO
             </button>
+            )}
             <button onClick={() => {
               const d = prompt("Date de début du cycle actuel ? (format AAAA-MM-JJ)", "2026-05-22");
               if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) {
@@ -3961,7 +3970,7 @@ function exportData() {
             }} style={{ background: window.userProfile && (window.userProfile.premium_training || window.userProfile.pack || window.userProfile.promo) ? "#001a00" : "#1a1a1a", border: window.userProfile && (window.userProfile.premium_training || window.userProfile.pack || window.userProfile.promo) ? "1px solid #00C85333" : "1px solid #2a2a2a", color: window.userProfile && (window.userProfile.premium_training || window.userProfile.pack || window.userProfile.promo) ? "#00C853" : "#888", borderRadius:6, padding:"4px 8px", fontSize:10, cursor:"pointer", fontWeight:700, marginRight:4 }}>
               {window.currentUser ? (window.userProfile && (window.userProfile.premium_training || window.userProfile.pack || window.userProfile.promo) ? "★ PRO" : "👤") : "🔐"}
             </button>
-            {window.currentUser && window.userProfile && (window.userProfile.premium_training || window.userProfile.promo) && !window.userProfile.pack &&
+            {window.COMMERCE_ENABLED && window.currentUser && window.userProfile && (window.userProfile.premium_training || window.userProfile.promo) && !window.userProfile.pack &&
               <button onClick={() => window.startPackCheckout('monthly')} style={{ background: "#3a1200", border: "1px solid #ff4c0055", color: "#ff4c00", borderRadius:6, padding:"4px 8px", fontSize:9, cursor:"pointer", fontWeight:900, marginRight:4 }}>PACK</button>
             }
             <button onClick={() => setShowDataMenu(true)} style={{ background: "#1a1a1a", border: "1px solid #2a2a2a", color: "#888", borderRadius: 6, padding: "4px 8px", fontSize: 10, cursor: "pointer", fontWeight: 700 }}>
@@ -3975,10 +3984,10 @@ function exportData() {
         {tab === "home"     && <HomeTab sessions={sessions} currentSets={currentSets} setTab={setTab} fatigue={fatigue} />}
         {tab === "routines" && <RoutinesTab routines={routines} setRoutines={setRoutines} onStartSession={handleStartSession} view={routineView} setView={setRoutineView} editing={routineEditing} setEditing={setRoutineEditing} />}
         {tab === "session"  && <SessionTab sessions={sessions} setSessions={setSessions} activeRoutine={activeRoutine} setActiveRoutine={setActiveRoutine} routines={routines} currentSets={currentSets} setCurrentSets={setCurrentSets} sessionRecovered={sessionRecovered} setSessionRecovered={setSessionRecovered} setTab={setTab} restSec={restSec} setRestSec={setRestSec} restTarget={restTarget} setRestTarget={setRestTarget} timerOn={timerOn} setTimerOn={setTimerOn} timerDone={timerDone} setTimerDone={setTimerDone} seanceStartTime={seanceStartTime} setSeanceStartTime={setSeanceStartTime} seanceElapsed={seanceElapsed} setSeanceElapsed={setSeanceElapsed} lastSetInfo={lastSetInfo} startTimer={startTimer} stopTimer={stopTimer} playBeeps={playBeeps} />}
-        {tab === "progress" && (window._isPremium && window._isPremium() ? <ProgressTab sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Indicateurs de progression</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><div style={{display:"flex",flexDirection:"column",gap:10,alignItems:"center"}}><div style={{display:"flex",gap:8}}><button onClick={() => window.startCheckout('monthly')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 20px",fontSize:13,fontWeight:700,cursor:"pointer"}}>4,99€/mois</button><button onClick={() => window.startCheckout('yearly')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 20px",fontSize:13,fontWeight:700,cursor:"pointer"}}>39,99€/an</button></div><div style={{fontSize:11,color:"#888"}}>ou <span onClick={() => window.startPackCheckout('monthly')} style={{color:"#ff4c00",fontWeight:700,cursor:"pointer",textDecoration:"underline"}}>débloquer les 3 apps (Pack 9,99€/mois)</span></div></div></div>)}
-        {tab === "bilan"    && (window._isPremium && window._isPremium() ? <BilanTab fatigue={fatigue} setFatigue={setFatigue} sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Bilan mensuel & cycle</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><div style={{display:"flex",flexDirection:"column",gap:10,alignItems:"center"}}><div style={{display:"flex",gap:8}}><button onClick={() => window.startCheckout('monthly')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 20px",fontSize:13,fontWeight:700,cursor:"pointer"}}>4,99€/mois</button><button onClick={() => window.startCheckout('yearly')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 20px",fontSize:13,fontWeight:700,cursor:"pointer"}}>39,99€/an</button></div><div style={{fontSize:11,color:"#888"}}>ou <span onClick={() => window.startPackCheckout('monthly')} style={{color:"#ff4c00",fontWeight:700,cursor:"pointer",textDecoration:"underline"}}>débloquer les 3 apps (Pack 9,99€/mois)</span></div></div></div>)}
+        {tab === "progress" && (window._isPremium && window._isPremium() ? <ProgressTab sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Indicateurs de progression</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div>{window.COMMERCE_ENABLED ? (<div style={{display:"flex",flexDirection:"column",gap:10,alignItems:"center"}}><div style={{display:"flex",gap:8}}><button onClick={() => window.startCheckout('monthly')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 20px",fontSize:13,fontWeight:700,cursor:"pointer"}}>4,99€/mois</button><button onClick={() => window.startCheckout('yearly')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 20px",fontSize:13,fontWeight:700,cursor:"pointer"}}>39,99€/an</button></div><div style={{fontSize:11,color:"#888"}}>ou <span onClick={() => window.startPackCheckout('monthly')} style={{color:"#ff4c00",fontWeight:700,cursor:"pointer",textDecoration:"underline"}}>débloquer les 3 apps (Pack 9,99€/mois)</span></div></div>) : (<div style={{fontSize:12,color:"#888",maxWidth:320}}>Réservé aux testeurs de la bêta. Aucun paiement n'est proposé.</div>)}</div>)}
+        {tab === "bilan"    && (window._isPremium && window._isPremium() ? <BilanTab fatigue={fatigue} setFatigue={setFatigue} sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Bilan mensuel & cycle</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div>{window.COMMERCE_ENABLED ? (<div style={{display:"flex",flexDirection:"column",gap:10,alignItems:"center"}}><div style={{display:"flex",gap:8}}><button onClick={() => window.startCheckout('monthly')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 20px",fontSize:13,fontWeight:700,cursor:"pointer"}}>4,99€/mois</button><button onClick={() => window.startCheckout('yearly')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 20px",fontSize:13,fontWeight:700,cursor:"pointer"}}>39,99€/an</button></div><div style={{fontSize:11,color:"#888"}}>ou <span onClick={() => window.startPackCheckout('monthly')} style={{color:"#ff4c00",fontWeight:700,cursor:"pointer",textDecoration:"underline"}}>débloquer les 3 apps (Pack 9,99€/mois)</span></div></div>) : (<div style={{fontSize:12,color:"#888",maxWidth:320}}>Réservé aux testeurs de la bêta. Aucun paiement n'est proposé.</div>)}</div>)}
         {tab === "supps"    && <SupplTab supps={supps} setSupps={setSupps} />}
-        {tab === "sns"     && (window._isPremium && window._isPremium() ? <BilanTab fatigue={fatigue} setFatigue={setFatigue} sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Score SNS</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div><div style={{display:"flex",flexDirection:"column",gap:10,alignItems:"center"}}><div style={{display:"flex",gap:8}}><button onClick={() => window.startCheckout('monthly')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 20px",fontSize:13,fontWeight:700,cursor:"pointer"}}>4,99€/mois</button><button onClick={() => window.startCheckout('yearly')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 20px",fontSize:13,fontWeight:700,cursor:"pointer"}}>39,99€/an</button></div><div style={{fontSize:11,color:"#888"}}>ou <span onClick={() => window.startPackCheckout('monthly')} style={{color:"#ff4c00",fontWeight:700,cursor:"pointer",textDecoration:"underline"}}>débloquer les 3 apps (Pack 9,99€/mois)</span></div></div></div>)}
+        {tab === "sns"     && (window._isPremium && window._isPremium() ? <BilanTab fatigue={fatigue} setFatigue={setFatigue} sessions={sessions} /> : <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>🔒</div><div style={{fontSize:16,fontWeight:700,color:"#fff",marginBottom:8}}>Score SNS</div><div style={{fontSize:13,color:"#666",marginBottom:24}}>Fonctionnalité Premium</div>{window.COMMERCE_ENABLED ? (<div style={{display:"flex",flexDirection:"column",gap:10,alignItems:"center"}}><div style={{display:"flex",gap:8}}><button onClick={() => window.startCheckout('monthly')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 20px",fontSize:13,fontWeight:700,cursor:"pointer"}}>4,99€/mois</button><button onClick={() => window.startCheckout('yearly')} style={{background:"#c0392b",border:"none",color:"#fff",borderRadius:10,padding:"14px 20px",fontSize:13,fontWeight:700,cursor:"pointer"}}>39,99€/an</button></div><div style={{fontSize:11,color:"#888"}}>ou <span onClick={() => window.startPackCheckout('monthly')} style={{color:"#ff4c00",fontWeight:700,cursor:"pointer",textDecoration:"underline"}}>débloquer les 3 apps (Pack 9,99€/mois)</span></div></div>) : (<div style={{fontSize:12,color:"#888",maxWidth:320}}>Réservé aux testeurs de la bêta. Aucun paiement n'est proposé.</div>)}</div>)}
       </div>
 
       <div style={{ position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: "#0a0a0a", borderTop: "1px solid #1a1a1a", display: tab === "home" ? "none" : "flex" }}>

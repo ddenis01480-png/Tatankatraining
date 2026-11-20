@@ -5,7 +5,7 @@ const fs = require('fs'), vm = require('vm'), assert = require('assert'), crypto
 const FILE = process.argv[2] || __dirname + '/../index.html'; const SRC = fs.readFileSync(FILE, 'utf8');
 function fnSrc(sig) { const i = SRC.indexOf(sig); if (i < 0) throw new Error('introuvable: ' + sig); let d = 0;
   for (let p = SRC.indexOf('{', i); p < SRC.length; p++) { if (SRC[p] === '{') d++; if (SRC[p] === '}' && --d === 0) return SRC.slice(i, p + 1); } }
-const CODE = ['var supabase = null;', 'var currentUser = null;', 'var userProfile = null;'].join('\n') + '\n' +
+const CODE = ['var supabase = null;', 'var currentUser = null;', 'var userProfile = null;', 'var COMMERCE_ENABLED = (typeof __COMMERCE === "boolean") ? __COMMERCE : true;'].join('\n') + '\n' +
   (() => { const a = SRC.indexOf('var _PLAN_RANKS'); return SRC.slice(a, SRC.indexOf('window._coach = resolveCoach(null, null);', a)); })() + 'window._coach = resolveCoach(null, null);\n' +
   ['async function _loadFlags()', 'function _renderCoachBadge()', 'async function _refreshCoach()', 'function _isPremium()', 'async function _applyPromoCode('].map(fnSrc).join('\n');
 function ctx(extra) { const c = Object.assign({ console, Promise, Date, Array, Object, String, Error, setTimeout, window: {} }, extra || {}); vm.createContext(c);
@@ -54,6 +54,12 @@ t('_applyPromoCode : passe par le RPC apply_promo, n\'ecrit plus profiles ni ne 
   c.__set({ rpc: async (n, a) => { calls.push([n, a]); return { data: { promo: true, promo_expires_at: '2999-01-01T00:00:00Z' }, error: null }; }, from: () => { throw new Error('from interdit'); } }, { id: 'u1', email: 'a@b.c' }, P());
   assert.strictEqual(await vm.runInContext('_applyPromoCode("beta1")', c), true); assert.strictEqual(JSON.stringify(calls), JSON.stringify([['apply_promo', { p_code: 'beta1' }]]));
   assert.strictEqual(vm.runInContext('userProfile.promo', c), true); });
+t('BETA PRIVEE : avec la valeur reelle de l\'appli (COMMERCE_ENABLED = false), le code promo est refuse sans aucun appel serveur', async () => {
+  assert.ok(/var COMMERCE_ENABLED = false;/.test(SRC), 'valeur dans index.html');
+  const calls = []; const c = ctx({ __COMMERCE: false });
+  c.__set({ rpc: async (n, a) => { calls.push([n, a]); return { data: { ok: true }, error: null }; } }, { id: 'u', email: 'u@x.fr' }, P());
+  await assert.rejects(vm.runInContext('_applyPromoCode("beta1")', c), /Pas de code promo pendant la bêta/); assert.strictEqual(calls.length, 0);
+});
 t('_applyPromoCode : erreurs serveur propagees avec leur message ; non connecte refuse', async () => {
   const c = ctx(); c.__set({ rpc: async () => ({ data: null, error: { message: 'Code expiré' } }) }, { id: 'u1', email: 'a@b.c' }, P());
   await assert.rejects(vm.runInContext('_applyPromoCode("X")', c), /Code expiré/); c.__set(undefined, null, P()); await assert.rejects(vm.runInContext('_applyPromoCode("X")', c), /Connecte-toi/); });
