@@ -1,5 +1,5 @@
 /*
- * coach-engine.js — Moteur d'analyse du Coach Tatanka Training (Coach V2), version 0.2.1
+ * coach-engine.js — Moteur d'analyse du Coach Tatanka Training (Coach V2), version 0.3.0
  *
  * ROLE : lire les donnees qu'on lui transmet et retourner des analyses. RIEN D'AUTRE.
  *   - aucun acces a localStorage, Supabase, au reseau, au DOM ou a React ;
@@ -32,7 +32,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var VERSION = "0.2.1";
+  var VERSION = "0.3.0";
 
   // Reglages centralises (une seule valeur par regle).
   var REGLES = Object.freeze({
@@ -271,7 +271,8 @@
   function axesProgression(prec, cour) {
     var memeCharge = cour.chargeMax === prec.chargeMax;
     return { charge: round1(cour.chargeMax - prec.chargeMax), reps: memeCharge ? cour.repsAChargeMax - prec.repsAChargeMax : null,
-      repsTotal: cour.repsTotal - prec.repsTotal, force: cour.force - prec.force, forceFiable: !!(prec.forceFiable && cour.forceFiable) };
+      repsTotal: cour.repsTotal - prec.repsTotal, force: cour.force - prec.force,
+      forcePrecise: round1((cour.forcePrecise || 0) - (prec.forcePrecise || 0)), forceFiable: !!(prec.forceFiable && cour.forceFiable) };
   }
 
   // UNE definition de la progression entre deux seances d'un meme exercice (utilisee par tous les diagnostics).
@@ -341,6 +342,50 @@
     // Derniere etape (regle V1, sur la force ARRONDIE comme les seuils ci-dessus) : force en hausse, ou plus de reps a charge egale ou plus lourde.
     if (b > a || (last.repsTotal > prev.repsTotal && last.chargeMax >= prev.chargeMax)) return res(0, { nature: natureProgression(axes), repsGagnees: b > a ? 0 : last.repsTotal - prev.repsTotal });
     return res(-1);
+  }
+
+  // ── Fin de seance ──
+  function seriesNorm(series) { return (series || []).map(function (st) { return st && st.statutRir ? st : normaliserSerie(st); }); }
+  function trierHist(h) { return (h || []).slice().sort(function (x, y) { return (x.date || "") < (y.date || "") ? -1 : (x.date || "") > (y.date || "") ? 1 : 0; }); }
+
+  // Bilan d'un exercice a la fin d'une seance : la seance du jour contre la precedente, avec la MEME definition que comparer()
+  // (celle de l'ecran Seance en cours). Retour :
+  //   { verdict: "premiere" | "progression" | "stable" | "regression", nature?, mode, axes?, precedente?, jour }
+  //   mode : "force" (<= 12), "reps" (> 12) ; series de 100 et gainage sont compares en charge puis en repetitions.
+  function bilanExercice(historiqueAvant, seriesDuJour, fourchette) {
+    var hist = trierHist(historiqueAvant), f = fourchette || lireFourchette("");
+    var cur = mesuresSeance(seriesNorm(seriesDuJour)), mode = modeMesure(f), modeCmp = mode === "aucun" ? "reps" : mode;
+    var resume = function (m, date) { return { date: date || null, chargeMax: m.chargeMax, repsAChargeMax: m.repsAChargeMax, repsTotal: m.repsTotal, force: m.force, forceFiable: m.forceFiable, series: m.seriesValides }; };
+    var prevEntry = null; for (var i = hist.length - 1; i >= 0; i--) { if (mesuresSeance(hist[i].series).seriesValides > 0) { prevEntry = hist[i]; break; } }
+    if (!prevEntry || cur.seriesValides === 0) return { verdict: "premiere", mode: mode, jour: resume(cur) };
+    var prev = mesuresSeance(prevEntry.series), axes = axesProgression(prev, cur);
+    var verdict = comparer(prev, cur, modeCmp, mode === "aucun" ? null : f);
+    var out = { verdict: verdict, mode: mode, axes: axes, precedente: resume(prev, prevEntry.date), jour: resume(cur) };
+    if (verdict === "progression") out.nature = natureProgression(axes);
+    return out;
+  }
+
+  // Records de la seance contre TOUT l'historique de l'exercice. Le critere d'affichage reste celui du V1 (force estimee
+  // > meilleure force passee + 1 %), mais le moteur dit de quel record il s'agit :
+  //   chargeMax : charge jamais soulevee ; reps : plus de reps que jamais a cette charge (ou plus lourde) ;
+  //   force : force estimee, avec forceFiable (meilleure serie <= 12 reps) — au-dela, c'est une estimation peu fiable.
+  function recordsExercice(historiqueAvant, seriesDuJour) {
+    var passe = []; (historiqueAvant || []).forEach(function (h) { seriesNorm(h.series).forEach(function (st) { if (st.valide) passe.push(st); }); });
+    var jour = seriesNorm(seriesDuJour).filter(function (st) { return st.valide; });
+    if (!passe.length || !jour.length) return null;
+    var fp = function (st) { return st.charge * (1 + st.reps / 30); };
+    var forcePasse = Math.max.apply(null, passe.map(fp)), chargePasse = Math.max.apply(null, passe.map(function (st) { return st.charge; }));
+    var meilleure = jour.reduce(function (m, st) { return !m || fp(st) > fp(m) ? st : m; }, null);
+    var reps = null;
+    jour.forEach(function (st) { var ref = passe.filter(function (p) { return p.charge >= st.charge; }); if (!ref.length) return;
+      var maxR = Math.max.apply(null, ref.map(function (p) { return p.reps; })); if (st.reps > maxR && (!reps || st.charge > reps.charge || (st.charge === reps.charge && st.reps > reps.reps))) reps = { reps: st.reps, charge: st.charge, avant: maxR }; });
+    var chargeJour = Math.max.apply(null, jour.map(function (st) { return st.charge; }));
+    return {
+      record: jour.some(function (st) { return fp(st) > forcePasse * 1.01; }), // regle V1 du badge « nouveau record »
+      chargeMax: chargeJour > chargePasse ? { charge: chargeJour, avant: chargePasse } : null,
+      reps: reps,
+      force: { valeur: Math.round(fp(meilleure)), avant: Math.round(forcePasse), fiable: meilleure.reps <= REGLES.FORCE_REPS_MAX, enHausse: fp(meilleure) > forcePasse }
+    };
   }
 
   // Tendance sur toutes les seances d'une periode (ex. un cycle) : droite des moindres carres sur la mesure principale.
@@ -538,6 +583,7 @@
     classerExercice: classerExercice,
     // 4. diagnostics
     modeMesure: modeMesure, axesProgression: axesProgression, comparer: comparer, natureProgression: natureProgression, diagnostiquer: diagnostiquer, tendance: tendance, conseilProgression: conseilProgression,
+    bilanExercice: bilanExercice, recordsExercice: recordsExercice,
     // 5. domaines
     scoreFatigue: scoreFatigue, rirRecent: rirRecent, recuperation: recuperation, volume: volume, priorites: priorites, morphologie: morphologie,
     // 6. analyse complete

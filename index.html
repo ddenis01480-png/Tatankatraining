@@ -823,7 +823,7 @@ function getProgressionTip(lastSets, sessions, exName, repsTarget, seriesPrevues
 // ═══ COACH V2 : branchement du moteur d'analyse (coach-engine.js), ecran par ecran ═══
 // Le moteur ne fait que LIRE et ANALYSER : il ne modifie ni seances, ni routines, ni programme, ni donnees.
 // Si coach-engine.js n'a pas pu etre charge, chaque ecran garde son calcul V1 (repli automatique, aucun ecran casse).
-// Ecrans branches : Seance en cours (conseil de progression, badge de force, alerte de stagnation).
+// Ecrans branches : Seance en cours (conseil de progression, badge de force, alerte de stagnation) ; Fin de seance (alertes, bilan, records).
 function coachEngine() { const CE = (typeof window !== "undefined") ? window.CoachEngine : null; return (CE && typeof CE.analyser === "function") ? CE : null; }
 // Historique d'un exercice (trie par date, une entree par seance). `seanceEnCours` : seance pas encore enregistree, ajoutee a la fin.
 function coachHistorique(CE, sessions, exName, seanceEnCours) {
@@ -869,6 +869,51 @@ function coachDiagAffichage(d) {
       : (d.mesure.derniere > d.mesure.precedente ? "+" + (d.mesure.derniere - d.mesure.precedente) + "kg 1RM depuis la derniere seance." : "+" + d.repsGagnees + " rep(s) au total depuis la derniere seance."),
     actions: ["+1 rep sur la derniere serie si tu atteins le haut de la fourchette"] };
   return { type: -1, color: "#888", icon: "-", urgency: "STABLE", title: "CHARGE MAINTENUE", msg: "Meme performance que la seance precedente.", actions: ["Essaie +1 rep sur la derniere serie seulement"] };
+}
+
+// Fin de seance (Coach V2) : alertes, bilan progression / stagnation / regression et records, avec les MEMES regles que l'ecran
+// Seance en cours (diagnostic du moteur + definition unique de la progression). Lecture seule : rien n'est enregistre ici.
+// `sessions` = seances enregistrees AVANT celle du jour ; `validExs` = exercices du jour (series deja converties pour l'enregistrement).
+function coachFinSeance(CE, sessions, validExs, todayStr, nowId) {
+  const res = { alerts: [], progressed: [], stagnated: [], regressed: [], sessionPRs: [], details: {}, prDetails: {} }, vus = {};
+  const jour = { id: nowId, date: todayStr, exercises: validExs };
+  validExs.forEach(ex => {
+    if (vus[ex.name]) return; vus[ex.name] = true; // exercice en double dans la seance : premiere occurrence, comme l'historique
+    const f = CE.lireFourchette(ex.repsTarget || "");
+    const avant = coachHistorique(CE, sessions, ex.name);
+    // Alertes (perimetre V1 : fourchettes jusqu'a 15 reps) : meme diagnostic et meme garde « progression reelle » que pendant la seance.
+    if (f.type === "reps" && f.max <= 15 && avant.length) {
+      const h2 = coachHistorique(CE, sessions, ex.name, jour);
+      const d = h2.length >= 2 ? CE.diagnostiquer(h2, f) : null;
+      if (d && d.typeV1 > 0) {
+        const progresse = (d.code === "plafond" || d.code === "regression") && CE.comparer(CE.mesuresSeance(h2[h2.length - 2].series), CE.mesuresSeance(h2[h2.length - 1].series), d.mode, f) === "progression";
+        if (!progresse) res.alerts.push({ ...coachDiagAffichage(d), exName: ex.name });
+      }
+    }
+    const b = CE.bilanExercice(avant, ex.sets, f);
+    if (b.verdict === "progression") { res.progressed.push(ex.name); res.details[ex.name] = coachBilanTexte(b); }
+    else if (b.verdict === "regression") { res.regressed.push(ex.name); res.details[ex.name] = coachBilanTexte(b); }
+    else if (b.verdict === "stable") res.stagnated.push(ex.name);
+    const r = CE.recordsExercice(avant, ex.sets);
+    if (r && r.record) { res.sessionPRs.push(ex.name); res.prDetails[ex.name] = coachRecordTexte(r); }
+  });
+  return res;
+}
+// Texte court du bilan : precise s'il s'agit de charge, de repetitions ou de force estimee (« ≈ » = estimation au-dela de 12 reps).
+function coachBilanTexte(b) {
+  const a = b.axes || {}, kg = b.jour ? b.jour.chargeMax : "", sg = x => (x > 0 ? "+" : "") + x;
+  const reps = a.reps !== null && a.reps !== undefined ? a.reps : a.repsTotal;
+  const force = "force estimée " + (a.forceFiable ? "" : "≈") + sg(a.forcePrecise) + "kg";
+  if (b.verdict === "progression") return b.nature === "charge" ? "charge " + sg(a.charge) + "kg (" + kg + "kg)" : b.nature === "reps" ? sg(reps) + " rep" + (Math.abs(reps) > 1 ? "s" : "") + " à " + kg + "kg" : force;
+  if (b.verdict === "regression") return a.charge < 0 ? "charge " + sg(a.charge) + "kg" : (a.reps !== null && a.reps < 0) ? sg(a.reps) + " rep" + (Math.abs(a.reps) > 1 ? "s" : "") + " à " + kg + "kg" : force;
+  return "";
+}
+function coachRecordTexte(r) {
+  const parts = [];
+  if (r.chargeMax) parts.push("charge max " + r.chargeMax.charge + "kg");
+  if (r.reps) parts.push(r.reps.reps + " reps à " + r.reps.charge + "kg");
+  parts.push("force " + (r.force.fiable ? "" : "≈") + r.force.valeur + "kg");
+  return parts.join(" · ");
 }
 
 // --- SYSTEME DE PALIERS ---
@@ -1440,9 +1485,12 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
     const todaySessions = sessions.filter(s => s.date === today() && s.routineId === currentSets.routineId);
     if (todaySessions.length > 0 && !confirm("Tu as déjà enregistré cette routine aujourd'hui. Sauvegarder quand même ?")) return;
 
+    // Coach V2 : fin de seance calculee par le moteur (memes regles que l'ecran Seance en cours). Sans moteur : calculs V1 ci-dessous.
+    const CEfin = coachEngine();
+    const finV2 = CEfin ? coachFinSeance(CEfin, sessions, validExs, today(), Date.now()) : null;
     // Analyse stagnation post-séance
-    const alerts = [];
-    validExs.forEach(ex => {
+    const alerts = finV2 ? finV2.alerts : [];
+    if (!finV2) validExs.forEach(ex => {
       // Pas d'analyse stagnation sur séries longues (30-50 reps)
       const rtMax3 = ex.repsTarget ? parseInt((ex.repsTarget.split("-")[1] || ex.repsTarget.split("-")[0])) : 12;
       if (rtMax3 > 15) return;
@@ -1468,13 +1516,14 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
 
     // Analyse post-séance
     const tonnageSession = validExs.reduce((a, ex) => a + ex.sets.reduce((b, s) => b + s.weight * s.reps, 0), 0);
-    const lastSameRoutine = sessions.filter(s => s.routineId === currentSets.routineId).slice(-1)[0];
+    const lastSameRoutine = (CEfin ? CEfin.trierSeances(sessions) : sessions).filter(s => s.routineId === currentSets.routineId).slice(-1)[0];
     const tonnagePrev = lastSameRoutine ? lastSameRoutine.exercises.reduce((a, ex) => a + (ex.sets||[]).reduce((b, s) => b + parseFloat(s.weight||0) * parseInt(s.reps||0), 0), 0) : 0;
     const tonnageDiff = tonnagePrev > 0 ? Math.round(((tonnageSession - tonnagePrev) / tonnagePrev) * 100) : 0;
 
     // Exercices progressés / stagnes / régressés
     const progressed = [], stagnated = [], regressed = [];
     validExs.forEach(ex => {
+      if (finV2) return;
       const prevSession = sessions.filter(s => s.exercises && s.exercises.some(e => e.name === ex.name)).slice(-1)[0];
       if (!prevSession) return;
       const prevEx = prevSession.exercises ? prevSession.exercises.find(e => e.name === ex.name) : null;
@@ -1487,8 +1536,9 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
     });
 
     // PRs de la séance
-    const sessionPRs = [];
-    validExs.forEach(ex => {
+    if (finV2) { progressed.push(...finV2.progressed); stagnated.push(...finV2.stagnated); regressed.push(...finV2.regressed); }
+    const sessionPRs = finV2 ? finV2.sessionPRs : [];
+    if (!finV2) validExs.forEach(ex => {
       ex.sets.forEach(s => {
         const rm = s.weight * (1 + s.reps / 30);
         const allPast = sessions.flatMap(sess => (sess.exercises||[]).filter(e=>e.name===ex.name).flatMap(e=>(e.sets||[]).map(st=>parseFloat(st.weight||0)*(1+parseInt(st.reps||0)/30))));
@@ -1513,6 +1563,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
         tonnageDiff,
         progressed, stagnated, regressed,
         sessionPRs,
+        details: finV2 ? finV2.details : null, prDetails: finV2 ? finV2.prDetails : null,
         totalSets: validExs.reduce((a,ex)=>a+ex.sets.length,0),
         nbEx: validExs.length
       });
@@ -1764,7 +1815,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
             {postSeanceModal.sessionPRs.length > 0 && (
               <div style={{ background: "#1a1000", border: "1px solid #FFD60044", borderRadius: 12, padding: "10px 14px", marginBottom: 10 }}>
                 <div style={{ fontSize: 10, color: "#FFD600", fontFamily: "monospace", fontWeight: 900, marginBottom: 6 }}>🏆 NOUVEAUX RECORDS</div>
-                {postSeanceModal.sessionPRs.map((n,i) => <div key={i} style={{ fontSize: 11, color: "#FFD600", marginBottom: 2 }}>· {n}</div>)}
+                {postSeanceModal.sessionPRs.map((n,i) => <div key={i} style={{ fontSize: 11, color: "#FFD600", marginBottom: 2 }}>· {n}{postSeanceModal.prDetails && postSeanceModal.prDetails[n] ? <span style={{ opacity: 0.7 }}> — {postSeanceModal.prDetails[n]}</span> : null}</div>)}
               </div>
             )}
 
@@ -1772,7 +1823,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
             {postSeanceModal.progressed.length > 0 && (
               <div style={{ background: "#001a00", border: "1px solid #00C85344", borderRadius: 12, padding: "10px 14px", marginBottom: 8 }}>
                 <div style={{ fontSize: 10, color: "#00C853", fontFamily: "monospace", fontWeight: 900, marginBottom: 6 }}>↑ EN PROGRESSION ({postSeanceModal.progressed.length})</div>
-                {postSeanceModal.progressed.map((n,i) => <div key={i} style={{ fontSize: 11, color: "#00C853", marginBottom: 2 }}>· {n}</div>)}
+                {postSeanceModal.progressed.map((n,i) => <div key={i} style={{ fontSize: 11, color: "#00C853", marginBottom: 2 }}>· {n}{postSeanceModal.details && postSeanceModal.details[n] ? <span style={{ opacity: 0.7 }}> — {postSeanceModal.details[n]}</span> : null}</div>)}
               </div>
             )}
 
@@ -1780,7 +1831,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
             {postSeanceModal.regressed.length > 0 && (
               <div style={{ background: "#1a0000", border: "1px solid #FF444444", borderRadius: 12, padding: "10px 14px", marginBottom: 8 }}>
                 <div style={{ fontSize: 10, color: "#FF4444", fontFamily: "monospace", fontWeight: 900, marginBottom: 6 }}>↓ EN BAISSE ({postSeanceModal.regressed.length})</div>
-                {postSeanceModal.regressed.map((n,i) => <div key={i} style={{ fontSize: 11, color: "#FF4444", marginBottom: 2 }}>· {n}</div>)}
+                {postSeanceModal.regressed.map((n,i) => <div key={i} style={{ fontSize: 11, color: "#FF4444", marginBottom: 2 }}>· {n}{postSeanceModal.details && postSeanceModal.details[n] ? <span style={{ opacity: 0.7 }}> — {postSeanceModal.details[n]}</span> : null}</div>)}
               </div>
             )}
 

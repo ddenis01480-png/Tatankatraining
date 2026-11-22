@@ -232,6 +232,17 @@ t('E', 'RIR : le conseil indique si le RIR utilise est fiable (saisi) ou non ver
   const mix = E.conseilProgression([{ date: day(0), series: [S(50, 8, 2, { rirSaisi: true }), S(50, 8, 2, { rirSaisi: false })].map(E.normaliserSerie) }], { fourchette: '8-12' });
   assert.strictEqual(mix.rir.fiable, false, 'un RIR non choisi suffit a rendre la moyenne non fiable'); });
 
+t('E', 'Fin de seance : bilanExercice (meme definition que comparer) et recordsExercice (nature du record) ; premiere seance sans comparaison', () => {
+  const H1 = [{ date: day(0), series: [S(60, 10), S(60, 10)].map(E.normaliserSerie) }];
+  assert.strictEqual(E.bilanExercice([], [S(60, 10)], E.lireFourchette('8-12')).verdict, 'premiere');
+  const b = E.bilanExercice(H1, [S(60, 11), S(60, 10)], E.lireFourchette('8-12')); assert.deepStrictEqual([b.verdict, b.nature, b.axes.reps], ['progression', 'reps', 1]);
+  assert.strictEqual(E.bilanExercice(H1, [S(60, 9), S(60, 9)], E.lireFourchette('8-12')).verdict, 'regression');
+  assert.strictEqual(E.bilanExercice(H1, [S(0.1, 50)], E.lireFourchette('45-60s')).mode, 'aucun');
+  const r = E.recordsExercice(H1, [S(62.5, 10)]); assert.deepStrictEqual([r.record, r.chargeMax.charge, r.force.fiable], [true, 62.5, true]);
+  const r2 = E.recordsExercice(H1, [S(50, 20)]); assert.deepStrictEqual([r2.reps, r2.force.fiable], [{ reps: 20, charge: 50, avant: 10 }, false]);
+  assert.strictEqual(E.recordsExercice([], [S(60, 10)]), null);
+  const fz = deepFreeze({ h: [{ date: day(0), series: [S(60, 10)] }], s: [S(70, 10)] }); E.bilanExercice(fz.h, fz.s); E.recordsExercice(fz.h, fz.s); });
+
 // ═════════ F. DOMAINES PREPARES ═════════
 t('F', 'Fatigue : un seul score (somme des reponses) et une seule echelle 3 / 7 / 12', () => {
   assert.deepStrictEqual(E.scoreFatigue({ a: 1, b: 2 }), { score: 3, niveau: 'optimal', reponses: 2 }); assert.strictEqual(E.scoreFatigue({ a: 4, b: 3 }).niveau, 'correct');

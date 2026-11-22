@@ -37,7 +37,7 @@ const groupOf = name => (Object.entries(C.MUSCLE_GROUPS).find(([, kws]) => kws.s
 
 // Extrait du VRAI code de saveSession : classement post-seance progression / stagnation / regression (tonnage +-2 %).
 const POST_SEANCE = between('const progressed = [], stagnated = [], regressed = [];', '// PRs de la s');
-const postSeance = vm.runInContext('(function(validExs, sessions){ ' + POST_SEANCE + ' return { progressed, stagnated, regressed }; })', C);
+const postSeance = vm.runInContext('(function(validExs, sessions){ const finV2 = null; ' + POST_SEANCE + ' return { progressed, stagnated, regressed }; })', C);
 // Extrait du VRAI code du bilan de cycle (CycleBilan) : progression = tonnage derniere seance > premiere seance du cycle.
 const CYCLE = between('const exStats = exNames.map(name => {', 'const progressed = exStats.filter(e => e.gainT > 0);');
 const cycleStats = vm.runInContext('(function(cycleSessions, exNames){ ' + CYCLE + ' return exStats; })', C);
