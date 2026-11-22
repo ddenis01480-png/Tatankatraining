@@ -1,16 +1,20 @@
 // Lancer : node tests/data-safety.test.js            (INDEX_FILE=/chemin/index.html pour tester une autre version)
 // Regle d'architecture testee : « Ma donnee reste ma donnee. Un import ajoute. Seul l'utilisateur decide de supprimer ou remplacer. »
 // Execute le VRAI code d'index.html (initRoutines, hydratation, et le VRAI gestionnaire importData) dans Node, avec faux localStorage/Supabase.
-// Donnees de reference : l'export reel du 03/10 (6 routines, 108 seances) s'il est disponible (EXPORT_FILE ou /mnt/user-data/uploads),
-// sinon un jeu equivalent synthetique (aucune donnee personnelle n'est stockee dans le depot). Aucun test n'ecrit sur un compte reel.
+// Donnees de reference : un export reel s'il est fourni (EXPORT_FILE=/chemin/export.json), sinon un jeu synthetique equivalent a l'export
+// de David du 22/11 (141 seances, 6 routines, 3 exercices personnalises). Aucune donnee personnelle n'est stockee dans le depot.
+// Les nombres attendus sont lus dans les donnees de reference (plus aucun nombre en dur). Pour exiger des nombres precis :
+//   EXPORT_FILE=/chemin/export.json EXPECT_COUNTS=141/6/3 node tests/data-safety.test.js   (seances/routines/exercices perso)
+// Aucun test n'ecrit sur un compte reel : tout se passe dans un faux localStorage en memoire.
 const H = require('./_harness.js'); const { openApp, mkStore, KS, UA, UB, assert, SRC, vm, fs } = H;
 const REAL = process.env.EXPORT_FILE || '/mnt/user-data/uploads/tatanka-training-backup-2026-10-03.json';
 function synthetic() {
   const routines = Array.from({ length: 6 }, (_, i) => ({ id: i + 1, name: 'ROUTINE ' + (i + 1) + ' - perso', day: 'JOUR', color: '#ff6600', exercises: [{ name: 'Exo perso ' + i, sets: 3 + (i % 2), repsTarget: '8-12', rest: 90 + i, warmupSets: i % 3, warmupLabel: '0-1', note: 'note ' + i }, { name: 'Exo B ' + i, sets: 2, repsTarget: '10-15', rest: 60 }] }));
-  const sessions = Array.from({ length: 108 }, (_, i) => ({ id: 1700000000000 + i * 86400000, date: new Date(Date.UTC(2026, 0, 1 + i)).toISOString().slice(0, 10), routineId: (i % 6) + 1, routineName: 'ROUTINE ' + ((i % 6) + 1) + ' - perso', exercises: [{ name: 'Exo perso ' + (i % 6), sets: [{ weight: 50 + i, reps: 8, rir: 2, done: true }] }] }));
-  return { version: 'tatanka-training-v6', routines, sessions, supps: [{ id: 1, name: 'Creatine' }], fatigue: { sleep: 1, appetite: 0, motivation: 0, repLoss: 0, techDegrades: 0, heavyFeel: 0 }, cycle: { startDate: '2026-08-09', num: 2 }, customEx: ['Mon exo perso'] };
+  const sessions = Array.from({ length: 141 }, (_, i) => ({ id: 1700000000000 + i * 86400000, date: new Date(Date.UTC(2026, 0, 1 + i)).toISOString().slice(0, 10), routineId: (i % 6) + 1, routineName: 'ROUTINE ' + ((i % 6) + 1) + ' - perso', exercises: [{ name: 'Exo perso ' + (i % 6), sets: [{ weight: 50 + i, reps: 8, rir: 2, done: true }] }] }));
+  return { version: 'tatanka-training-v6', routines, sessions, supps: [{ id: 1, name: 'Creatine' }], fatigue: { sleep: 1, appetite: 0, motivation: 0, repLoss: 0, techDegrades: 0, heavyFeel: 0 }, cycle: { startDate: '2026-08-09', num: 2 }, customEx: ['Exo perso test A', 'Exo perso test B', 'Exo perso test C'] };
 }
 const USING_REAL = fs.existsSync(REAL); const EXP = USING_REAL ? JSON.parse(fs.readFileSync(REAL, 'utf8')) : synthetic();
+const N = EXP.sessions.length, NR = EXP.routines.length; // nombres attendus, lus dans les donnees de reference
 const PROG_VERSION = (SRC.match(/const PROG_VERSION = "([^"]+)"/) || [])[1];
 const clone = x => JSON.parse(JSON.stringify(x));
 const U = 'user-A', NS = b => b + '_u_' + U, BOOKKEEPING = ['it3_loaded_uid', 'it3_legacy_migrated', 'tt_device_id'];
@@ -39,12 +43,12 @@ const tests = []; const t = (n, f) => tests.push([n, f]);
 const VERSION_CASES = [['version normale (' + PROG_VERSION + ')', PROG_VERSION], ['version absente', null], ['version imported-...', 'imported-1759500000000'], ['ancienne version', 'v5-old-2025']];
 for (const [label, ver] of VERSION_CASES) {
   for (const known of [false, true]) {
-    t('COMPTE EXISTANT, ' + label + (known ? ', identite connue au 1er rendu' : '') + ' : 6 routines et 108 seances strictement intactes', async () => {
+    t('COMPTE EXISTANT, ' + label + (known ? ', identite connue au 1er rendu' : '') + ' : ' + NR + ' routines et ' + N + ' seances strictement intactes', async () => {
       const ls = existingAccount(ver ? { [NS('it3_prog_version')]: ver } : {}); const before = snap(ls);
       const app = await boot(ls, known);
       assertUserDataIdentical(before, snap(ls), label);
       assert.strictEqual(app.state('routines').length, EXP.routines.length); assert.deepStrictEqual(JSON.parse(JSON.stringify(app.state('routines'))), EXP.routines, 'etat React = routines du compte');
-      assert.strictEqual(app.state('sessions').length, EXP.sessions.length, 'etat React = 108 seances');
+      assert.strictEqual(app.state('sessions').length, EXP.sessions.length, 'etat React = ' + N + ' seances');
       assert.strictEqual(ls.getItem(NS('it3_routines')), JSON.stringify(EXP.routines), 'routines stockees octet pour octet');
       assert.strictEqual(ls.getItem(NS('it3_sessions')), JSON.stringify(EXP.sessions), 'seances stockees octet pour octet');
     });
@@ -84,30 +88,30 @@ function importer(app, opts) {
   class FR { readAsText(f) { this.onload({ target: { result: f.text } }); } readAsArrayBuffer() {} }
   const factory = vm.runInContext('(function(setRoutines,setSessions,setSupps,setFatigue,setShowDataMenu,alert,confirm,FileReader,addCustomExercise,XLSX){\n' + FNS.map(fnSrc).join('\n') + '\nreturn importData; })', app.ctx);
   const fn = factory(v => app.setState('routines', v), v => app.setState('sessions', v), v => app.setState('supps', v), v => app.setState('fatigue', v), () => {},
-    m => log.alerts.push(m), m => { log.confirms.push(m); return opts.confirm !== false; }, FR, n => log.customEx.push(n), undefined);
+    m => log.alerts.push(m), m => { log.confirms.push(m); return opts.confirm !== false; }, FR, opts.realCustomEx ? n => { log.customEx.push(n); return app.ctx.addCustomExercise(n); } : n => log.customEx.push(n), undefined);
   return { log, run: (name, text) => fn({ target: { files: [{ name, text: typeof text === 'string' ? text : JSON.stringify(text) }], value: 'x' } }) };
 }
 async function importCtx(extra, identityKnown) { const ls = existingAccount(extra); const app = await boot(ls, identityKnown); return { ls, app }; }
 const withVersion = d => Object.assign({ version: 'tatanka-training-v6' }, d);
 
-t('IMPORT JSON de ton propre export (doublons) : rien ne change, 108 doublons ignores, aucun mot « remplac » sans negation', async () => {
+t('IMPORT JSON de ton propre export (doublons) : rien ne change, toutes les seances (' + N + ') ignorees comme doublons, aucun mot « remplac » sans negation', async () => {
   const { ls, app } = await importCtx({ [NS('it3_prog_version')]: 'imported-1' }); const before = snap(ls); const imp = importer(app);
   imp.run('backup.json', withVersion({ sessions: EXP.sessions, routines: EXP.routines, supps: EXP.supps, fatigue: EXP.fatigue, cycle: EXP.cycle, customEx: EXP.customEx }));
   assertUserDataIdentical(before, snap(ls), 'import doublons'); assert.ok(/ajoutées : 0/.test(imp.log.alerts[0]) && imp.log.alerts[0].includes('ignorées : ' + EXP.sessions.length), imp.log.alerts[0]);
   assert.ok(!/remplac/i.test(imp.log.confirms[0].replace(/ni remplacé/g, '')), imp.log.confirms[0]);
 });
-t('IMPORT JSON : 1 nouvelle seance + 1 conflit d\'identifiant -> les 108 existantes intactes (memes objets, meme ordre relatif), conflit = nouvel identifiant', async () => {
+t('IMPORT JSON : 1 nouvelle seance + 1 conflit d\'identifiant -> les ' + N + ' existantes intactes (memes objets, meme ordre relatif), conflit = nouvel identifiant', async () => {
   const { ls, app } = await importCtx(); const imp = importer(app); const orig = clone(EXP.sessions);
   const neu = { id: 777000000001, date: '2026-12-01', routineName: 'Nouvelle', exercises: [{ name: 'Exo X', sets: [{ weight: 10, reps: 10, rir: 2 }] }] };
   const conflict = Object.assign(clone(orig[5]), { exercises: [{ name: 'Autre exo', sets: [{ weight: 1, reps: 1, rir: 1 }] }] }); // meme id que orig[5], contenu different
   imp.run('b.json', withVersion({ sessions: [neu, conflict] }));
-  const stored = JSON.parse(ls.getItem(NS('it3_sessions'))); assert.strictEqual(stored.length, 110);
-  const idsAll = stored.map(s => String(s.id)); assert.strictEqual(new Set(idsAll).size, 110, 'identifiants uniques');
-  const existingNow = stored.filter(s => orig.some(o => JSON.stringify(o) === JSON.stringify(s))); assert.strictEqual(existingNow.length, 108, 'les 108 originales strictement identiques');
+  const stored = JSON.parse(ls.getItem(NS('it3_sessions'))); assert.strictEqual(stored.length, N + 2);
+  const idsAll = stored.map(s => String(s.id)); assert.strictEqual(new Set(idsAll).size, N + 2, 'identifiants uniques');
+  const existingNow = stored.filter(s => orig.some(o => JSON.stringify(o) === JSON.stringify(s))); assert.strictEqual(existingNow.length, N, 'les ' + N + ' originales strictement identiques');
   assert.deepStrictEqual(existingNow.map(s => s.id), orig.map(s => s.id), 'ordre relatif conserve');
   assert.strictEqual(stored.find(s => JSON.stringify(s) === JSON.stringify(orig[5])) !== undefined, true, 'l\'ancienne seance au meme id garde son contenu');
   assert.ok(stored.some(s => s.exercises[0].name === 'Autre exo' && String(s.id) !== String(orig[5].id)), 'le conflit a recu un nouvel id');
-  assert.strictEqual(app.state('sessions').length, 110);
+  assert.strictEqual(app.state('sessions').length, N + 2);
 });
 t('IMPORT JSON routines : identique ignoree, meme nom mais contenu different = ajoutee « (import) », nouvelle ajoutee ; les 6 existantes intactes et en tete', async () => {
   const { ls, app } = await importCtx(); const imp = importer(app); const orig = clone(EXP.routines);
@@ -134,8 +138,8 @@ t('IMPORT JSON : supps, fatigue et cycle existants ne sont jamais remplaces ; re
 t('IMPORT JSON dans un compte vide (nouvel appareil) : tout est restaure — l\'import par ajout reste utilisable pour une restauration', async () => {
   const ls = mkStore({ it3_loaded_uid: U }); const app = await boot(ls, false); ls.removeItem(NS('it3_routines')); const imp = importer(app);
   imp.run('b.json', withVersion({ sessions: EXP.sessions, routines: EXP.routines, supps: EXP.supps, fatigue: EXP.fatigue, cycle: EXP.cycle }));
-  assert.strictEqual(JSON.parse(ls.getItem(NS('it3_sessions'))).length, 108); assert.deepStrictEqual(JSON.parse(ls.getItem(NS('it3_routines'))).filter(r => EXP.routines.some(o => o.name === r.name)).length >= 6, true);
-  assert.strictEqual(app.state('sessions').length, 108);
+  assert.strictEqual(JSON.parse(ls.getItem(NS('it3_sessions'))).length, N); assert.deepStrictEqual(JSON.parse(ls.getItem(NS('it3_routines'))), EXP.routines, 'les ' + NR + ' routines restaurees a l\'identique');
+  assert.strictEqual(app.state('sessions').length, N); assert.strictEqual(app.state('routines').length, NR);
 });
 t('IMPORT : l\'utilisateur refuse la confirmation -> aucun changement ; fichier non reconnu -> aucun changement', async () => {
   const { ls, app } = await importCtx(); const before = snap(ls);
@@ -153,7 +157,7 @@ t('IMPORT autre extension (liste de seances) : fusion sans remplacer supps/fatig
   const { ls, app } = await importCtx(); const before = snap(ls);
   importer(app).run('s.txt', { sessions: [{ id: 888, date: '2026-11-11', routineName: 'T', exercises: [{ name: 'E', sets: [{ weight: '20', reps: '5', rir: '2' }] }] }], supps: [{ id: 9, name: 'Z' }], fatigue: { sleep: 9 }, cycle: { startDate: '2000-01-01', num: 7 }, routines: [{ id: 1, name: 'ZZ', exercises: [] }] });
   assert.strictEqual(ls.getItem(NS('it3_routines')), before[NS('it3_routines')]); assert.strictEqual(ls.getItem(NS('it3_fatigue')), before[NS('it3_fatigue')]); assert.strictEqual(ls.getItem(NS('it3_cycle')), before[NS('it3_cycle')]);
-  assert.strictEqual(JSON.parse(ls.getItem(NS('it3_sessions'))).length, 109);
+  assert.strictEqual(JSON.parse(ls.getItem(NS('it3_sessions'))).length, N + 1);
 });
 
 // ───────── 3. Regle generale sur les fonctions de fusion (toute source : JSON, Morphologie, futures) ─────────
@@ -183,6 +187,61 @@ t('applyImport ne modifie jamais ses entrees et renvoie les memes objets pour to
   const r = c.applyImport(data, cur, {}); assert.strictEqual(JSON.stringify(cur), frozen); assert.deepStrictEqual(Object.keys(r.changed), []); assert.strictEqual(r.fatigue, cur.fatigue); assert.strictEqual(r.cycle, cur.cycle);
 });
 
-(async () => { let fail = 0; console.log('Fichier teste : ' + H.FILE + ' | donnees de reference : ' + (USING_REAL ? 'export reel du 03/10 (' + EXP.routines.length + ' routines, ' + EXP.sessions.length + ' seances)' : 'jeu synthetique equivalent'));
+// ───────── 4. Export reel complet : seances, routines ET exercices personnalises (compte gratuit, vrai addCustomExercise) ─────────
+// Charge le vrai bloc « exercices de base + exercices personnalises » d'index.html (DB, CUSTOM_EXERCISES, addCustomExercise)
+// dans le contexte de l'appli, une fois l'identite connue, exactement comme reloadCustomEx() le fait apres la connexion.
+function loadCustomExBlock(app) { const a = SRC.indexOf('const DB = {'), b = SRC.indexOf('const PROGRAMME = ['); if (a < 0 || b < 0) throw new Error('bloc exercices introuvable');
+  vm.runInContext(SRC.slice(a, b), app.ctx); app.ctx.reloadCustomEx(); }
+// Exercices perso de l'export ; si le fichier n'en contient pas (ex. copie tiree de la sauvegarde cloud, qui ne les garde pas),
+// 3 noms de test sont utilises pour verifier quand meme le mecanisme.
+const CUSTOM = (Array.isArray(EXP.customEx) && EXP.customEx.length) ? EXP.customEx : ['Exo perso test A', 'Exo perso test B', 'Exo perso test C'];
+const FULL = () => withVersion({ sessions: clone(EXP.sessions), routines: clone(EXP.routines), supps: clone(EXP.supps || []), fatigue: clone(EXP.fatigue || {}), cycle: clone(EXP.cycle || null), customEx: clone(CUSTOM) });
+const storedCustom = ls => JSON.parse(ls.getItem(NS('it3_customEx')) || '[]');
+async function freshFreeAccount(withoutDefaultRoutines) { // compte de test neuf ; le faux profil Supabase renvoie premium:false (compte gratuit)
+  const ls = mkStore({ it3_loaded_uid: U }); const app = await boot(ls, false); if (withoutDefaultRoutines) ls.removeItem(NS('it3_routines')); loadCustomExBlock(app); return { ls, app }; }
+
+t('EXPORT DE REFERENCE : contenu lisible et nombres attendus' + (process.env.EXPECT_COUNTS ? ' (' + process.env.EXPECT_COUNTS + ')' : ''), () => {
+  assert.ok(EXP.version && EXP.version.includes('tatanka-training'), 'version tatanka-training');
+  assert.ok(EXP.sessions.every(s => s && typeof s.date === 'string' && Array.isArray(s.exercises)), 'toutes les seances sont valides');
+  assert.ok(EXP.routines.every(r => r && r.name && Array.isArray(r.exercises)), 'toutes les routines sont valides');
+  if (process.env.EXPECT_COUNTS) { const [es, er, ec] = process.env.EXPECT_COUNTS.split('/').map(x => parseInt(x, 10));
+    assert.strictEqual(N, es, 'nombre de seances dans le fichier'); assert.strictEqual(NR, er, 'nombre de routines dans le fichier');
+    if (!isNaN(ec)) assert.strictEqual((EXP.customEx || []).length, ec, 'nombre d\'exercices personnalises dans le fichier (champ customEx)'); }
+});
+t('IMPORT JSON, compte GRATUIT vide : toutes les seances, toutes les routines et tous les exercices perso (' + CUSTOM.length + ') sont importes et stockes', async () => {
+  const { ls, app } = await freshFreeAccount(true); const imp = importer(app, { realCustomEx: true });
+  imp.run('export.json', FULL());
+  const sessions = JSON.parse(ls.getItem(NS('it3_sessions'))); assert.strictEqual(sessions.length, N, 'seances stockees');
+  assert.deepStrictEqual(sessions.map(s => s.id), EXP.sessions.map(s => s.id), 'memes seances, meme ordre');
+  assert.strictEqual(JSON.stringify(sessions), JSON.stringify(EXP.sessions), 'contenu des seances identique octet pour octet');
+  assert.deepStrictEqual(JSON.parse(ls.getItem(NS('it3_routines'))), EXP.routines, 'les ' + NR + ' routines a l\'identique');
+  assert.deepStrictEqual(storedCustom(ls), CUSTOM, 'exercices perso enregistres dans it3_customEx du compte');
+  assert.deepStrictEqual(Array.from(app.ctx.CUSTOM_EXERCISES), CUSTOM, 'exercices perso disponibles dans la liste « MES EXERCICES »');
+  assert.strictEqual(app.state('sessions').length, N); assert.strictEqual(app.state('routines').length, NR);
+  assert.ok(/Séances ajoutées : /.test(imp.log.alerts[0]) && imp.log.alerts[0].includes('ajoutées : ' + N), imp.log.alerts[0]);
+});
+t('IMPORT JSON, compte GRATUIT neuf (programme par defaut deja cree au 1er demarrage) : seances et exercices perso complets, routines par defaut conservees', async () => {
+  const { ls, app } = await freshFreeAccount(false); const defaults = JSON.parse(ls.getItem(NS('it3_routines')) || '[]'); assert.ok(defaults.length > 0, 'programme par defaut cree');
+  importer(app, { realCustomEx: true }).run('export.json', FULL());
+  assert.strictEqual(JSON.parse(ls.getItem(NS('it3_sessions'))).length, N); assert.deepStrictEqual(storedCustom(ls), CUSTOM);
+  const r = JSON.parse(ls.getItem(NS('it3_routines'))); assert.deepStrictEqual(r.slice(0, defaults.length), defaults, 'routines par defaut intactes et en tete');
+  const base = n => String(n).replace(/ \(import(?: \d+)?\)$/i, '');
+  const same = (x, y) => require('util').isDeepStrictEqual(x, y); // comparaison sans tenir compte de l'ordre des champs
+  EXP.routines.forEach(er => assert.ok(r.some(x => base(x.name) === er.name && same(x.exercises, er.exercises)), 'routine de l\'export presente (ajoutee, ou deja identique au programme par defaut) : ' + er.name));
+  console.log('       info : compte neuf = ' + defaults.length + ' routines par defaut ; apres import = ' + r.length + ' routines (' + (r.length - defaults.length) + ' ajoutees, ' + (NR - (r.length - defaults.length)) + ' identiques au programme par defaut donc ignorees)');
+});
+t('REIMPORT du meme export complet : 0 seance, 0 routine et 0 exercice perso en double', async () => {
+  const { ls, app } = await freshFreeAccount(true); const imp = importer(app, { realCustomEx: true });
+  imp.run('export.json', FULL()); const after1 = snap(ls); imp.run('export.json', FULL()); imp.run('export.json', FULL());
+  assert.deepStrictEqual(snap(ls), after1, 'aucun changement au 2e et 3e import'); assert.strictEqual(storedCustom(ls).length, CUSTOM.length);
+});
+t('EXERCICES PERSO : deja presents -> pas de doublon ; meme nom qu\'un exercice de base -> ignore ; les exercices perso existants restent', async () => {
+  const ls = existingAccount({ [NS('it3_customEx')]: JSON.stringify(['Deja la']) }); const app = await boot(ls, false); loadCustomExBlock(app);
+  importer(app, { realCustomEx: true }).run('b.json', withVersion({ customEx: ['Deja la', 'Squat barre', CUSTOM[0], 42] }));
+  assert.deepStrictEqual(storedCustom(ls), ['Deja la', CUSTOM[0]]);
+  assert.strictEqual(ls.getItem(NS('it3_sessions')), JSON.stringify(EXP.sessions), 'seances intactes'); assert.strictEqual(ls.getItem(NS('it3_routines')), JSON.stringify(EXP.routines), 'routines intactes');
+});
+
+(async () => { let fail = 0; console.log('Fichier teste : ' + H.FILE + ' | donnees de reference : ' + (USING_REAL ? 'export reel ' + REAL + ' (' + N + ' seances, ' + NR + ' routines, ' + (EXP.customEx || []).length + ' exercices perso)' : 'jeu synthetique (' + N + ' seances, ' + NR + ' routines, ' + EXP.customEx.length + ' exercices perso)'));
   for (const [n, f] of tests) { try { await f(); console.log('OK   ' + n); } catch (e) { fail++; console.log('FAIL ' + n + '\n       -> ' + String(e.message).split('\n')[0]); } }
   console.log(`\n${tests.length - fail}/${tests.length} tests passes`); process.exit(fail ? 1 : 0); })();

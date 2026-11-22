@@ -32,5 +32,5 @@ Cette règle vaut pour tout le code de Tatanka Training, y compris les futurs d�
 
 ## Tests de référence
 
-`node tests/data-safety.test.js` — compte existant (6 routines, 108 séances) strictement intact avec une version normale,
+`node tests/data-safety.test.js` — compte existant (nombres lus dans les données de référence : 141 séances, 6 routines, 3 exercices perso dans le jeu synthétique ; `EXPORT_FILE=… EXPECT_COUNTS=141/6/3` pour un export réel) strictement intact avec une version normale,
 absente, `imported-…` ou ancienne ; imports par ajout ; propriétés sur 600 cas aléatoires.
