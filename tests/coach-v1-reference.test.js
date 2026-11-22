@@ -96,11 +96,12 @@ keep('Plus aucun « || 2 » ni « || 3 » sur le RIR dans le code', () => {
 keep('Conseil : des series a RIR 0 donnent l\'avertissement « RIR faible » ; RIR inconnus ignores (pas de note)', () => {
   assert.ok(getProgressionTip([S(50, 8, 0), S(50, 8, 0), S(50, 8, 0)], [], 'Exo test', '8-12').msg.includes('RIR faible'));
   const t = getProgressionTip([{ weight: 50, reps: 8 }, { weight: 50, reps: 8 }, { weight: 50, reps: 8 }], [], 'Exo test', '8-12'); assert.ok(!t.msg.includes('RIR'), t.msg); });
-keep('Chaque serie pre-remplie porte rirSaisi:false (5 endroits) et le choix dans la liste RIR met rirSaisi:true', () => {
-  const prefills = SRC.match(/rir: (?:i|si) === 0 \? "\d" : (?:i|si) === 1 \? "2" : "1",[^}]*/g) || []; assert.strictEqual(prefills.length, 4); prefills.forEach(x => assert.ok(x.includes('rirSaisi: false'), x));
-  assert.ok(/rir: "1", rirSaisi: false, done: false/.test(SRC)); assert.ok(/\.\.\.\(field === "rir" \? \{ rirSaisi: true \} : \{\}\)/.test(SRC)); });
-known('Liste RIR : choisir la MEME valeur que la valeur pre-remplie ne peut pas marquer le RIR comme saisi', 'l\'utilisateur peut confirmer un RIR egal au pre-remplissage (par ex. liste qui demarre sur « RIR ? »), a decider avec David', () =>
-  /<select value=\{s\.rir\} onChange=\{e => updateSet\(exIdx, si, "rir", e\.target\.value\)\}/.test(SRC));
+keep('Nouvelle serie : RIR vide (liste sur « RIR ? »), rirSaisi:false (5 endroits) ; plus aucun RIR pre-rempli 3/2/1 ou 4/2/1', () => {
+  assert.strictEqual((SRC.match(/rir: "", rirSaisi: false, done: false/g) || []).length, 5);
+  assert.ok(!/rir: (?:i|si) === 0 \? "\d"/.test(SRC) && !/rir: "1", rirSaisi/.test(SRC)); });
+keep('Liste RIR : demarre sur « RIR ? » ; choisir explicitement une valeur (meme 3, 2 ou 1) met rirSaisi:true ; revenir a « RIR ? » remet false', () => {
+  assert.ok(/<option value="">RIR \?<\/option>/.test(SRC)); assert.ok(/\.\.\.\(field === "rir" \? \{ rirSaisi: val !== "" \} : \{\}\)/.test(SRC));
+  assert.ok(/rirSaisi: s\.rirSaisi === true && parseRir\(s\.rir\) !== null/.test(SRC), 'enregistre : saisi seulement si une valeur existe'); });
 known('Nombre de series attendu lu dans le programme code en dur (PROGRAMME), pas dans la routine de l\'utilisateur', 'le nombre de series vient de la routine reellement suivie', () => {
   // « Développé couché haltères » = 3 series dans PROGRAMME. Un utilisateur dont la routine prevoit 2 series a fait 10-10 :
   const t = getProgressionTip([S(30, 10), S(30, 10)], [], 'Développé couché haltères', '8-12'); return /S3/.test(t.msg) && t.msg.includes('non faite'); });

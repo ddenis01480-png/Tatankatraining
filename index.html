@@ -650,7 +650,7 @@ function applyImport(data, current, opts) {
 // ── fin des helpers d'import non destructif
 
 // RIR : lecture unique. 0 est une vraie valeur (serie a l'echec). Absent ou illisible = inconnu (null), jamais remplace en silence.
-// rirSaisi (sur chaque serie enregistree depuis cette version) : true = valeur choisie par l'utilisateur, false = valeur pre-remplie.
+// rirSaisi (sur chaque serie enregistree depuis cette version) : true = valeur choisie explicitement dans la liste, false = pas de choix (la liste demarre sur « RIR ? », vide).
 // Les series plus anciennes n'ont pas rirSaisi : leur RIR est « non verifie ».
 function parseRir(v) { if (v === null || v === undefined || v === "") return null; const n = parseInt(v, 10); return (isNaN(n) || n < 0 || n > 10) ? null : n; }
 const KEYS = { routines: "it3_routines", sessions: "it3_sessions", fatigue: "it3_fatigue", cycle: "it3_cycle", supps: "it3_supps", customEx: "it3_customEx" };
@@ -1134,7 +1134,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
         lastSets: ex.sets,
         sets: pastSets.map((s, i) => ({
           weight: s.weight || "", reps: "",
-          rir: i === 0 ? "4" : i === 1 ? "2" : "1", rirSaisi: false, done: false
+          rir: "", rirSaisi: false, done: false
         }))
       };
     });
@@ -1166,7 +1166,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
           name: ex.name, repsTarget: ex.repsTarget || (progExRef2 && progExRef2.repsTarget) || "8-12", note: ex.note || (progExRef2 && progExRef2.note) || "", userNote: "", rest: ex.rest || 90, warmupSets: ex.warmupSets || (progExRef2 && progExRef2.warmupSets) || 0, warmupLabel: ex.warmupLabel || (progExRef2 && progExRef2.warmupLabel) || "", lastSets,
           sets: Array.from({ length: ex.sets || 3 }, (_, i) => ({
             weight: (lastSets[i] && lastSets[i].weight) || (lastSets[0] && lastSets[0].weight) || "", reps: "",
-            rir: i === 0 ? "3" : i === 1 ? "2" : "1", rirSaisi: false, done: false
+            rir: "", rirSaisi: false, done: false
           }))
         };
       });
@@ -1250,7 +1250,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
     setCurrentSets(prev => {
       const updated = {
         ...prev, exercises: prev.exercises.map((ex, ei) =>
-          ei !== exIdx ? ex : { ...ex, sets: (ex.sets || []).map((s, si) => si === setIdx ? { ...s, [field]: val, ...(field === "rir" ? { rirSaisi: true } : {}) } : s) }
+          ei !== exIdx ? ex : { ...ex, sets: (ex.sets || []).map((s, si) => si === setIdx ? { ...s, [field]: val, ...(field === "rir" ? { rirSaisi: val !== "" } : {}) } : s) }
         )
       };
       // Auto-save en cours de séance pour ne pas perdre les données
@@ -1329,7 +1329,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
     setCurrentSets(prev => {
       const exs = [...prev.exercises];
       const last = exs[exIdx].sets[exs[exIdx].sets.length - 1];
-      exs[exIdx] = { ...exs[exIdx], sets: [...exs[exIdx].sets, { weight: (last && last.weight) || "", reps: "", rir: "1", rirSaisi: false, done: false }] };
+      exs[exIdx] = { ...exs[exIdx], sets: [...exs[exIdx].sets, { weight: (last && last.weight) || "", reps: "", rir: "", rirSaisi: false, done: false }] };
       return { ...prev, exercises: exs };
     });
   }
@@ -1344,7 +1344,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
       rest: ex.rest || 90,
       sets: ex.sets
         .filter(s => s.weight && s.reps)
-        .map(s => ({ weight: parseFloat(s.weight), reps: parseInt(s.reps), rir: parseRir(s.rir), rirSaisi: s.rirSaisi === true, done: true }))
+        .map(s => ({ weight: parseFloat(s.weight), reps: parseInt(s.reps), rir: parseRir(s.rir), rirSaisi: s.rirSaisi === true && parseRir(s.rir) !== null, done: true }))
     })).filter(ex => ex.sets.length > 0);
 
     if (!validExs.length) return alert("Aucune serie remplie !");
@@ -1547,7 +1547,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
           lastSets: _addLastSets,
           sets: Array.from({ length: _addNbSets }, (_, si) => ({
             weight: (_addLastSets[si] && _addLastSets[si].weight) || (_addLastSets[0] && _addLastSets[0].weight) || "",
-            reps: "", rir: si === 0 ? "3" : si === 1 ? "2" : "1", rirSaisi: false, done: false
+            reps: "", rir: "", rirSaisi: false, done: false
           }))
         }] }));
         setShowPicker(false);
@@ -1569,7 +1569,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
           lastSets: _lastSets,
           sets: Array.from({ length: _nbSets }, (_, si) => ({
             weight: (_lastSets[si] && _lastSets[si].weight) || (_lastSets[0] && _lastSets[0].weight) || "",
-            reps: "", rir: si === 0 ? "3" : si === 1 ? "2" : "1", rirSaisi: false, done: false
+            reps: "", rir: "", rirSaisi: false, done: false
           }))
         }) }));
         setReplaceIdx(null);
@@ -1970,9 +1970,10 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
                     <input type="number" value={s.reps} onChange={e => !s.done && updateSet(exIdx, si, "reps", e.target.value)}
                       placeholder={(ref && ref.reps) ? String(ref.reps) : "reps"} readOnly={s.done}
                       style={{ background: s.done ? "#111" : "#1a1a1a", border: "1px solid #2a2a2a", color: s.done ? "#444" : "#fff", borderRadius: 7, padding: "7px 4px", fontSize: 15, fontWeight: 800, textAlign: "center", width: "100%", boxSizing: "border-box" }} />
-                    <select value={s.rir} onChange={e => updateSet(exIdx, si, "rir", e.target.value)}
+                    <select value={s.rir === null || s.rir === undefined ? "" : String(s.rir)} onChange={e => updateSet(exIdx, si, "rir", e.target.value)}
                       style={{ background: "#1a1a1a", border: "1px solid #2a2a2a", color: "#666", borderRadius: 7, padding: "7px 2px", fontSize: 11, width: "100%" }}>
-                      {[0,1,2,3,4,5].map(r => <option key={r} value={r}>RIR {r}</option>)}
+                      <option value="">RIR ?</option>
+                      {[0,1,2,3,4,5].map(r => <option key={r} value={String(r)}>RIR {r}</option>)}
                     </select>
                     <button onClick={() => markSetDone(exIdx, si)} style={{
                       background: s.done ? "#1a3a1a" : "#1a1a1a",
