@@ -24,7 +24,7 @@ function literal(start, open, close) { const i = SRC.indexOf(start); if (i < 0) 
   for (let p = SRC.indexOf(open, i); p < SRC.length; p++) { if (SRC[p] === open) d++; if (SRC[p] === close && --d === 0) return SRC.slice(SRC.indexOf(open, i), p + 1); } }
 const V = { Math, JSON, Object, Array, String, Number, parseInt, parseFloat, isNaN, PROGRAMME: REAL_PROGRAMME, console };
 vm.createContext(V);
-vm.runInContext([fnSrc('function e1RM('), fnSrc('function parseRir('), fnSrc('function analyzeEx('), fnSrc('function getProgressionTip('),
+vm.runInContext([fnSrc('function coachEngine('), fnSrc('function e1RM('), fnSrc('function parseRir('), fnSrc('function analyzeEx('), fnSrc('function getProgressionTip('),
   'const DB = ' + literal('const DB = {', '{', '}') + '; const ALL_EXERCISES = Object.values(DB).flat();',
   'const MUSCLE_MAP = ' + literal('const MUSCLE_MAP = {', '{', '}') + ';', 'const MUSCLE_GROUPS = ' + literal('const MUSCLE_GROUPS = {', '{', '}') + ';',
   'const EXERCISE_NAME_FIXES = ' + literal('const EXERCISE_NAME_FIXES = {', '{', '}') + ';', fnSrc('function normalizeExName('),
@@ -71,7 +71,10 @@ t('A', 'API figee ; aucune fonction qui appliquerait une adaptation ; propositio
   assert.deepStrictEqual(E.analyser({ sessions: [] }, { maintenant: '2026-01-01' }).propositions, []); });
 t('A', 'Resultats deterministes : deux analyses identiques des memes donnees donnent le meme resultat', () => {
   const d = representative(); assert.deepStrictEqual(plain(E.analyser(d, { maintenant: '2026-06-01' })), plain(E.analyser(d, { maintenant: '2026-06-01' }))); });
-t('A', 'index.html ne charge pas le moteur (op. 3 : non branche)', () => { assert.ok(!SRC.includes('coach-engine')); });
+t('A', 'index.html charge le moteur AVANT le script Babel ; sans moteur (fichier absent), coachEngine() rend null et le V1 s\'applique', () => {
+  const i = SRC.indexOf('<script src="/coach-engine.js"></script>'), j = SRC.indexOf('<script type="text/babel">'); assert.ok(i > 0 && i < j);
+  const box = {}; vm.createContext(box); vm.runInContext(fnSrc('function coachEngine(') + '; this.r = coachEngine();', box); assert.strictEqual(box.r, null);
+  const box2 = { window: { CoachEngine: E } }; vm.createContext(box2); vm.runInContext(fnSrc('function coachEngine(') + '; this.r = coachEngine();', box2); assert.strictEqual(box2.r, E); });
 
 // ═════════ B. NORMALISATION ═════════
 t('B', 'lireRir = parseRir du V1 sur toutes les entrees (0 conserve ; absent, vide, texte, hors 0-10 = inconnu)', () => {
@@ -98,6 +101,12 @@ t('B', 'Series : virgule decimale lue (« 52,5 »), serie sans charge ou sans re
   const n = E.normaliserSerie; assert.strictEqual(n({ weight: '52,5', reps: '8' }).charge, 52.5); assert.strictEqual(n({ weight: '52,5', reps: '8' }).valide, true);
   assert.strictEqual(n({ weight: 0, reps: 8 }).valide, false); assert.strictEqual(n({ weight: 50, reps: '' }).valide, false); assert.strictEqual(n({ weight: -5, reps: 8 }).valide, false);
   assert.strictEqual(n({ weight: 50, reps: 8, setType: 'normal' }).type, 'normal'); });
+t('B', 'Exercice present deux fois dans une seance : une seule entree d\'historique, toutes les series regroupees', () => {
+  const ss = [sess(1, '2026-01-01', [ex('Curl haltères', [S(14, 10)]), ex('Squat barre', [S(100, 8)]), ex('Curl haltères', [S(10, 15), S(10, 14)])])];
+  const h = histOf(ss, 'Curl haltères'); assert.strictEqual(h.length, 1); assert.deepStrictEqual([h[0].series.length, h[0].occurrences], [3, 2]); });
+t('B', 'Noms differents = historiques distincts (aucune fusion d\'exercices renommes)', () => {
+  const ss = [sess(1, '2026-01-01', [ex('Curl câble unilatéral face poulie', [S(10, 10)])]), sess(2, '2026-01-03', [ex('Curl câble unilatéral face poulie (nouveau nom)', [S(10, 11)])])];
+  assert.strictEqual(histOf(ss, 'Curl câble unilatéral face poulie').length, 1); assert.strictEqual(histOf(ss, 'Curl câble unilatéral face poulie (nouveau nom)').length, 1); });
 t('B', 'Correction des noms : la fonction de l\'appli (normalizeExName) peut etre transmise ; historique regroupe', () => {
   const ss = [sess(1, '2026-01-01', [ex('Leg curl assis', [S(40, 10)])]), sess(2, '2026-01-03', [ex('Leg curl assis machine', [S(40, 11)])])];
   assert.strictEqual(E.historiqueExercice(E.normaliserSeances(ss, { normaliserNom: v1.normalizeExName }), 'Leg curl assis machine').length, 2);
@@ -107,8 +116,10 @@ t('B', 'Correction des noms : la fonction de l\'appli (normalizeExName) peut etr
 t('C', 'Force : e1RM du moteur = e1RM du V1 sur 2 000 couples charge/reps (y compris textes et valeurs invalides)', () => {
   const r = rng(7); for (let i = 0; i < 2000; i++) { const w = Math.round(r() * 2000) / 10, k = Math.floor(r() * 25); assert.strictEqual(E.e1RM(w, k), v1.e1RM(w, k)); }
   [['', ''], ['60', '8'], [0, 8], [60, 0], [null, 5], ['abc', 5], [50, -3]].forEach(([w, k]) => assert.strictEqual(E.e1RM(w, k), v1.e1RM(w, k))); });
-t('C', 'Force d\'une serie : au-dela de 12 reps, la serie compte comme 12 reps (seuil unique)', () => {
-  assert.strictEqual(E.forceSerie(E.normaliserSerie(S(50, 15))), E.e1RM(50, 12)); assert.strictEqual(E.forceSerie(E.normaliserSerie(S(50, 10))), E.e1RM(50, 10)); });
+t('C', 'Force d\'une serie : formule V1 NON plafonnee ; au-dela de 12 reps, la force de la seance est marquee « non fiable »', () => {
+  assert.strictEqual(E.forceSerie(E.normaliserSerie(S(50, 15))), E.e1RM(50, 15)); assert.strictEqual(E.forceSerie(E.normaliserSerie(S(50, 10))), E.e1RM(50, 10));
+  assert.strictEqual(E.mesuresSeance([S(50, 15)].map(E.normaliserSerie)).forceFiable, false); assert.strictEqual(E.mesuresSeance([S(50, 12), S(40, 15)].map(E.normaliserSerie)).forceFiable, true);
+  const m = E.mesuresSeance([S(50, 12), S(50, 11), S(45, 14)].map(E.normaliserSerie)); assert.deepStrictEqual([m.chargeMax, m.repsAChargeMax, m.repsTotal], [50, 23, 37]); });
 t('C', 'Mesures d\'une seance : tonnage, reps, charge max, series dures (RIR connu <= 4), statuts RIR', () => {
   const m = E.mesuresSeance([S(50, 10, 0, { rirSaisi: true }), S(50, 9, 5), S(55, 8, null), S(0, 10), S(50, '', 2)].map(E.normaliserSerie));
   assert.deepStrictEqual([m.seriesValides, m.tonnage, m.repsTotal, m.chargeMax, m.seriesDures], [3, 50 * 10 + 50 * 9 + 55 * 8, 27, 55, 1]);
@@ -186,10 +197,28 @@ t('E', 'Series prevues lues dans la routine de l\'utilisateur (plus dans le prog
   assert.strictEqual(r.exercices['Développé couché haltères'].conseil.serieNonFaite, false, 'routine a 2 series : pas de « serie non faite »'); });
 t('E', 'Seuil unique de force (12 reps) : series longues (15-20, 30-50) suivies par le travail total, plus par la force estimee', () => {
   const h = [{ date: day(0), series: [S(20, 15), S(20, 15), S(20, 15)].map(E.normaliserSerie) }, { date: day(1), series: [S(20, 18), S(20, 17), S(20, 16)].map(E.normaliserSerie) }];
-  const d = E.diagnostiquer(h, E.lireFourchette('15-20')); assert.strictEqual(d.mode, 'reps'); assert.strictEqual(d.code, 'progression');
+  const d = E.diagnostiquer(h, E.lireFourchette('15-20')); assert.strictEqual(d.mode, 'reps'); assert.strictEqual(d.code, 'progression'); assert.strictEqual(d.nature, 'reps');
   const top = [0, 1, 2].map(i => ({ date: day(i), series: [S(20, 20), S(20, 20), S(20, 19)].map(E.normaliserSerie) }));
   assert.strictEqual(E.diagnostiquer(top, E.lireFourchette('15-20')).code, 'plafond', 'reps au haut de la fourchette 3 fois = plafond (augmenter la charge)');
   assert.strictEqual(E.diagnostiquer(h, E.lireFourchette('45-60s')).code, 'non_applicable'); assert.strictEqual(E.diagnostiquer(h, E.lireFourchette('100')).raison, 'serie_de_100'); });
+t('E', '10-15 : progression en reps, en charge et force estimee distinguees ; aucune limite a 12 reps', () => {
+  const f = E.lireFourchette('10-15'); const h = (...ss) => ss.map((x, i) => ({ date: day(i), series: x.map(([w, r]) => E.normaliserSerie(S(w, r))) }));
+  const reps = E.diagnostiquer(h([[20, 13], [20, 13], [20, 12]], [[20, 14], [20, 13], [20, 13]]), f);
+  assert.deepStrictEqual([reps.code, reps.nature, reps.axes.reps, reps.axes.charge, reps.derniere.forceFiable], ['progression', 'reps', 2, 0, false], '13 -> 14 reps a 20 kg = progression en repetitions');
+  const charge = E.diagnostiquer(h([[20, 15], [20, 15], [20, 15]], [[22.5, 11], [22.5, 10], [22.5, 10]]), f);
+  assert.deepStrictEqual([charge.code, charge.nature, charge.axes.charge, charge.axes.reps], ['progression', 'charge', 2.5, null], 'charge plus lourde, reps dans la fourchette');
+  assert.ok(typeof charge.axes.force === 'number', 'la force estimee reste fournie, a titre indicatif');
+  const tropTot = E.diagnostiquer(h([[20, 15], [20, 15], [20, 15]], [[25, 7], [25, 6], [25, 6]]), f); assert.strictEqual(tropTot.code, 'stable', 'charge montee mais reps sous la fourchette : pas une progression');
+  const recul = E.diagnostiquer(h([[20, 14], [20, 14]], [[20, 12], [20, 12]]), f); assert.strictEqual(recul.code, 'stable'); assert.strictEqual(recul.axes.reps, -4);
+  const plafond = E.diagnostiquer(h([[20, 15], [20, 14]], [[20, 15], [20, 14]], [[20, 15], [20, 15]]), f); assert.strictEqual(plafond.code, 'plafond');
+  const regr = E.diagnostiquer(h([[20, 15], [20, 15]], [[20, 13], [20, 13]], [[20, 11], [20, 11]]), f); assert.strictEqual(regr.code, 'regression'); });
+t('E', 'Mode force (8-12) : une serie a 13 reps compte avec sa vraie force (comme le V1), marquee non fiable', () => {
+  const h = [{ date: day(0), series: [S(30, 12), S(30, 12)].map(E.normaliserSerie) }, { date: day(1), series: [S(30, 13), S(30, 12)].map(E.normaliserSerie) }];
+  const d = E.diagnostiquer(h, E.lireFourchette('8-12')); assert.deepStrictEqual([d.code, d.mesure.derniere, d.derniere.forceFiable], ['progression', E.e1RM(30, 13), false]); });
+t('E', 'Conseil : les series de reference peuvent venir de l\'ecran (comme le V1) ; RIR cible lu a part du RIR reel', () => {
+  const c = E.conseilProgression([{ date: day(0), series: [S(50, 8)].map(E.normaliserSerie) }], { fourchette: '8-12', dernieresSeries: [S(50, 10), S(50, 10), S(50, 9)] });
+  assert.deepStrictEqual([c.action, c.serie], ['ajouter_rep', 3]);
+  const st = E.normaliserSerie({ weight: 50, reps: 8, rir: '', rirCible: 2, rirSaisi: false }); assert.deepStrictEqual([st.rir, st.rirCible, st.statutRir], [null, 2, 'inconnu']); });
 t('E', 'Tendance de cycle sur TOUTES les seances (le V1 comparait seulement la premiere et la derniere)', () => {
   const mk = ws => ws.map((w, i) => ({ date: day(i), series: [S(w, 10), S(w, 10), S(w, 10)].map(E.normaliserSerie) }));
   assert.strictEqual(E.tendance(mk([50, 52.5, 55, 57.5])).sens, 'hausse'); assert.strictEqual(E.tendance(mk([60, 57.5, 55, 52.5])).sens, 'baisse');
@@ -233,7 +262,7 @@ t('G', 'Donnees abimees : seance sans exercices, exercice null, series vides, re
   const ss = [{ id: 1, date: '2026-01-01' }, { id: 1, date: '2026-01-02', exercises: [null, { name: 'Squat barre' }, ex('Squat barre', [S('', ''), S(-5, 8), S(100, 'abc')])] }, { id: 3, exercises: [ex('Squat barre', [S(100, 8)])] }, sess(4, '2026-01-03', [ex(undefined, [S(10, 10)])])];
   const r = E.analyser({ sessions: ss }, { maintenant: '2026-01-05' });
   assert.deepStrictEqual([r.donnees.seances, r.donnees.idsEnDouble, r.donnees.seancesSansDate, r.donnees.seriesValides], [4, 1, 1, 2]);
-  assert.strictEqual(r.exercices['Squat barre'].seances, 3); assert.ok(r.exercices[''] !== undefined, 'nom absent : exercice vide, non classe'); assert.ok(r.donnees.exercicesNonClasses.includes('')); });
+  assert.strictEqual(r.exercices['Squat barre'].seances, 2, 'deux occurrences dans la meme seance = une seule entree'); assert.ok(r.exercices[''] !== undefined, 'nom absent : exercice vide, non classe'); assert.ok(r.donnees.exercicesNonClasses.includes('')); });
 t('G', 'Une seule seance ou series toutes invalides : pas de diagnostic, pas de conseil invente', () => {
   assert.strictEqual(E.diagnostiquer([{ date: day(0), series: [S(50, 8)].map(E.normaliserSerie) }]), null);
   assert.strictEqual(E.diagnostiquer([{ date: day(0), series: [S(0, 8)].map(E.normaliserSerie) }, { date: day(1), series: [S(50, '')].map(E.normaliserSerie) }]), null);
@@ -294,13 +323,14 @@ if (USING_REAL) {
     assert.strictEqual(r.donnees.rir.saisi + r.donnees.rir.prerempli, EXP.sessions.flatMap(s => s.exercises.flatMap(e => e.sets || [])).filter(st => 'rirSaisi' in st && st.rir !== null && st.rir !== undefined && st.weight && st.reps).length);
     const dist = {}; Object.values(r.exercices).forEach(x => { const k = x.diagnostic ? x.diagnostic.code : 'moins de 2 seances'; dist[k] = (dist[k] || 0) + 1; });
     info(r.donnees.seances + ' seances, ' + r.donnees.seriesValides + ' series valides, ' + Object.keys(r.exercices).length + ' exercices ; RIR ' + JSON.stringify(r.donnees.rir) + ' ; diagnostics ' + JSON.stringify(dist)); });
-  t('H', 'Export reel : diagnostic identique au V1 pour chaque exercice en mode force sans serie > 12 reps ; ecarts restants listes', () => {
+  t('H', 'Export reel : diagnostic identique au V1 pour chaque exercice en mode force (8-12, 6-10...)', () => {
     const ss = EXP.sessions; const names = [...new Set(ss.flatMap(s => s.exercises.map(e => e.name)))]; let same = 0; const ecarts = [];
     names.forEach(n => { const h = ss.filter(s => s.exercises.some(e => e.name === n)).map(s => ({ date: s.date, sets: s.exercises.find(e => e.name === n).sets }));
       const hh = histOf(ss, n); const f = hh[hh.length - 1].fourchette; if (E.modeMesure(f) !== 'force') return;
       const a = v1.analyzeEx(h), b = E.diagnostiquer(hh, f); const over12 = hh.some(x => x.series.some(st => st.valide && st.reps > 12));
-      if ((a ? a.type : null) === (b ? b.typeV1 : null)) same++; else if (!over12) assert.fail(n + ' : V1 ' + (a && a.type) + ' / moteur ' + (b && b.typeV1)); else ecarts.push(n); });
-    info(same + ' exercices identiques au V1 ; ' + ecarts.length + ' ecart(s) dus aux series > 12 reps comptees 12 pour la force' + (ecarts.length ? ' : ' + ecarts.join(', ') : '')); });
+      const doublon = hh.some(x => x.occurrences > 1);
+      if ((a ? a.type : null) === (b ? b.typeV1 : null)) same++; else if (doublon) ecarts.push(n + ' (V1 ' + (a && a.type) + ' / moteur ' + (b && b.typeV1) + ')'); else assert.fail(n + ' : V1 ' + (a && a.type) + ' / moteur ' + (b && b.typeV1) + (over12 ? ' (series > 12 reps)' : '')); });
+    info(same + ' exercices en mode force identiques au V1' + (ecarts.length ? ' ; ecart voulu (exercice present 2 fois dans une seance : le V1 ignorait la 2e occurrence) : ' + ecarts.join(', ') : '')); });
 }
 
 // ───────── Execution ─────────

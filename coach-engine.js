@@ -1,5 +1,5 @@
 /*
- * coach-engine.js — Moteur d'analyse du Coach Tatanka Training (Coach V2), version 0.1.0
+ * coach-engine.js — Moteur d'analyse du Coach Tatanka Training (Coach V2), version 0.2.0
  *
  * ROLE : lire les donnees qu'on lui transmet et retourner des analyses. RIEN D'AUTRE.
  *   - aucun acces a localStorage, Supabase, au reseau, au DOM ou a React ;
@@ -32,11 +32,12 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var VERSION = "0.1.0";
+  var VERSION = "0.2.0";
 
   // Reglages centralises (une seule valeur par regle).
   var REGLES = Object.freeze({
-    FORCE_REPS_MAX: 12,            // au-dela, la force estimee n'est plus fiable : la serie compte comme 12 reps pour la force
+    FORCE_REPS_MAX: 12,            // au-dela, la force estimee reste calculee (non plafonnee) mais est marquee « non fiable » ;
+                                   // c'est aussi la limite entre fourchettes « force » (<= 12) et « repetitions » (> 12)
     FOURCHETTE_DEFAUT: "8-12",     // fourchette utilisee quand l'exercice n'en a pas (comportement V1)
     SERIES_PREVUES_DEFAUT: 3,      // nombre de series prevues si la routine ne le dit pas (comportement V1)
     INCREMENT_LOURD: 2.5,          // charge >= 20 kg (V1)
@@ -116,7 +117,7 @@
   function normaliserSerie(st) {
     st = st || {};
     var w = num(st.weight), r = int(st.reps);
-    return { charge: w, reps: r, rir: lireRir(st.rir), statutRir: statutRir(st), valide: !!(w && w > 0 && r && r > 0), type: st.setType || null };
+    return { charge: w, reps: r, rir: lireRir(st.rir), statutRir: statutRir(st), rirCible: lireRir(st.rirCible), valide: !!(w && w > 0 && r && r > 0), type: st.setType || null };
   }
 
   function nomParDefaut(n) { return String(n || "").trim(); }
@@ -135,10 +136,18 @@
     });
   }
 
-  // Historique d'un exercice : une entree par seance ou il apparait (seances deja normalisees et triees).
+  // Historique d'un exercice : UNE entree par seance ou il apparait (seances deja normalisees et triees).
+  // Si l'exercice figure deux fois dans la meme seance, ses series sont regroupees (le V1 ne lisait que la premiere occurrence).
   function historiqueExercice(seancesNorm, nom) {
     var out = [];
-    seancesNorm.forEach(function (s) { s.exercices.forEach(function (e) { if (e.nom === nom) out.push({ date: s.date, id: s.id, fourchette: e.fourchette, series: e.series }); }); });
+    seancesNorm.forEach(function (s) {
+      var entree = null;
+      s.exercices.forEach(function (e) {
+        if (e.nom !== nom) return;
+        if (!entree) { entree = { date: s.date, id: s.id, fourchette: e.fourchette, series: e.series.slice(), occurrences: 1 }; out.push(entree); }
+        else { entree.series = entree.series.concat(e.series); entree.occurrences++; }
+      });
+    });
     return out;
   }
 
@@ -146,20 +155,29 @@
 
   // Formule de force V1 (Epley, arrondie) — identique a e1RM() d'index.html, entrees invalides = 0.
   function e1RM(w, r) { var _w = parseFloat(w), _r = parseInt(r, 10); if (!_w || isNaN(_w) || !_r || isNaN(_r) || _r <= 0) return 0; return Math.round(_w * (1 + _r / 30)); }
-  // Force estimee d'une serie : au-dela de 12 reps, la serie compte comme 12 reps (un seul seuil, une seule formule).
-  function forceSerie(serie) { return serie && serie.valide ? e1RM(serie.charge, Math.min(serie.reps, REGLES.FORCE_REPS_MAX)) : 0; }
+  // Force estimee d'une serie : formule V1, NON plafonnee. Au-dela de 12 reps elle est peu fiable : la mesure de la seance
+  // l'indique (forceFiable:false) et la progression en repetitions est suivie a part.
+  function forceSerie(serie) { return serie && serie.valide ? e1RM(serie.charge, serie.reps) : 0; }
 
+  // Mesures d'une seance d'un exercice. Trois axes distincts :
+  //   charge  : chargeMax ;  repetitions : repsTotal et repsAChargeMax (reps faites a la charge la plus lourde) ;
+  //   force   : force estimee (meilleure serie) + forceFiable (meilleure serie <= 12 reps).
   function mesuresSeance(series) {
     var v = (series || []).filter(function (s) { return s.valide; });
     var rir = { saisi: 0, prerempli: 0, non_verifie: 0, inconnu: 0 };
     v.forEach(function (s) { rir[s.statutRir]++; });
+    var chargeMax = v.reduce(function (m, s) { return Math.max(m, s.charge); }, 0), best = null;
+    v.forEach(function (s) { var fs = forceSerie(s); if (!best || fs > best.f) best = { f: fs, reps: s.reps }; });
+    var repsTotal = v.reduce(function (a, s) { return a + s.reps; }, 0);
     return {
       seriesValides: v.length,
-      force: v.reduce(function (m, s) { return Math.max(m, forceSerie(s)); }, 0),
+      force: best ? best.f : 0,
+      forceFiable: !!best && best.reps <= REGLES.FORCE_REPS_MAX,
       tonnage: round1(v.reduce(function (a, s) { return a + s.charge * s.reps; }, 0)),
-      repsTotal: v.reduce(function (a, s) { return a + s.reps; }, 0),
-      repsMoy: v.length ? v.reduce(function (a, s) { return a + s.reps; }, 0) / v.length : 0,
-      chargeMax: v.reduce(function (m, s) { return Math.max(m, s.charge); }, 0),
+      repsTotal: repsTotal,
+      repsMoy: v.length ? repsTotal / v.length : 0,
+      chargeMax: chargeMax,
+      repsAChargeMax: v.filter(function (s) { return s.charge === chargeMax; }).reduce(function (a, s) { return a + s.reps; }, 0),
       seriesDures: v.filter(function (s) { return s.rir !== null && s.rir <= REGLES.RIR_DUR_MAX; }).length,
       rir: rir
     };
@@ -246,23 +264,43 @@
   }
   function metrique(m, mode) { return mode === "force" ? m.force : m.tonnage; }
 
+  // Ecarts entre deux seances sur les trois axes, sans les melanger.
+  function axesProgression(prec, cour) {
+    var memeCharge = cour.chargeMax === prec.chargeMax;
+    return { charge: round1(cour.chargeMax - prec.chargeMax), reps: memeCharge ? cour.repsAChargeMax - prec.repsAChargeMax : null,
+      repsTotal: cour.repsTotal - prec.repsTotal, force: cour.force - prec.force, forceFiable: !!(prec.forceFiable && cour.forceFiable) };
+  }
+
   // UNE definition de la progression entre deux seances d'un meme exercice (utilisee par tous les diagnostics).
-  //   progression : la mesure principale monte, OU meme charge (ou plus) avec plus de repetitions au total ;
-  //   regression  : la mesure baisse, sans hausse de charge ni de repetitions ;
-  //   stable      : le reste.
-  function comparer(prec, cour, mode) {
+  // Mode « force » (fourchette <= 12, comportement V1) :
+  //   progression : la force estimee monte, OU meme charge (ou plus) avec plus de repetitions au total ;
+  //   regression  : la force baisse, sans hausse de charge ni de repetitions ; stable : le reste.
+  // Mode « reps » (fourchette > 12, ex. 10-15, 15-20) : la force estimee n'est PAS le critere.
+  //   progression en charge : charge plus lourde avec des repetitions dans la fourchette (moyenne >= bas de fourchette) ;
+  //   progression en repetitions : meme charge, plus de repetitions a cette charge (aucun plafond a 12) ;
+  //   regression : meme charge et moins de repetitions, ou charge plus legere et moins de travail total ; stable : le reste.
+  function comparer(prec, cour, mode, fourchette) {
+    if (mode === "reps") {
+      var dansFourchette = !fourchette || fourchette.min === null || fourchette.min === undefined || cour.repsMoy >= fourchette.min;
+      if (cour.chargeMax > prec.chargeMax) return dansFourchette ? "progression" : "stable";
+      if (cour.chargeMax === prec.chargeMax) return cour.repsAChargeMax > prec.repsAChargeMax ? "progression" : cour.repsAChargeMax < prec.repsAChargeMax ? "regression" : "stable";
+      return cour.tonnage < prec.tonnage ? "regression" : "stable";
+    }
     var a = metrique(prec, mode), b = metrique(cour, mode);
     var plusDeReps = cour.repsTotal > prec.repsTotal && cour.chargeMax >= prec.chargeMax;
     if (b > a || plusDeReps) return "progression";
     if (b < a && cour.chargeMax <= prec.chargeMax && cour.repsTotal <= prec.repsTotal) return "regression";
     return "stable";
   }
+  // Nature d'une progression : "charge", "reps" ou "force" (force estimee en hausse sans hausse de charge ni de reps).
+  function natureProgression(axes) { return axes.charge > 0 ? "charge" : (axes.reps !== null ? axes.reps > 0 : axes.repsTotal > 0) ? "reps" : "force"; }
 
   var CODES = { "0": "progression", "1": "progression_trop_rapide", "2": "plafond", "3": "regression", "-1": "stable" };
 
   // Diagnostic d'un exercice sur son historique (trie ici, quel que soit l'ordre recu).
-  // Retour : null (moins de 2 seances mesurables) ou { code, typeV1, mode, mesure:{...}, ecart, ecartPct, seances }.
-  // Les textes et couleurs restent a l'affichage : le moteur ne retourne que des donnees.
+  // Retour : null (moins de 2 seances mesurables) ou
+  //   { code, typeV1, mode, mesure:{precedente, derniere}, ecart, ecartRatio, ecartPct, seances, axes, nature?, derniere:{...}, perte?, seancesAuPlafond? }
+  //   mesure = force estimee (mode force) ou tonnage (mode reps). Les textes et couleurs restent a l'affichage.
   function diagnostiquer(historique, fourchette) {
     var hist = (historique || []).slice().sort(function (x, y) { return (x.date || "9999") < (y.date || "9999") ? -1 : (x.date || "9999") > (y.date || "9999") ? 1 : 0; });
     var f = fourchette || (hist.length && hist[hist.length - 1].fourchette) || lireFourchette("");
@@ -271,21 +309,32 @@
     var pts = hist.map(function (h) { var m = mesuresSeance(h.series); m.date = h.date; return m; }).filter(function (p) { return metrique(p, mode) > 0; });
     if (pts.length < 2) return null;
     var l = pts.length, last = pts[l - 1], prev = pts[l - 2], last3 = pts.slice(-3);
-    var a = metrique(prev, mode), b = metrique(last, mode), jump = b - a, pct = jump / (a || 1);
-    var res = function (type, extra) { var o = { code: CODES[String(type)], typeV1: type, mode: mode, mesure: { precedente: a, derniere: b }, ecart: round1(jump), ecartPct: round1(pct * 100), seances: l }; if (extra) for (var k in extra) o[k] = extra[k]; return o; };
-    // Progression trop rapide : seulement en mode force (en series longues, le tonnage varie fortement d'une seance a l'autre).
-    if (mode === "force" && pct > REGLES.TROP_RAPIDE_PCT && jump > REGLES.TROP_RAPIDE_KG) return res(1);
+    var a = metrique(prev, mode), b = metrique(last, mode), jump = b - a, pct = jump / (a || 1), axes = axesProgression(prev, last);
+    var res = function (type, extra) {
+      var o = { code: CODES[String(type)], typeV1: type, mode: mode, mesure: { precedente: a, derniere: b }, ecart: round1(jump), ecartRatio: pct, ecartPct: round1(pct * 100), seances: l, axes: axes,
+        derniere: { chargeMax: last.chargeMax, repsAChargeMax: last.repsAChargeMax, repsTotal: last.repsTotal, repsMoy: round1(last.repsMoy), force: last.force, forceFiable: last.forceFiable } };
+      if (extra) for (var k in extra) o[k] = extra[k]; return o; };
+    if (mode === "reps") {
+      if (last3.length >= 3) {
+        if (last3.every(function (p) { return p.chargeMax === last.chargeMax; }) && last.repsMoy >= f.max - REGLES.PLAFOND_MARGE_REPS) return res(2, { seancesAuPlafond: last3.length });
+        var baisse = last3.every(function (p, i) { return i === 0 || comparer(last3[i - 1], p, mode, f) === "regression"; });
+        var perteT = last3[0].tonnage - last.tonnage;
+        if (baisse && perteT > last3[0].tonnage * REGLES.REGRESSION_PCT) return res(3, { perte: round1(perteT) });
+      }
+      return comparer(prev, last, mode, f) === "progression" ? res(0, { nature: natureProgression(axes) }) : res(-1);
+    }
+    // Mode force : regles et seuils du V1.
+    if (pct > REGLES.TROP_RAPIDE_PCT && jump > REGLES.TROP_RAPIDE_KG) return res(1);
     if (last3.length >= 3) {
       var maxM = Math.max.apply(null, pts.map(function (p) { return metrique(p, mode); }));
-      if (last3.every(function (p) { return metrique(p, mode) >= maxM * REGLES.PLAFOND_PCT; }) && last.repsMoy >= f.max - REGLES.PLAFOND_MARGE_REPS && (mode === "reps" || last.repsMoy < 20))
+      if (last3.every(function (p) { return metrique(p, mode) >= maxM * REGLES.PLAFOND_PCT; }) && last.repsMoy >= f.max - REGLES.PLAFOND_MARGE_REPS && last.repsMoy < 20)
         return res(2, { seancesAuPlafond: last3.length });
       var enBaisse = last3.every(function (p, i) { return i === 0 || metrique(p, mode) <= metrique(last3[i - 1], mode); });
       var perte = metrique(last3[0], mode) - b;
       if (enBaisse && perte > metrique(last3[0], mode) * REGLES.REGRESSION_PCT && last.chargeMax <= prev.chargeMax && last.repsTotal <= prev.repsTotal)
         return res(3, { perte: round1(perte) });
     }
-    var c = comparer(prev, last, mode);
-    if (c === "progression") return res(0, { repsGagnees: b > a ? 0 : last.repsTotal - prev.repsTotal });
+    if (comparer(prev, last, mode, f) === "progression") return res(0, { nature: natureProgression(axes), repsGagnees: b > a ? 0 : last.repsTotal - prev.repsTotal });
     return res(-1);
   }
 
@@ -313,8 +362,10 @@
   function conseilProgression(historique, options) {
     options = options || {};
     var hist = (historique || []).slice().sort(function (x, y) { return (x.date || "") < (y.date || "") ? -1 : (x.date || "") > (y.date || "") ? 1 : 0; });
-    if (!hist.length) return null;
-    var dernier = hist[hist.length - 1];
+    if (!hist.length && !Array.isArray(options.dernieresSeries)) return null;
+    var dernier = hist.length ? hist[hist.length - 1] : { date: null, fourchette: null, series: [] };
+    // L'ecran peut fournir les series de reference (comportement V1 : « lastSets » de la seance en cours).
+    if (Array.isArray(options.dernieresSeries)) dernier = { date: dernier.date, fourchette: dernier.fourchette, series: options.dernieresSeries.map(function (st) { return st && st.statutRir ? st : normaliserSerie(st); }) };
     var f = typeof options.fourchette === "string" ? lireFourchette(options.fourchette) : (options.fourchette || dernier.fourchette || lireFourchette(""));
     var valides = (dernier.series || []).filter(function (s) { return s.valide; });
     if (!valides.length) return null;
@@ -481,7 +532,7 @@
     // 3. catalogue
     classerExercice: classerExercice,
     // 4. diagnostics
-    modeMesure: modeMesure, comparer: comparer, diagnostiquer: diagnostiquer, tendance: tendance, conseilProgression: conseilProgression,
+    modeMesure: modeMesure, axesProgression: axesProgression, comparer: comparer, natureProgression: natureProgression, diagnostiquer: diagnostiquer, tendance: tendance, conseilProgression: conseilProgression,
     // 5. domaines
     scoreFatigue: scoreFatigue, rirRecent: rirRecent, recuperation: recuperation, volume: volume, priorites: priorites, morphologie: morphologie,
     // 6. analyse complete
