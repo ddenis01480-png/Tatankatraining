@@ -649,6 +649,10 @@ function applyImport(data, current, opts) {
 }
 // ── fin des helpers d'import non destructif
 
+// RIR : lecture unique. 0 est une vraie valeur (serie a l'echec). Absent ou illisible = inconnu (null), jamais remplace en silence.
+// rirSaisi (sur chaque serie enregistree depuis cette version) : true = valeur choisie par l'utilisateur, false = valeur pre-remplie.
+// Les series plus anciennes n'ont pas rirSaisi : leur RIR est « non verifie ».
+function parseRir(v) { if (v === null || v === undefined || v === "") return null; const n = parseInt(v, 10); return (isNaN(n) || n < 0 || n > 10) ? null : n; }
 const KEYS = { routines: "it3_routines", sessions: "it3_sessions", fatigue: "it3_fatigue", cycle: "it3_cycle", supps: "it3_supps", customEx: "it3_customEx" };
 function load(k) { try { const v = lsGetNs(k); return v ? JSON.parse(v) : null; } catch(e) { return null; } }
 function save(k, v) {
@@ -713,8 +717,9 @@ function getProgressionTip(lastSets, sessions, exName, repsTarget) {
   const validLast = lastSets.filter(s => s.weight && s.reps);
   if (validLast.length === 0) return null;
   // RIR moyen — affine le conseil
-  const avgRIR = Math.round(validLast.reduce((a, s) => a + (parseInt(s.rir) || 2), 0) / validLast.length);
-  const rirNote = avgRIR >= 4 ? " · RIR élevé → pousse plus fort" : avgRIR <= 1 ? " · RIR faible → sois prudent" : "";
+  const knownRir = validLast.map(s => parseRir(s.rir)).filter(r => r !== null);
+  const avgRIR = knownRir.length ? Math.round(knownRir.reduce((a, r) => a + r, 0) / knownRir.length) : null;
+  const rirNote = avgRIR === null ? "" : avgRIR >= 4 ? " · RIR élevé → pousse plus fort" : avgRIR <= 1 ? " · RIR faible → sois prudent" : "";
 
   // Série de 100 — pas de conseil de progression classique
   if (repsTarget === "100") return {
@@ -1129,7 +1134,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
         lastSets: ex.sets,
         sets: pastSets.map((s, i) => ({
           weight: s.weight || "", reps: "",
-          rir: i === 0 ? "4" : i === 1 ? "2" : "1", done: false
+          rir: i === 0 ? "4" : i === 1 ? "2" : "1", rirSaisi: false, done: false
         }))
       };
     });
@@ -1161,7 +1166,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
           name: ex.name, repsTarget: ex.repsTarget || (progExRef2 && progExRef2.repsTarget) || "8-12", note: ex.note || (progExRef2 && progExRef2.note) || "", userNote: "", rest: ex.rest || 90, warmupSets: ex.warmupSets || (progExRef2 && progExRef2.warmupSets) || 0, warmupLabel: ex.warmupLabel || (progExRef2 && progExRef2.warmupLabel) || "", lastSets,
           sets: Array.from({ length: ex.sets || 3 }, (_, i) => ({
             weight: (lastSets[i] && lastSets[i].weight) || (lastSets[0] && lastSets[0].weight) || "", reps: "",
-            rir: i === 0 ? "3" : i === 1 ? "2" : "1", done: false
+            rir: i === 0 ? "3" : i === 1 ? "2" : "1", rirSaisi: false, done: false
           }))
         };
       });
@@ -1245,7 +1250,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
     setCurrentSets(prev => {
       const updated = {
         ...prev, exercises: prev.exercises.map((ex, ei) =>
-          ei !== exIdx ? ex : { ...ex, sets: (ex.sets || []).map((s, si) => si === setIdx ? { ...s, [field]: val } : s) }
+          ei !== exIdx ? ex : { ...ex, sets: (ex.sets || []).map((s, si) => si === setIdx ? { ...s, [field]: val, ...(field === "rir" ? { rirSaisi: true } : {}) } : s) }
         )
       };
       // Auto-save en cours de séance pour ne pas perdre les données
@@ -1324,7 +1329,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
     setCurrentSets(prev => {
       const exs = [...prev.exercises];
       const last = exs[exIdx].sets[exs[exIdx].sets.length - 1];
-      exs[exIdx] = { ...exs[exIdx], sets: [...exs[exIdx].sets, { weight: (last && last.weight) || "", reps: "", rir: "1", done: false }] };
+      exs[exIdx] = { ...exs[exIdx], sets: [...exs[exIdx].sets, { weight: (last && last.weight) || "", reps: "", rir: "1", rirSaisi: false, done: false }] };
       return { ...prev, exercises: exs };
     });
   }
@@ -1339,7 +1344,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
       rest: ex.rest || 90,
       sets: ex.sets
         .filter(s => s.weight && s.reps)
-        .map(s => ({ weight: parseFloat(s.weight), reps: parseInt(s.reps), rir: parseInt(s.rir) || 2, done: true }))
+        .map(s => ({ weight: parseFloat(s.weight), reps: parseInt(s.reps), rir: parseRir(s.rir), rirSaisi: s.rirSaisi === true, done: true }))
     })).filter(ex => ex.sets.length > 0);
 
     if (!validExs.length) return alert("Aucune serie remplie !");
@@ -1542,7 +1547,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
           lastSets: _addLastSets,
           sets: Array.from({ length: _addNbSets }, (_, si) => ({
             weight: (_addLastSets[si] && _addLastSets[si].weight) || (_addLastSets[0] && _addLastSets[0].weight) || "",
-            reps: "", rir: si === 0 ? "3" : si === 1 ? "2" : "1", done: false
+            reps: "", rir: si === 0 ? "3" : si === 1 ? "2" : "1", rirSaisi: false, done: false
           }))
         }] }));
         setShowPicker(false);
@@ -1564,7 +1569,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
           lastSets: _lastSets,
           sets: Array.from({ length: _nbSets }, (_, si) => ({
             weight: (_lastSets[si] && _lastSets[si].weight) || (_lastSets[0] && _lastSets[0].weight) || "",
-            reps: "", rir: si === 0 ? "3" : si === 1 ? "2" : "1", done: false
+            reps: "", rir: si === 0 ? "3" : si === 1 ? "2" : "1", rirSaisi: false, done: false
           }))
         }) }));
         setReplaceIdx(null);
@@ -2020,7 +2025,7 @@ function ProgressTab({ sessions }) {
 
   function getHistory(name) {
     return sessions.filter(s => s.exercises && s.exercises.some(e => e.name === name))
-      .map(s => { const ex = s.exercises.find(e => e.name === name); return { date: s.date, sets: ((ex && ex.sets) || []).filter(st => st.weight && st.reps).map(st => ({ weight: parseFloat(st.weight), reps: parseInt(st.reps), rir: parseInt(st.rir || 3) })) }; })
+      .map(s => { const ex = s.exercises.find(e => e.name === name); return { date: s.date, sets: ((ex && ex.sets) || []).filter(st => st.weight && st.reps).map(st => ({ weight: parseFloat(st.weight), reps: parseInt(st.reps), rir: parseRir(st.rir) })) }; })
       .filter(s => s.sets.length > 0).sort((a, b) => a.date.localeCompare(b.date));
   }
   const history = selectedEx ? getHistory(selectedEx) : [];
@@ -2673,9 +2678,9 @@ function BilanTab({ fatigue, setFatigue, sessions }) {
   const last7Days = new Date(); last7Days.setDate(last7Days.getDate() - 7);
   const recentSets = sessions
     .filter(s => s.date >= last7Days.toISOString().split("T")[0])
-    .flatMap(s => (s.exercises || []).flatMap(e => (e.sets || []).filter(st => st.weight && st.reps && st.rir !== undefined)));
+    .flatMap(s => (s.exercises || []).flatMap(e => (e.sets || []).filter(st => st.weight && st.reps && parseRir(st.rir) !== null)));
   const avgRIRRecent = recentSets.length > 0
-    ? Math.round(recentSets.reduce((a, s) => a + (parseInt(s.rir) || 2), 0) / recentSets.length * 10) / 10
+    ? Math.round(recentSets.reduce((a, s) => a + parseRir(s.rir), 0) / recentSets.length * 10) / 10
     : null;
   // Score RIR auto : RIR moy <= 1 → +3, <= 1.5 → +2, <= 2 → +1, > 2 → 0
   const rirAutoScore = avgRIRRecent === null ? 0 : avgRIRRecent <= 1 ? 3 : avgRIRRecent <= 1.5 ? 2 : avgRIRRecent <= 2 ? 1 : 0;
@@ -2872,7 +2877,7 @@ function IronTraining() {
             ...st,
             weight: parseFloat(st.weight) || 0,
             reps: parseInt(st.reps) || 0,
-            rir: parseInt(st.rir) || 2
+            rir: parseRir(st.rir) !== null ? parseRir(st.rir) : st.rir
           }))
         }))
       })));
@@ -3105,7 +3110,7 @@ function IronTraining() {
         const validSets = (ex.sets||[]).filter(st=>st.weight&&st.reps);
         if (!validSets.length) return;
         html += `<h3>${ex.name}</h3><table><tr><th>#</th><th>Poids</th><th>Reps</th><th>RIR</th></tr>`;
-        validSets.forEach((st,i) => { html += `<tr><td>S${i+1}</td><td>${st.weight}kg</td><td>${st.reps}</td><td>${st.rir||"-"}</td></tr>`; });
+        validSets.forEach((st,i) => { html += `<tr><td>S${i+1}</td><td>${st.weight}kg</td><td>${st.reps}</td><td>${parseRir(st.rir) !== null ? parseRir(st.rir) : "-"}</td></tr>`; });
         html += "</table>";
         if (ex.userNote) html += `<div class="meta">Note: ${ex.userNote}</div>`;
       });
@@ -3309,7 +3314,7 @@ function exportData() {
                 ...st,
                 weight: parseFloat(st.weight) || 0,
                 reps: parseInt(st.reps) || 0,
-                rir: parseInt(st.rir) || 2
+                rir: parseRir(st.rir) !== null ? parseRir(st.rir) : st.rir
               }))
             }))
           }));

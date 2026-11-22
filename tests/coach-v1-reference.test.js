@@ -24,7 +24,7 @@ function between(a, b) { const i = SRC.indexOf(a); if (i < 0) throw new Error('i
 
 const C = { Math, JSON, Object, Array, String, Number, parseInt, parseFloat, isNaN, PROGRAMME: REAL_PROGRAMME, console };
 vm.createContext(C);
-vm.runInContext([fnSrc('function e1RM('), fnSrc('function analyzeEx('), fnSrc('function getProgressionTip('),
+vm.runInContext([fnSrc('function e1RM('), fnSrc('function parseRir('), fnSrc('function analyzeEx('), fnSrc('function getProgressionTip('),
   'const PALIERS = ' + literal('const PALIERS = [', '[', ']') + ';', fnSrc('function getPalier('),
   'const DB = ' + literal('const DB = {', '{', '}') + '; const ALL_EXERCISES = Object.values(DB).flat();',
   'const MUSCLE_MAP = ' + literal('const MUSCLE_MAP = {', '{', '}') + ';',
@@ -85,17 +85,22 @@ keep('Paliers : 10 paliers definis, enchainement 3x8-12 -> 4x8-12 -> 3x6-10 -> 4
   assert.deepStrictEqual(chain, ['3x8-12', '4x8-12', '3x6-10', '4x6-10', 'tsbo']); });
 
 // ═════════ B. INCOHERENCES CONNUES (non figees : comportement cible decrit) ═════════
-known('RIR 0 remplace par 2 au chargement des seances (readSessionsState)', 'un RIR 0 enregistre reste 0 ; un RIR absent devient « inconnu », jamais 2 en silence (op. 2)', async () => {
+// (Op. 2) RIR : anciennes incoherences corrigees, desormais comportements a conserver.
+keep('RIR 0 conserve au chargement des seances ; RIR absent laisse inconnu (jamais 2 en silence)', async () => {
   const U = 'user-ref', NS = b => b + '_u_' + U; const d = new Date(), w = d.getDay(), m = new Date(d); m.setDate(d.getDate() - (w === 0 ? 6 : w - 1));
-  const ls = mkStore({ [NS('it3_sessions')]: JSON.stringify([sess(1, '2026-01-01', 'Exo test', [S(50, 8, 0)])]), [NS('it3_routines')]: JSON.stringify([{ id: 1, name: 'R', exercises: [{ name: 'Exo test', sets: 1 }] }]), [NS('it3_sns_reset')]: m.toISOString().split('T')[0], it3_loaded_uid: U });
+  const ls = mkStore({ [NS('it3_sessions')]: JSON.stringify([sess(1, '2026-01-01', 'Exo test', [S(50, 8, 0), { weight: 50, reps: 8, done: true }])]), [NS('it3_routines')]: JSON.stringify([{ id: 1, name: 'R', exercises: [{ name: 'Exo test', sets: 1 }] }]), [NS('it3_sns_reset')]: m.toISOString().split('T')[0], it3_loaded_uid: U });
   const app = openApp(ls); app.mount(null); app.startSupabase(); await app.auth('INITIAL_SESSION', { id: U, email: 'ref@x.fr' });
-  return app.state('sessions')[0].exercises[0].sets[0].rir === 2; });
-known('RIR 0 remplace par 2 dans les autres chemins (enregistrement, import, conseil, fatigue) et par 3 dans les courbes', 'le meme traitement « 0 conserve, absent = inconnu » partout, dans une seule fonction (op. 2 puis moteur)', () =>
-  /rir: parseInt\(s\.rir\) \|\| 2/.test(SRC) || /rir: parseInt\(st\.rir\) \|\| 2/.test(SRC) || /parseInt\(st\.rir \|\| 3\)/.test(SRC) || /parseInt\(s\.rir\) \|\| 2\), 0\)/.test(SRC));
-known('Conseil : des series a RIR 0 (echec) sont lues comme RIR 2, donc pas d\'avertissement « RIR faible »', 'avec un RIR moyen <= 1 reellement saisi, le conseil signale « RIR faible → sois prudent »', () =>
-  !getProgressionTip([S(50, 8, 0), S(50, 8, 0), S(50, 8, 0)], [], 'Exo test', '8-12').msg.includes('RIR faible'));
-known('RIR pre-remplis 3/2/1 impossibles a distinguer des RIR saisis (aucun champ ne le dit)', 'chaque nouvelle serie porte rirSaisi:true/false ; les anciennes series sont « RIR non verifie » et le moteur ne fonde pas de decision importante dessus (op. 2)', () =>
-  !/rirSaisi/.test(SRC));
+  const sets = app.state('sessions')[0].exercises[0].sets; assert.strictEqual(sets[0].rir, 0); assert.strictEqual(sets[1].rir, undefined); });
+keep('Plus aucun « || 2 » ni « || 3 » sur le RIR dans le code', () => {
+  assert.ok(!/rir\) \|\| [23]/.test(SRC) && !/rir \|\| [23]/.test(SRC) && !/rir\|\|"-"/.test(SRC)); });
+keep('Conseil : des series a RIR 0 donnent l\'avertissement « RIR faible » ; RIR inconnus ignores (pas de note)', () => {
+  assert.ok(getProgressionTip([S(50, 8, 0), S(50, 8, 0), S(50, 8, 0)], [], 'Exo test', '8-12').msg.includes('RIR faible'));
+  const t = getProgressionTip([{ weight: 50, reps: 8 }, { weight: 50, reps: 8 }, { weight: 50, reps: 8 }], [], 'Exo test', '8-12'); assert.ok(!t.msg.includes('RIR'), t.msg); });
+keep('Chaque serie pre-remplie porte rirSaisi:false (5 endroits) et le choix dans la liste RIR met rirSaisi:true', () => {
+  const prefills = SRC.match(/rir: (?:i|si) === 0 \? "\d" : (?:i|si) === 1 \? "2" : "1",[^}]*/g) || []; assert.strictEqual(prefills.length, 4); prefills.forEach(x => assert.ok(x.includes('rirSaisi: false'), x));
+  assert.ok(/rir: "1", rirSaisi: false, done: false/.test(SRC)); assert.ok(/\.\.\.\(field === "rir" \? \{ rirSaisi: true \} : \{\}\)/.test(SRC)); });
+known('Liste RIR : choisir la MEME valeur que la valeur pre-remplie ne peut pas marquer le RIR comme saisi', 'l\'utilisateur peut confirmer un RIR egal au pre-remplissage (par ex. liste qui demarre sur « RIR ? »), a decider avec David', () =>
+  /<select value=\{s\.rir\} onChange=\{e => updateSet\(exIdx, si, "rir", e\.target\.value\)\}/.test(SRC));
 known('Nombre de series attendu lu dans le programme code en dur (PROGRAMME), pas dans la routine de l\'utilisateur', 'le nombre de series vient de la routine reellement suivie', () => {
   // « Développé couché haltères » = 3 series dans PROGRAMME. Un utilisateur dont la routine prevoit 2 series a fait 10-10 :
   const t = getProgressionTip([S(30, 10), S(30, 10)], [], 'Développé couché haltères', '8-12'); return /S3/.test(t.msg) && t.msg.includes('non faite'); });
