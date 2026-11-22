@@ -314,6 +314,21 @@ function representative() { const out = []; let id = 1; const d = i => new Date(
     ex('Gainage planche', [S(0.1, 50)], '45-60s'),
     ex('Curl haltères', [0, 1, 2].map(k => S(14, 10 + (i % 3), i > 30 ? k : undefined, i > 30 ? { rirSaisi: true } : {})), '10-15') ] });
   return out; }
+t('G', 'Volume / tendance : seuil de 2 % sur le tonnage ; les 8 lectures combinees ; une serie en plus n\'est pas une meilleure performance', () => {
+  const M = arr => E.mesuresSeance(arr.map(x => E.normaliserSerie({ weight: x[0], reps: x[1] })));
+  assert.deepStrictEqual(E.volumeEntre(M([[100, 10]]), M([[100, 10], [100, 10]])).sens, 'hausse');
+  assert.strictEqual(E.volumeEntre(M([[100, 50]]), M([[100, 51]])).sens, 'stable', '+2 % pile = stable');
+  assert.strictEqual(E.volumeEntre(M([[100, 50]]), M([[100, 48]])).sens, 'baisse');
+  const T = E.tendanceGenerale;
+  assert.deepStrictEqual(['hausse', 'stable', 'baisse'].map(v => T('hausse', v, false)), ['progression_globale', 'progression_performance', 'meilleure_serie_seule']);
+  assert.deepStrictEqual(['hausse', 'stable', 'baisse'].map(v => T('stable', v, false)), ['plus_de_travail', 'stable', 'moins_de_travail']);
+  assert.deepStrictEqual(['hausse', 'stable', 'baisse'].map(v => T('baisse', v, false)), ['performance_en_baisse', 'performance_en_baisse', 'baisse_globale']);
+  assert.strictEqual(T('hausse', 'hausse', true), 'plus_de_travail'); assert.strictEqual(T(null, 'stable'), null);
+  const h = [{ date: '2026-01-01', fourchette: E.lireFourchette('8-12'), series: [E.normaliserSerie({ weight: 60, reps: 10 })] }];
+  const b = E.bilanExercice(h, [{ weight: 60, reps: 10 }, { weight: 60, reps: 10 }], E.lireFourchette('8-12'));
+  assert.deepStrictEqual([b.verdict, b.nature, b.gainParSeriesSeules, b.tendance, b.volume.series], ['progression', 'reps', true, 'plus_de_travail', 1], 'verdict de performance inchange, lecture separee');
+  const s = E.syntheseExercice(h.concat([{ date: '2026-01-03', fourchette: E.lireFourchette('8-12'), series: [E.normaliserSerie({ weight: 60, reps: 11 })] }]));
+  assert.ok(Object.isFrozen(s.pistes)); assert.strictEqual(s.periode, null); });
 t('H', 'Jeu representatif (40 seances, 6 exercices) : chaque exercice analyse, diagnostics attendus, RIR non verifies comptes', () => {
   const r = E.analyser({ sessions: representative(), fatigue: { sommeil: 2 } }, { maintenant: '2026-05-30' }); const x = r.exercices;
   assert.strictEqual(x['Leg curl assis machine'].diagnostic.code, 'plafond'); assert.strictEqual(x['Leg curl assis machine'].conseil.action, 'augmenter_charge');

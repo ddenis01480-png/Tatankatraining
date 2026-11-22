@@ -823,7 +823,8 @@ function getProgressionTip(lastSets, sessions, exName, repsTarget, seriesPrevues
 // ═══ COACH V2 : branchement du moteur d'analyse (coach-engine.js), ecran par ecran ═══
 // Le moteur ne fait que LIRE et ANALYSER : il ne modifie ni seances, ni routines, ni programme, ni donnees.
 // Si coach-engine.js n'a pas pu etre charge, chaque ecran garde son calcul V1 (repli automatique, aucun ecran casse).
-// Ecrans branches : Seance en cours (conseil de progression, badge de force, alerte de stagnation) ; Fin de seance (alertes, bilan, records).
+// Ecrans branches : Seance en cours (conseil de progression, badge de force, alerte de stagnation) ; Fin de seance (alertes, bilan, records) ;
+// onglet Progres (historique, diagnostic, graphique, lectures performance / volume / tendance).
 function coachEngine() { const CE = (typeof window !== "undefined") ? window.CoachEngine : null; return (CE && typeof CE.analyser === "function") ? CE : null; }
 // Historique d'un exercice (trie par date, une entree par seance). `seanceEnCours` : seance pas encore enregistree, ajoutee a la fin.
 function coachHistorique(CE, sessions, exName, seanceEnCours) {
@@ -914,6 +915,48 @@ function coachRecordTexte(r) {
   if (r.reps) parts.push(r.reps.reps + " reps à " + r.reps.charge + "kg");
   parts.push("force " + (r.force.fiable ? "" : "≈") + r.force.valeur + "kg");
   return parts.join(" · ");
+}
+
+// Onglet Progres (Coach V2) : historique trie (date puis ordre d'enregistrement), diagnostic avec les MEMES regles que les ecrans
+// Seance et Fin de seance, et trois lectures distinctes : performance, volume de travail, tendance generale. Lecture seule.
+function coachProgres(CE, sessions, exName) {
+  const h = coachHistorique(CE, sessions, exName).filter(e => e.series.some(st => st.valide));
+  const f = h.length ? h[h.length - 1].fourchette : CE.lireFourchette("");
+  const history = h.map(e => { const m = CE.mesuresSeance(e.series); return { date: e.date, sets: e.series.filter(st => st.valide).map(st => ({ weight: st.charge, reps: st.reps, rir: st.rir })), best: m.force, fiable: m.forceFiable, m }; });
+  let d = (h.length >= 2 && f.type === "reps" && f.max <= 15) ? CE.diagnostiquer(h, f) : null;
+  // Meme garde qu'en fin de seance : pas d'alerte plafond / regression si la derniere seance est une vraie progression.
+  if (d && (d.code === "plafond" || d.code === "regression") && CE.comparer(history[history.length - 2].m, history[history.length - 1].m, d.mode, f) === "progression") d = null;
+  const synthese = h.length ? CE.syntheseExercice(h, f, { diagnostic: d }) : null;
+  return { history, fourchette: f, diag: coachDiagAffichage(d), synthese,
+    chartData: history.map(x => ({ date: fmtDate(x.date), rm: x.m.force, charge: x.m.chargeMax, tonnage: x.m.tonnage, fiable: x.m.forceFiable })) };
+}
+const COACH_TENDANCES = {
+  progression_globale: { c: "#00C853", t: "Progression globale : meilleure performance et plus de travail" },
+  progression_performance: { c: "#00C853", t: "Performance en hausse, volume de travail stable" },
+  meilleure_serie_seule: { c: "#FFD600", t: "Meilleure performance, mais moins de travail au total" },
+  plus_de_travail: { c: "#4FC3F7", t: "Plus de travail, sans meilleure performance" },
+  stable: { c: "#888", t: "Performance et volume stables" },
+  moins_de_travail: { c: "#FFD600", t: "Performance maintenue avec moins de travail" },
+  performance_en_baisse: { c: "#FF8C00", t: "Performance en baisse" },
+  baisse_globale: { c: "#FF4444", t: "Baisse de la performance et du volume" }
+};
+function coachSens(sens) { return sens === "hausse" ? { c: "#00C853", t: "En hausse" } : sens === "baisse" ? { c: "#FF4444", t: "En baisse" } : { c: "#888", t: "Stable" }; }
+function coachPct(x) { return (x > 0 ? "+" : x < 0 ? "−" : "±") + Math.abs(Math.round(x)) + "%"; }
+// Lignes de la carte « Lecture » : [titre, etat, couleur, detail].
+function coachLectureDerniere(b) {
+  if (!b || b.verdict === "premiere") return null;
+  const perf = coachSens({ progression: "hausse", regression: "baisse" }[b.verdict] || "stable"), v = b.volume, vs = coachSens(v.sens), t = COACH_TENDANCES[b.tendance] || COACH_TENDANCES.stable;
+  const j = b.jour, p = b.precedente, a = b.axes;
+  const perfDetail = coachBilanTexte(b) || ("force estimée " + (a.forceFiable ? "" : "≈") + j.force + "kg, " + j.chargeMax + "kg max");
+  const volDetail = (v.seriesAvant === v.seriesApres ? v.seriesApres + " séries" : v.seriesAvant + " → " + v.seriesApres + " séries") + " · tonnage " + coachPct(v.tonnagePct);
+  return [["PERFORMANCE", perf.t, perf.c, perfDetail], ["VOLUME", vs.t, vs.c, volDetail], ["TENDANCE", t.t, t.c, b.gainParSeriesSeules ? "le gain vient des séries en plus, pas d'une meilleure série" : (p.date ? "vs " + fmtDate(p.date) : "")]];
+}
+function coachLecturePeriode(per) {
+  if (!per) return null;
+  const pf = coachSens(per.performance.sens), vs = coachSens(per.volume.sens), t = COACH_TENDANCES[per.tendance] || COACH_TENDANCES.stable;
+  return [["PERFORMANCE", pf.t, pf.c, "meilleure série " + coachPct(per.performance.variationPct) + " (force " + (per.performance.fiable ? "" : "≈") + per.performance.debut + " → " + per.performance.fin + "kg)"],
+    ["VOLUME", vs.t, vs.c, "tonnage " + coachPct(per.volume.variationPct) + " · " + per.volume.seriesDebut + " → " + per.volume.seriesFin + " séries"],
+    ["TENDANCE", t.t, t.c, per.seances + " séances" + (per.fourchette ? " en " + per.fourchette : "") + ", du " + fmtDate(per.du) + " au " + fmtDate(per.au)]];
 }
 
 // --- SYSTEME DE PALIERS ---
@@ -2156,11 +2199,15 @@ function ProgressTab({ sessions }) {
       .map(s => { const ex = s.exercises.find(e => e.name === name); return { date: s.date, sets: ((ex && ex.sets) || []).filter(st => st.weight && st.reps).map(st => ({ weight: parseFloat(st.weight), reps: parseInt(st.reps), rir: parseRir(st.rir) })) }; })
       .filter(s => s.sets.length > 0).sort((a, b) => a.date.localeCompare(b.date));
   }
-  const history = selectedEx ? getHistory(selectedEx) : [];
+  // Coach V2 : historique, diagnostic, graphique et lectures calcules par le moteur ; repli V1 si le moteur n'est pas charge.
+  const CE = coachEngine();
+  const v2 = CE && selectedEx ? coachProgres(CE, sessions, selectedEx) : null;
+  const history = v2 ? v2.history : selectedEx ? getHistory(selectedEx) : [];
   const selectedExRt = selectedEx ? (sessions.flatMap(s => s.exercises || []).find(e => e.name === selectedEx) || {}).repsTarget : null;
   const selectedExMax = selectedExRt ? parseInt((selectedExRt.split("-")[1] || selectedExRt.split("-")[0])) : 12;
-  const diag = (history.length >= 2 && selectedExMax <= 15) ? analyzeEx(history) : null;
-  const chartData = history.map(s => ({ date: fmtDate(s.date), rm: s.sets.length ? Math.max(...s.sets.map(st => e1RM(st.weight, st.reps))) : 0, charge: s.sets.length ? Math.max(...s.sets.map(st => st.weight)) : 0, tonnage: s.sets.reduce((a, st) => a + st.weight * st.reps, 0) }));
+  const diag = v2 ? v2.diag : (history.length >= 2 && selectedExMax <= 15) ? analyzeEx(history) : null;
+  const chartData = v2 ? v2.chartData : history.map(s => ({ date: fmtDate(s.date), rm: s.sets.length ? Math.max(...s.sets.map(st => e1RM(st.weight, st.reps))) : 0, charge: s.sets.length ? Math.max(...s.sets.map(st => st.weight)) : 0, tonnage: s.sets.reduce((a, st) => a + st.weight * st.reps, 0) }));
+  const lectures = v2 && v2.synthese ? [["DERNIÈRE SÉANCE", coachLectureDerniere(v2.synthese.derniere)], ["SUR LES " + (v2.synthese.periode ? v2.synthese.periode.seances : 0) + " DERNIÈRES SÉANCES", coachLecturePeriode(v2.synthese.periode)]].filter(x => x[1]) : [];
   const maxVal = chartData.length > 0 ? Math.max(...chartData.map(d => graphView === "tonnage" ? d.tonnage : graphView === "charge" ? d.charge : d.rm)) : 0;
 
   return (
@@ -2204,6 +2251,25 @@ function ProgressTab({ sessions }) {
               </div>
             </Card>
           )}
+          {lectures.length > 0 && (
+            <Card>
+              {lectures.map(([titre, lignes], k) => (
+                <div key={titre} style={{ marginTop: k ? 12 : 0 }}>
+                  <div style={{ fontSize: 9, color: "#555", fontFamily: "monospace", letterSpacing: "0.1em", marginBottom: 6 }}>{titre}</div>
+                  {lignes.map(([nom, etat, couleur, detail]) => (
+                    <div key={nom} style={{ display: "flex", gap: 8, padding: "5px 0", borderTop: "1px solid #1a1a1a" }}>
+                      <div style={{ width: 82, flexShrink: 0, fontSize: 8, color: "#666", fontFamily: "monospace", fontWeight: 900, paddingTop: 2 }}>{nom}</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 11, fontWeight: 800, color: couleur }}>{etat}</div>
+                        {detail && <div style={{ fontSize: 10, color: "#777", marginTop: 1, lineHeight: 1.4 }}>{detail}</div>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ))}
+              <div style={{ fontSize: 8, color: "#444", fontFamily: "monospace", marginTop: 8 }}>Analyse seulement · ton programme n'est jamais modifié · ≈ = estimation au-delà de 12 reps</div>
+            </Card>
+          )}
           <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
             {[["1rm","1RM"],["charge","CHARGE"],["tonnage","TONNAGE"]].map(([v,l]) => <Tag key={v} label={l} active={graphView === v} onClick={() => setGraphView(v)} />)}
           </div>
@@ -2222,7 +2288,7 @@ function ProgressTab({ sessions }) {
                   const isLast = i === chartData.length - 1;
                   return (
                     <div key={i} style={{ flex: "0 0 24px", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-                      {isLast && <div style={{ fontSize: 8, color: "#ff6600", fontWeight: 900, fontFamily: "monospace", whiteSpace: "nowrap" }}>{val}kg</div>}
+                      {isLast && <div style={{ fontSize: 8, color: "#ff6600", fontWeight: 900, fontFamily: "monospace", whiteSpace: "nowrap" }}>{graphView === "1rm" && d.fiable === false ? "≈" : ""}{val}kg</div>}
                       <div style={{ width: "100%", height: h + "%", background: isLast ? "#ff6600" : "#2a2a2a", borderRadius: "3px 3px 0 0", minHeight: 4 }} />
                       <div style={{ fontSize: 7, color: "#333", fontFamily: "monospace", whiteSpace: "nowrap" }}>{d.date}</div>
                     </div>
@@ -2235,7 +2301,7 @@ function ProgressTab({ sessions }) {
           </Card>
           <div style={{ fontSize: 9, color: "#555", fontFamily: "monospace", marginBottom: 8 }}>HISTORIQUE ({history.length} seances)</div>
           {history.slice(-8).reverse().map((s, i) => {
-            const best = s.sets.length ? Math.max(...s.sets.map(st => e1RM(st.weight, st.reps))) : 0;
+            const best = s.best !== undefined ? s.best : s.sets.length ? Math.max(...s.sets.map(st => e1RM(st.weight, st.reps))) : 0;
             return (
               <Card key={i} style={{ padding: "10px 12px", marginBottom: 6 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -2243,7 +2309,7 @@ function ProgressTab({ sessions }) {
                     <div style={{ fontSize: 10, color: "#555", fontFamily: "monospace" }}>{fmtDate(s.date)}</div>
                     <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>{s.sets.map((st, j) => <span key={j} style={{ marginRight: 8 }}>{st.weight}x{st.reps}</span>)}</div>
                   </div>
-                  <div style={{ fontSize: 15, fontWeight: 900, color: "#ff6600" }}>{best}kg 1RM</div>
+                  <div style={{ fontSize: 15, fontWeight: 900, color: "#ff6600" }}>{s.fiable === false ? "≈" : ""}{best}kg 1RM</div>
                 </div>
               </Card>
             );

@@ -1,5 +1,5 @@
 /*
- * coach-engine.js — Moteur d'analyse du Coach Tatanka Training (Coach V2), version 0.3.0
+ * coach-engine.js — Moteur d'analyse du Coach Tatanka Training (Coach V2), version 0.4.0
  *
  * ROLE : lire les donnees qu'on lui transmet et retourner des analyses. RIEN D'AUTRE.
  *   - aucun acces a localStorage, Supabase, au reseau, au DOM ou a React ;
@@ -8,13 +8,14 @@
  *   - ne contient AUCUNE fonction « appliquer » : une adaptation future sera une PROPOSITION
  *     (objet de donnees) que l'application montrera a l'utilisateur, qui seul decide.
  *
- * NON BRANCHE (op. 3) : index.html ne charge pas encore ce fichier. Le branchement se fera ecran par ecran (op. 4).
+ * BRANCHEMENT (op. 4), ecran par ecran : Seance en cours, Fin de seance, onglet Progres. Repli V1 si ce fichier ne charge pas.
  *
  * COUCHES
  *   1. normalisation  : dates, tri chronologique, lecture du RIR (et de sa fiabilite), fourchettes de repetitions, series valides
  *   2. mesures        : force estimee, tonnage, repetitions, series par muscle
  *   3. catalogue      : un seul classement exercice -> muscle principal / secondaires / type de mouvement
- *   4. diagnostics    : UNE definition de la progression, diagnostic par exercice, tendance de cycle, conseil de double progression
+ *   4. diagnostics    : UNE definition de la progression, diagnostic par exercice, tendance de cycle, conseil de double progression,
+ *                       et trois lectures distinctes : performance, volume de travail (series, tonnage), tendance generale
  *   5. domaines       : fatigue, recuperation, volume musculaire, priorites, morphologie (prepares pour les futures adaptations)
  *   6. propositions   : format reserve (liste vide pour l'instant), jamais appliquees par le moteur
  *
@@ -32,7 +33,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var VERSION = "0.3.0";
+  var VERSION = "0.4.0";
 
   // Reglages centralises (une seule valeur par regle).
   var REGLES = Object.freeze({
@@ -49,6 +50,8 @@
     PLAFOND_MARGE_REPS: 1.5,       // V1 : moyenne >= 10,5 pour 8-12 (= haut de fourchette - 1,5)
     REGRESSION_PCT: 0.04,          // V1
     TENDANCE_PCT: 0.01,            // tendance de cycle : +-1 % sur la droite = stable
+    VOLUME_PCT: 0.02,              // volume de travail : tonnage a +-2 % = stable (meme seuil que le bilan V1)
+    SYNTHESE_SEANCES: 8,           // onglet Progres : tendance calculee sur les 8 dernieres seances (= liste affichee)
     RIR_DUR_MAX: 4,                // serie « dure » = RIR connu <= 4
     RIR_HAUT: 4,                   // V1 : RIR moyen >= 4 -> « pousse plus fort »
     RIR_BAS: 1,                    // V1 : RIR moyen <= 1 -> « sois prudent »
@@ -181,6 +184,7 @@
       repsMoy: v.length ? repsTotal / v.length : 0,
       chargeMax: chargeMax,
       repsAChargeMax: v.filter(function (s) { return s.charge === chargeMax; }).reduce(function (a, s) { return a + s.reps; }, 0),
+      seriesAChargeMax: v.filter(function (s) { return s.charge === chargeMax; }).length,
       seriesDures: v.filter(function (s) { return s.rir !== null && s.rir <= REGLES.RIR_DUR_MAX; }).length,
       rir: rir
     };
@@ -362,6 +366,7 @@
     var verdict = comparer(prev, cur, modeCmp, mode === "aucun" ? null : f);
     var out = { verdict: verdict, mode: mode, axes: axes, precedente: resume(prev, prevEntry.date), jour: resume(cur) };
     if (verdict === "progression") out.nature = natureProgression(axes);
+    lectureTravail(out, prev, cur);
     return out;
   }
 
@@ -386,6 +391,94 @@
       reps: reps,
       force: { valeur: Math.round(fp(meilleure)), avant: Math.round(forcePasse), fiable: meilleure.reps <= REGLES.FORCE_REPS_MAX, enHausse: fp(meilleure) > forcePasse }
     };
+  }
+
+  // ── Trois lectures distinctes : PERFORMANCE, VOLUME DE TRAVAIL, TENDANCE GENERALE ──
+  //   performance : le verdict de comparer() (meilleure serie, reps a charge egale, force estimee) — inchange ;
+  //   volume      : nombre de series valides et tonnage (charge x reps) ;
+  //   tendance    : lecture combinee qui ne confond pas « une meilleure serie » avec « plus de travail au total ».
+  function volumeEntre(prec, cour) {
+    var dT = round1(cour.tonnage - prec.tonnage), pct = prec.tonnage > 0 ? (cour.tonnage - prec.tonnage) / prec.tonnage : 0;
+    return { series: cour.seriesValides - prec.seriesValides, seriesAvant: prec.seriesValides, seriesApres: cour.seriesValides,
+      tonnage: dT, tonnagePct: round1(pct * 100), sens: pct > REGLES.VOLUME_PCT ? "hausse" : pct < -REGLES.VOLUME_PCT ? "baisse" : "stable" };
+  }
+  // Meilleure serie (force estimee sans arrondi) : "hausse" | "egale" | "baisse".
+  function meilleureSerieEntre(prec, cour) { var d = (cour.forcePrecise || 0) - (prec.forcePrecise || 0); return Math.abs(d) < 1e-9 ? "egale" : d > 0 ? "hausse" : "baisse"; }
+  // Une progression « seulement par des series en plus » : plus de series, mais ni meilleure serie, ni charge plus lourde,
+  // ni plus de reps par serie a la charge de travail. Ce n'est pas une meilleure performance : c'est plus de travail.
+  function gainParSeriesSeules(prec, cour) {
+    var moy = function (m) { return m.seriesAChargeMax ? m.repsAChargeMax / m.seriesAChargeMax : 0; };
+    return cour.seriesValides > prec.seriesValides && meilleureSerieEntre(prec, cour) !== "hausse" && cour.chargeMax <= prec.chargeMax && moy(cour) <= moy(prec) + 1e-9;
+  }
+  var TENDANCES = Object.freeze(["progression_globale", "progression_performance", "meilleure_serie_seule", "plus_de_travail", "stable", "moins_de_travail", "performance_en_baisse", "baisse_globale"]);
+  // perf : "hausse" | "stable" | "baisse" ; vol : "hausse" | "stable" | "baisse" ; parSeries : gain explique seulement par des series en plus.
+  function tendanceGenerale(perf, vol, parSeries) {
+    if (!perf || !vol) return null;
+    if (perf === "hausse") return parSeries ? "plus_de_travail" : vol === "hausse" ? "progression_globale" : vol === "baisse" ? "meilleure_serie_seule" : "progression_performance";
+    if (perf === "baisse") return vol === "baisse" ? "baisse_globale" : "performance_en_baisse";
+    return vol === "hausse" ? "plus_de_travail" : vol === "baisse" ? "moins_de_travail" : "stable";
+  }
+  var SENS_VERDICT = { progression: "hausse", stable: "stable", regression: "baisse" };
+  function lectureTravail(out, prev, cur) {
+    out.volume = volumeEntre(prev, cur);
+    out.meilleureSerie = meilleureSerieEntre(prev, cur);
+    out.gainParSeriesSeules = out.verdict === "progression" && gainParSeriesSeules(prev, cur);
+    out.tendance = tendanceGenerale(SENS_VERDICT[out.verdict], out.volume.sens, out.gainParSeriesSeules);
+    return out;
+  }
+  // Variation relative d'une droite des moindres carres (debut -> fin), ou null (< 2 points).
+  function variationDroite(ys) {
+    var n = ys.length; if (n < 2) return null;
+    var mx = (n - 1) / 2, my = ys.reduce(function (s, y) { return s + y; }, 0) / n, sxy = 0, sxx = 0;
+    ys.forEach(function (y, x) { sxy += (x - mx) * (y - my); sxx += (x - mx) * (x - mx); });
+    var pente = sxy / sxx, debut = my - pente * mx, fin = my + pente * mx;
+    return debut > 0 ? (fin - debut) / debut : 0;
+  }
+  function sensDe(v, seuil) { return v > seuil ? "hausse" : v < -seuil ? "baisse" : "stable"; }
+
+  // Synthese d'un exercice pour l'onglet Progres (lecture seule).
+  //   derniere : la derniere seance contre la precedente (bilanExercice : performance + volume + tendance) ;
+  //   periode  : sur les N dernieres seances (defaut 8) : performance = meilleure serie (force estimee, « fiable » si toutes
+  //              les meilleures series font <= 12 reps), volume = tonnage, et la tendance generale qui combine les deux ;
+  //   pistes   : futures adaptations PREPAREES, statut "non_activee" : ni affichees, ni appliquees.
+  function syntheseExercice(historique, fourchette, options) {
+    options = options || {};
+    var hist = trierHist(historique).filter(function (h) { return mesuresSeance(seriesNorm(h.series)).seriesValides > 0; });
+    if (!hist.length) return null;
+    var last = hist[hist.length - 1], f = fourchette || last.fourchette || lireFourchette("");
+    var derniere = bilanExercice(hist.slice(0, -1), last.series, f);
+    // Fenetre : les N dernieres seances faites avec la MEME fourchette que la derniere (un changement de programme, ex. 8-12 -> 15-20
+    // avec une charge plus legere, n'est pas une baisse de performance).
+    var memeF = function (h) { var g = h.fourchette || {}; return g.type === f.type && g.min === f.min && g.max === f.max; }, bloc = [];
+    for (var i = hist.length - 1; i >= 0 && memeF(hist[i]); i--) bloc.unshift(hist[i]);
+    if (!bloc.length) bloc = [last];
+    var n = int(options.seances) || REGLES.SYNTHESE_SEANCES, fen = bloc.slice(-n), ms = fen.map(function (h) { return mesuresSeance(seriesNorm(h.series)); });
+    var periode = null;
+    if (fen.length >= 3) {
+      var vp = variationDroite(ms.map(function (m) { return m.forcePrecise; })), vv = variationDroite(ms.map(function (m) { return m.tonnage; }));
+      var perf = { sens: sensDe(vp, REGLES.TENDANCE_PCT), variationPct: round1(vp * 100), fiable: ms.every(function (m) { return m.forceFiable; }),
+        debut: Math.round(ms[0].forcePrecise), fin: Math.round(ms[ms.length - 1].forcePrecise) };
+      var vol = { sens: sensDe(vv, REGLES.VOLUME_PCT), variationPct: round1(vv * 100),
+        seriesDebut: ms[0].seriesValides, seriesFin: ms[ms.length - 1].seriesValides };
+      periode = { seances: fen.length, fourchette: f.min === null ? (f.texte || "") : f.min === f.max ? String(f.min) : f.min + "-" + f.max, du: fen[0].date, au: last.date, performance: perf, volume: vol, tendance: tendanceGenerale(perf.sens, vol.sens, false) };
+    }
+    var out = { mode: modeMesure(f), derniere: derniere, periode: periode };
+    out.pistes = pistesAdaptation(options.diagnostic || null, out);
+    return out;
+  }
+
+  // FUTURES ADAPTATIONS (preparees, NON activees) : de simples objets de donnees. Le moteur ne les applique jamais ;
+  // l'application ne les affiche pas encore. Plus tard, chacune sera proposee a l'utilisateur, qui seul decidera.
+  function pistesAdaptation(diagnostic, synthese) {
+    var p = [], add = function (code, raison) { p.push(Object.freeze({ code: code, raison: raison, statut: "non_activee" })); };
+    var c = diagnostic && diagnostic.code;
+    if (c === "plafond") add("monter_charge", "plafond");
+    if (c === "progression_trop_rapide") add("consolider_charge", "progression_trop_rapide");
+    if (c === "regression") add("alleger_charge", "regression");
+    var d = synthese && synthese.derniere;
+    if (d && d.volume && d.volume.series < 0 && (d.tendance === "meilleure_serie_seule" || d.tendance === "moins_de_travail")) add("retablir_series", d.tendance);
+    if (synthese && synthese.periode && synthese.periode.tendance === "baisse_globale") add("verifier_recuperation", "baisse_globale");
+    return Object.freeze(p);
   }
 
   // Tendance sur toutes les seances d'une periode (ex. un cycle) : droite des moindres carres sur la mesure principale.
@@ -584,6 +677,8 @@
     // 4. diagnostics
     modeMesure: modeMesure, axesProgression: axesProgression, comparer: comparer, natureProgression: natureProgression, diagnostiquer: diagnostiquer, tendance: tendance, conseilProgression: conseilProgression,
     bilanExercice: bilanExercice, recordsExercice: recordsExercice,
+    volumeEntre: volumeEntre, meilleureSerieEntre: meilleureSerieEntre, tendanceGenerale: tendanceGenerale, TENDANCES: TENDANCES,
+    syntheseExercice: syntheseExercice, pistesAdaptation: pistesAdaptation,
     // 5. domaines
     scoreFatigue: scoreFatigue, rirRecent: rirRecent, recuperation: recuperation, volume: volume, priorites: priorites, morphologie: morphologie,
     // 6. analyse complete
