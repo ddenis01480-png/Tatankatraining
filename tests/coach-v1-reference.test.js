@@ -24,7 +24,7 @@ function between(a, b) { const i = SRC.indexOf(a); if (i < 0) throw new Error('i
 
 const C = { Math, JSON, Object, Array, String, Number, parseInt, parseFloat, isNaN, PROGRAMME: REAL_PROGRAMME, console };
 vm.createContext(C);
-vm.runInContext([fnSrc('function e1RM('), fnSrc('function parseRir('), fnSrc('function analyzeEx('), fnSrc('function getProgressionTip('),
+vm.runInContext([fnSrc('function coachEngine('), fnSrc('function e1RM('), fnSrc('function parseRir('), fnSrc('function analyzeEx('), fnSrc('function getProgressionTip('),
   'const PALIERS = ' + literal('const PALIERS = [', '[', ']') + ';', fnSrc('function getPalier('),
   'const DB = ' + literal('const DB = {', '{', '}') + '; const ALL_EXERCISES = Object.values(DB).flat();',
   'const MUSCLE_MAP = ' + literal('const MUSCLE_MAP = {', '{', '}') + ';',
@@ -96,12 +96,16 @@ keep('Plus aucun « || 2 » ni « || 3 » sur le RIR dans le code', () => {
 keep('Conseil : des series a RIR 0 donnent l\'avertissement « RIR faible » ; RIR inconnus ignores (pas de note)', () => {
   assert.ok(getProgressionTip([S(50, 8, 0), S(50, 8, 0), S(50, 8, 0)], [], 'Exo test', '8-12').msg.includes('RIR faible'));
   const t = getProgressionTip([{ weight: 50, reps: 8 }, { weight: 50, reps: 8 }, { weight: 50, reps: 8 }], [], 'Exo test', '8-12'); assert.ok(!t.msg.includes('RIR'), t.msg); });
-keep('Nouvelle serie : RIR vide (liste sur « RIR ? »), rirSaisi:false (5 endroits) ; plus aucun RIR pre-rempli 3/2/1 ou 4/2/1', () => {
-  assert.strictEqual((SRC.match(/rir: "", rirSaisi: false, done: false/g) || []).length, 5);
-  assert.ok(!/rir: (?:i|si) === 0 \? "\d"/.test(SRC) && !/rir: "1", rirSaisi/.test(SRC)); });
-keep('Liste RIR : demarre sur « RIR ? » ; choisir explicitement une valeur (meme 3, 2 ou 1) met rirSaisi:true ; revenir a « RIR ? » remet false', () => {
-  assert.ok(/<option value="">RIR \?<\/option>/.test(SRC)); assert.ok(/\.\.\.\(field === "rir" \? \{ rirSaisi: val !== "" \} : \{\}\)/.test(SRC));
-  assert.ok(/rirSaisi: s\.rirSaisi === true && parseRir\(s\.rir\) !== null/.test(SRC), 'enregistre : saisi seulement si une valeur existe'); });
+keep('Nouvelle serie : RIR reel vide + rirSaisi:false (5 endroits) ; RIR cible 3/2/1 (4/2/1 en « refaire », 1 en serie ajoutee) garde a part dans rirCible', () => {
+  const news = SRC.match(/rir: "", rirCible: [^,]+(?:,[^,]+)*?, rirSaisi: false, done: false/g) || []; assert.strictEqual(news.length, 5, String(news.length));
+  assert.ok(/rir: "", rirCible: i === 0 \? 4 : i === 1 \? 2 : 1, rirSaisi: false/.test(SRC), 'refaire : cible 4/2/1');
+  assert.strictEqual((SRC.match(/rir: "", rirCible: (?:i|si) === 0 \? 3 : (?:i|si) === 1 \? 2 : 1, rirSaisi: false/g) || []).length, 3, 'demarrer / ajouter / remplacer : cible 3/2/1');
+  assert.ok(/rir: "", rirCible: 1, rirSaisi: false/.test(SRC), 'serie ajoutee : cible 1');
+  assert.ok(!/rir: (?:i|si) === 0 \? "\d"/.test(SRC) && !/rir: "1", rirSaisi/.test(SRC), 'plus aucun RIR reel pre-rempli'); });
+keep('Liste RIR : la case vide affiche la cible (« cible 2 ») ou « RIR ? » ; choisir une valeur (meme egale a la cible) met rirSaisi:true ; la cible est enregistree a part', () => {
+  assert.ok(/<option value="">\{parseRir\(s\.rirCible\) !== null \? "cible " \+ parseRir\(s\.rirCible\) : "RIR \?"\}<\/option>/.test(SRC));
+  assert.ok(/\.\.\.\(field === "rir" \? \{ rirSaisi: val !== "" \} : \{\}\)/.test(SRC));
+  assert.ok(/rirSaisi: s\.rirSaisi === true && parseRir\(s\.rir\) !== null, \.\.\.\(parseRir\(s\.rirCible\) !== null \? \{ rirCible: parseRir\(s\.rirCible\) \} : \{\}\), done: true/.test(SRC), 'enregistre : saisi seulement si une valeur existe ; cible a part'); });
 known('Nombre de series attendu lu dans le programme code en dur (PROGRAMME), pas dans la routine de l\'utilisateur', 'le nombre de series vient de la routine reellement suivie', () => {
   // « Développé couché haltères » = 3 series dans PROGRAMME. Un utilisateur dont la routine prevoit 2 series a fait 10-10 :
   const t = getProgressionTip([S(30, 10), S(30, 10)], [], 'Développé couché haltères', '8-12'); return /S3/.test(t.msg) && t.msg.includes('non faite'); });

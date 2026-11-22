@@ -8,6 +8,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- Coach V2 : moteur d'analyse en lecture seule. S'il ne se charge pas, l'appli garde ses calculs V1. -->
+<script src="/coach-engine.js"></script>
 <style>
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 body { margin: 0; background: #080808; color: #fff; font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
@@ -651,6 +653,7 @@ function applyImport(data, current, opts) {
 
 // RIR : lecture unique. 0 est une vraie valeur (serie a l'echec). Absent ou illisible = inconnu (null), jamais remplace en silence.
 // rirSaisi (sur chaque serie enregistree depuis cette version) : true = valeur choisie explicitement dans la liste, false = pas de choix (la liste demarre sur « RIR ? », vide).
+// rirCible : RIR vise par le programme (3/2/1...), simple indication affichee dans la liste ; jamais recopie dans le RIR reel.
 // Les series plus anciennes n'ont pas rirSaisi : leur RIR est « non verifie ».
 function parseRir(v) { if (v === null || v === undefined || v === "") return null; const n = parseInt(v, 10); return (isNaN(n) || n < 0 || n > 10) ? null : n; }
 const KEYS = { routines: "it3_routines", sessions: "it3_sessions", fatigue: "it3_fatigue", cycle: "it3_cycle", supps: "it3_supps", customEx: "it3_customEx" };
@@ -712,8 +715,11 @@ function analyzeEx(history) {
 // Règle exacte : +1 rep sur DERNIERE série d'abord
 // 8-8-8 → 8-8-9 → 8-9-9 → 9-9-9 → augmenter poids
 // Gère aussi les séries de 100 et les plages variables (10-15)
-function getProgressionTip(lastSets, sessions, exName, repsTarget) {
+function getProgressionTip(lastSets, sessions, exName, repsTarget, seriesPrevues) {
   if (!lastSets || lastSets.length === 0) return null;
+  // Coach V2 : conseil calcule par le moteur (series prevues = celles de la seance en cours, plus le programme code en dur).
+  const CE = coachEngine();
+  if (CE) return coachConseilAffichage(CE.conseilProgression(coachHistorique(CE, sessions, exName), { fourchette: repsTarget || "", dernieresSeries: lastSets, seriesPrevues: seriesPrevues }));
   const validLast = lastSets.filter(s => s.weight && s.reps);
   if (validLast.length === 0) return null;
   // RIR moyen — affine le conseil
@@ -813,6 +819,57 @@ function getProgressionTip(lastSets, sessions, exName, repsTarget) {
   };
 }
 
+
+// ═══ COACH V2 : branchement du moteur d'analyse (coach-engine.js), ecran par ecran ═══
+// Le moteur ne fait que LIRE et ANALYSER : il ne modifie ni seances, ni routines, ni programme, ni donnees.
+// Si coach-engine.js n'a pas pu etre charge, chaque ecran garde son calcul V1 (repli automatique, aucun ecran casse).
+// Ecrans branches : Seance en cours (conseil de progression, badge de force, alerte de stagnation).
+function coachEngine() { const CE = (typeof window !== "undefined") ? window.CoachEngine : null; return (CE && typeof CE.analyser === "function") ? CE : null; }
+// Historique d'un exercice (trie par date, une entree par seance). `seanceEnCours` : seance pas encore enregistree, ajoutee a la fin.
+function coachHistorique(CE, sessions, exName, seanceEnCours) {
+  const list = seanceEnCours ? (sessions || []).concat([seanceEnCours]) : (sessions || []);
+  return CE.historiqueExercice(CE.normaliserSeances(list, { normaliserNom: typeof normalizeExName === "function" ? normalizeExName : undefined }), exName);
+}
+// Affichage d'un conseil du moteur : memes textes, couleurs et icones que le V1.
+function coachConseilAffichage(c) {
+  if (!c) return null;
+  const note = c.rir && c.rir.note === "pousser" ? " · RIR élevé → pousse plus fort" : c.rir && c.rir.note === "prudence" ? " · RIR faible → sois prudent" : "";
+  switch (c.action) {
+    case "serie100": return { color: "#9C27B0", icon: "★", msg: "SERIE DE 100 — charge légère, rest-pause 1-5 sec autorisé. Vise les 100 reps en continu à terme." };
+    case "reduire_charge": return { color: "#FF4444", icon: "!", msg: "Régression — réduis de 5-10% et repars à RIR 4 minimum" };
+    case "consolider": return { color: "#FFD600", icon: "!", msg: "Progression rapide — maintiens " + c.charge + "kg, consolide les reps avant d'augmenter" };
+    case "augmenter_charge": return { color: "#00C853", icon: "+", msg: "✓ AUGMENTE → " + c.charge + "kg +" + c.increment + " = " + c.nouvelleCharge + "kg · Repars à " + c.repsCible + " reps" + note };
+    case "ajouter_rep": return { color: c.serieNonFaite ? "#FF8C00" : "#4FC3F7", icon: c.serieNonFaite ? "!" : ">",
+      msg: "S" + c.serie + " : vise " + c.reps + " rep · " + c.charge + "kg" + (c.serieNonFaite ? " · série non faite la dernière fois" : "") + (c.ensuiteCharge ? " · Puis +poids" : "") + note };
+    case "maintenir": return { color: "#888", icon: "=", msg: "Maintiens " + c.charge + "kg · Vise " + c.repsMin + " reps minimum sur toutes les séries" };
+  }
+  return null;
+}
+// Affichage d'un diagnostic du moteur : en mode force (fourchettes <= 12), memes textes que le V1 (analyzeEx) ;
+// en mode repetitions (fourchettes > 12), textes en repetitions et en charge (la force estimee n'y est pas le critere).
+function coachDiagAffichage(d) {
+  if (!d || d.typeV1 === null || d.typeV1 === undefined) return null;
+  const reps = d.mode === "reps", D = d.derniere || {};
+  if (d.typeV1 === 1) return { type: 1, color: "#FFD600", icon: "!", urgency: "ATTENTION", title: "PROGRESSION TROP RAPIDE",
+    msg: "+" + d.ecart + "kg 1RM en 1 seance (" + Math.round(d.ecartRatio * 100) + "%). Risque de crash nerveux.",
+    actions: ["+1 rep max par serie, jamais +2 d'un coup", "Prochaine seance : maintiens la meme charge", "Progression : derniere serie d'abord"] };
+  if (d.typeV1 === 2) return reps
+    ? { type: 2, color: "#FF8C00", icon: "!", urgency: "ACTION REQUISE", title: "STAGNATION — PLAFOND",
+      msg: "Haut de fourchette atteint a " + D.chargeMax + "kg depuis " + d.seancesAuPlafond + " seances (" + D.repsMoy + " reps en moyenne).",
+      actions: ["Monte la charge a la prochaine seance", "Repars au bas de la fourchette", "Puis +1 rep sur la derniere serie d'abord"] }
+    : { type: 2, color: "#FF8C00", icon: "!", urgency: "ACTION REQUISE", title: "STAGNATION — PLAFOND",
+      msg: "Bloque a " + d.mesure.derniere + "kg 1RM depuis " + d.seancesAuPlafond + " seances. Reps elevees = fin de cycle.",
+      actions: ["Reset : repasse a 3x8 meme charge", "OU deplace en derniere position", "La progression repartira vite"] };
+  if (d.typeV1 === 3) return { type: 3, color: "#FF4444", icon: "!", urgency: "URGENT", title: "REGRESSION PERSISTANTE",
+    msg: reps ? "Moins de repetitions a charge egale sur 3 seances (-" + d.perte + "kg de travail total). Fatigue probable." : "1RM perd " + d.perte + "kg sur 3 seances. Fatigue nerveuse probable.",
+    actions: ["Reduis la charge de 5-10% maintenant", "Reprends a 3x8 (RIR 4-5)", "Verifie ton score SNS", "Controle sommeil, alimentation, stress"] };
+  if (d.typeV1 === 0) return { type: 0, color: "#00C853", icon: "V", urgency: "EN PROGRESSION", title: "PROGRESSION OPTIMALE",
+    msg: reps
+      ? (d.nature === "charge" ? "+" + d.axes.charge + "kg de charge, repetitions dans la fourchette." : "+" + (d.axes.reps !== null ? d.axes.reps : d.axes.repsTotal) + " rep(s) a " + D.chargeMax + "kg depuis la derniere seance.")
+      : (d.mesure.derniere > d.mesure.precedente ? "+" + (d.mesure.derniere - d.mesure.precedente) + "kg 1RM depuis la derniere seance." : "+" + d.repsGagnees + " rep(s) au total depuis la derniere seance."),
+    actions: ["+1 rep sur la derniere serie si tu atteins le haut de la fourchette"] };
+  return { type: -1, color: "#888", icon: "-", urgency: "STABLE", title: "CHARGE MAINTENUE", msg: "Meme performance que la seance precedente.", actions: ["Essaie +1 rep sur la derniere serie seulement"] };
+}
 
 // --- SYSTEME DE PALIERS ---
 const PALIERS = [
@@ -1134,7 +1191,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
         lastSets: ex.sets,
         sets: pastSets.map((s, i) => ({
           weight: s.weight || "", reps: "",
-          rir: "", rirSaisi: false, done: false
+          rir: "", rirCible: i === 0 ? 4 : i === 1 ? 2 : 1, rirSaisi: false, done: false
         }))
       };
     });
@@ -1166,7 +1223,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
           name: ex.name, repsTarget: ex.repsTarget || (progExRef2 && progExRef2.repsTarget) || "8-12", note: ex.note || (progExRef2 && progExRef2.note) || "", userNote: "", rest: ex.rest || 90, warmupSets: ex.warmupSets || (progExRef2 && progExRef2.warmupSets) || 0, warmupLabel: ex.warmupLabel || (progExRef2 && progExRef2.warmupLabel) || "", lastSets,
           sets: Array.from({ length: ex.sets || 3 }, (_, i) => ({
             weight: (lastSets[i] && lastSets[i].weight) || (lastSets[0] && lastSets[0].weight) || "", reps: "",
-            rir: "", rirSaisi: false, done: false
+            rir: "", rirCible: i === 0 ? 3 : i === 1 ? 2 : 1, rirSaisi: false, done: false
           }))
         };
       });
@@ -1232,6 +1289,18 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
     const hist = sessions.filter(s => s.exercises && s.exercises.some(e => e.name === exName))
       .map(s => { const ex = s.exercises.find(e => e.name === exName); return { date: s.date, sets: (ex && ex.sets) || [] }; });
     if (hist.length < 2) return;
+    // Coach V2 : diagnostic du moteur (historique trie) et UNE definition de la progression (plus de calcul de force non arrondi a part).
+    const CE = coachEngine();
+    if (CE) {
+      const f = CE.lireFourchette(rt || "");
+      const h2 = coachHistorique(CE, sessions, exName, { id: Date.now(), date: today(), exercises: [{ name: exName, repsTarget: rt, sets: setsArr }] });
+      const d = h2.length >= 2 ? CE.diagnostiquer(h2, f) : null;
+      if (d && (d.code === "plafond" || d.code === "regression")) {
+        if (CE.comparer(CE.mesuresSeance(h2[h2.length - 2].series), CE.mesuresSeance(h2[h2.length - 1].series), d.mode, f) === "progression") return; // progression reelle, pas d alerte
+        setStagAlert({ ...coachDiagAffichage(d), exName });
+      }
+      return;
+    }
     const diag = analyzeEx([...hist, { date: today(), sets: setsArr }]);
     // Afficher alerte uniquement pour stagnation (2) et regression (3), jamais pour progression (0) ou trop rapide (1)
     if (diag && (diag.type === 2 || diag.type === 3)) {
@@ -1329,7 +1398,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
     setCurrentSets(prev => {
       const exs = [...prev.exercises];
       const last = exs[exIdx].sets[exs[exIdx].sets.length - 1];
-      exs[exIdx] = { ...exs[exIdx], sets: [...exs[exIdx].sets, { weight: (last && last.weight) || "", reps: "", rir: "", rirSaisi: false, done: false }] };
+      exs[exIdx] = { ...exs[exIdx], sets: [...exs[exIdx].sets, { weight: (last && last.weight) || "", reps: "", rir: "", rirCible: 1, rirSaisi: false, done: false }] };
       return { ...prev, exercises: exs };
     });
   }
@@ -1344,7 +1413,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
       rest: ex.rest || 90,
       sets: ex.sets
         .filter(s => s.weight && s.reps)
-        .map(s => ({ weight: parseFloat(s.weight), reps: parseInt(s.reps), rir: parseRir(s.rir), rirSaisi: s.rirSaisi === true && parseRir(s.rir) !== null, done: true }))
+        .map(s => ({ weight: parseFloat(s.weight), reps: parseInt(s.reps), rir: parseRir(s.rir), rirSaisi: s.rirSaisi === true && parseRir(s.rir) !== null, ...(parseRir(s.rirCible) !== null ? { rirCible: parseRir(s.rirCible) } : {}), done: true }))
     })).filter(ex => ex.sets.length > 0);
 
     if (!validExs.length) return alert("Aucune serie remplie !");
@@ -1547,7 +1616,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
           lastSets: _addLastSets,
           sets: Array.from({ length: _addNbSets }, (_, si) => ({
             weight: (_addLastSets[si] && _addLastSets[si].weight) || (_addLastSets[0] && _addLastSets[0].weight) || "",
-            reps: "", rir: "", rirSaisi: false, done: false
+            reps: "", rir: "", rirCible: si === 0 ? 3 : si === 1 ? 2 : 1, rirSaisi: false, done: false
           }))
         }] }));
         setShowPicker(false);
@@ -1569,7 +1638,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
           lastSets: _lastSets,
           sets: Array.from({ length: _nbSets }, (_, si) => ({
             weight: (_lastSets[si] && _lastSets[si].weight) || (_lastSets[0] && _lastSets[0].weight) || "",
-            reps: "", rir: "", rirSaisi: false, done: false
+            reps: "", rir: "", rirCible: si === 0 ? 3 : si === 1 ? 2 : 1, rirSaisi: false, done: false
           }))
         }) }));
         setReplaceIdx(null);
@@ -1920,7 +1989,8 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
                     return (
                       <div style={{ borderRadius: 5, padding: "3px 8px", background: "#1a0800", border: "1px solid #2a1000" }}>
                         <span style={{ fontSize: 9, color: "#ff6600", fontFamily: "monospace", fontWeight: 700 }}>
-                          1RM {Math.max(...ex.lastSets.filter(ls => ls.weight && ls.reps).map(ls => e1RM(ls.weight, ls.reps)))}kg
+                          {(() => { const CE = coachEngine(); if (!CE) return "1RM " + Math.max(...ex.lastSets.filter(ls => ls.weight && ls.reps).map(ls => e1RM(ls.weight, ls.reps))) + "kg";
+                            const m = CE.mesuresSeance(ex.lastSets.map(CE.normaliserSerie)); return "1RM " + (m.forceFiable ? "" : "≈") + m.force + "kg"; })()}
                         </span>
                       </div>
                     );
@@ -1930,7 +2000,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
             )}
             {(() => {
               if (!window._isPremium || !window._isPremium()) return null;
-              const tip = getProgressionTip(ex.lastSets, sessions, ex.name, ex.repsTarget);
+              const tip = getProgressionTip(ex.lastSets, sessions, ex.name, ex.repsTarget, ex.sets.length);
               if (!tip) return null;
               return (
                 <div style={{ background: tip.color + "12", border: "1px solid " + tip.color + "44", borderRadius: 7, padding: "7px 10px", marginBottom: 8, display: "flex", gap: 8, alignItems: "center" }}>
@@ -1971,8 +2041,8 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
                       placeholder={(ref && ref.reps) ? String(ref.reps) : "reps"} readOnly={s.done}
                       style={{ background: s.done ? "#111" : "#1a1a1a", border: "1px solid #2a2a2a", color: s.done ? "#444" : "#fff", borderRadius: 7, padding: "7px 4px", fontSize: 15, fontWeight: 800, textAlign: "center", width: "100%", boxSizing: "border-box" }} />
                     <select value={s.rir === null || s.rir === undefined ? "" : String(s.rir)} onChange={e => updateSet(exIdx, si, "rir", e.target.value)}
-                      style={{ background: "#1a1a1a", border: "1px solid #2a2a2a", color: "#666", borderRadius: 7, padding: "7px 2px", fontSize: 11, width: "100%" }}>
-                      <option value="">RIR ?</option>
+                      style={{ background: "#1a1a1a", border: "1px solid #2a2a2a", color: s.rirSaisi ? "#fff" : "#666", fontStyle: s.rirSaisi ? "normal" : "italic", borderRadius: 7, padding: "7px 2px", fontSize: 11, width: "100%" }}>
+                      <option value="">{parseRir(s.rirCible) !== null ? "cible " + parseRir(s.rirCible) : "RIR ?"}</option>
                       {[0,1,2,3,4,5].map(r => <option key={r} value={String(r)}>RIR {r}</option>)}
                     </select>
                     <button onClick={() => markSetDone(exIdx, si)} style={{

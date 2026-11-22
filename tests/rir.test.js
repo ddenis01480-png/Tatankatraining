@@ -17,7 +17,7 @@ async function boot(ls) { const app = openApp(ls); app.mount(null); app.startSup
 // Le VRAI updateSet de la seance en cours, et la VRAIE transformation des series a l'enregistrement (saveSession).
 function realUpdateSet(app) { let cur = null; const f = vm.runInContext('(function(setCurrentSets, lsSetNs){ ' + fnSrc('function updateSet(') + ' return updateSet; })', app.ctx)(fn => { cur = fn(cur); }, () => {});
   return { set: v => { cur = v; }, get: () => cur, update: f }; }
-const SAVE_MAP = SRC.match(/\.map\(s => \(\{ weight: parseFloat\(s\.weight\), reps: parseInt\(s\.reps\), rir: parseRir\(s\.rir\), rirSaisi: s\.rirSaisi === true && parseRir\(s\.rir\) !== null, done: true \}\)\)/);
+const SAVE_MAP = SRC.match(/\.map\(s => \(\{ weight: parseFloat\(s\.weight\), reps: parseInt\(s\.reps\), rir: parseRir\(s\.rir\), rirSaisi: s\.rirSaisi === true && parseRir\(s\.rir\) !== null, \.\.\.\(parseRir\(s\.rirCible\) !== null \? \{ rirCible: parseRir\(s\.rirCible\) \} : \{\}\), done: true \}\)\)/);
 if (!SAVE_MAP) throw new Error('transformation des series de saveSession introuvable');
 const toSaved = (app, sets) => vm.runInContext('(function(sets){ return sets.filter(s => s.weight && s.reps)' + SAVE_MAP[0] + '; })', app.ctx)(sets);
 
@@ -52,6 +52,9 @@ t('SAUVEGARDE + RECHARGEMENT : une nouvelle seance a RIR 0 survit au rechargemen
   const expectedOld = JSON.parse(JSON.stringify(OLD)); expectedOld[1].exercises[0].sets[1].rir = 2; // seul le RIR texte "2" devient le nombre 2 (comportement deja existant)
   assert.strictEqual(JSON.stringify(stored.slice(0, 2)), JSON.stringify(expectedOld), 'anciennes seances identiques (aucun RIR invente, aucun rirSaisi ajoute)');
   const last = app.state('sessions')[2].exercises[0].sets; assert.strictEqual(last[0].rir, 0); assert.strictEqual(last[0].rirSaisi, true); assert.strictEqual(last[1].rirSaisi, false); });
+t('RIR CIBLE : enregistre a part (rirCible) ; jamais recopie dans le RIR reel ; RIR reel vide = inconnu', async () => {
+  const app = await boot(store()); const out = toSaved(app, [{ weight: '50', reps: '8', rir: '', rirCible: 3, rirSaisi: false }, { weight: '50', reps: '8', rir: '2', rirCible: 2, rirSaisi: true }, { weight: '50', reps: '8', rir: '1', rirSaisi: true }]);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(out)), [{ weight: 50, reps: 8, rir: null, rirSaisi: false, rirCible: 3, done: true }, { weight: 50, reps: 8, rir: 2, rirSaisi: true, rirCible: 2, done: true }, { weight: 50, reps: 8, rir: 1, rirSaisi: true, done: true }]); });
 t('EXPORT JSON : l\'export lit les seances stockees telles quelles (RIR 0 et rirSaisi inclus)', async () => {
   const ex = fnSrc('function exportData('); assert.ok(/sessions: load\(KEYS\.sessions\) \|\| \[\]/.test(ex), 'export = contenu stocke, sans transformation');
   const ls = store(); const app = await boot(ls); const withNew = OLD.concat([{ id: 3, date: '2026-11-22', routineName: 'PUSH', exercises: [{ name: 'Exo A', sets: [{ weight: 50, reps: 8, rir: 0, rirSaisi: true, done: true }] }] }]);
