@@ -87,7 +87,8 @@ t('Alerte pendant la seance : meme decision que le V1 sur 3 000 cas en mode forc
     const a = stagnation(V1, sessions, current, 'Exo test', cur.sets, cur.date), b = stagnation(V2, sessions, current, 'Exo test', cur.sets, cur.date);
     const ka = a ? a.title : null, kb = b ? b.title : null; if (a) alerts++;
     if (ka === kb) { same++; if (a) assert.deepStrictEqual(JSON.parse(JSON.stringify(b)), JSON.parse(JSON.stringify(a))); }
-    else diffs.push({ i, ka, kb, prev: past[past.length - 1].sets.map(s => s.weight + 'x' + s.reps).join(','), cur: cur.sets.map(s => s.weight + 'x' + s.reps).join(',') }); }
+    else diffs.push({ i, ka, kb, msg: b && b.msg, hist: h.map(x => x.date + ' ' + x.sets.map(s => s.weight + 'x' + s.reps).join(',')), prev: past[past.length - 1].sets.map(s => s.weight + 'x' + s.reps).join(','), cur: cur.sets.map(s => s.weight + 'x' + s.reps).join(',') }); }
+  if (process.env.DETAIL) diffs.forEach(d => console.log(JSON.stringify(d)));
   // Differences admises, toutes dues aux definitions de « progression reelle » propres a cette alerte V1 :
   //   (a) force calculee NON arrondie (2e formule du V1) ; (b) « plus de reps au total » meme avec une charge PLUS LEGERE.
   // Le moteur applique sa definition unique : plus de reps ne compte que si la charge est egale ou plus lourde.
@@ -98,6 +99,21 @@ t('Alerte pendant la seance : meme decision que le V1 sur 3 000 cas en mode forc
     if (raw(cur) > raw(prev) && rnd(cur) <= rnd(prev)) fa++; else if (reps(cur) > reps(prev) && cmax(cur) < cmax(prev)) fb++;
     else assert.fail('difference inattendue : ' + JSON.stringify(d)); assert.ok(d.ka === null && d.kb !== null, 'le moteur ne retire jamais une alerte du V1, il peut seulement en ajouter : ' + JSON.stringify(d)); });
   info(same + ' / 3000 identiques (' + alerts + ' alertes V1) ; ' + diffs.length + ' alerte(s) en plus : ' + fa + ' (force non arrondie du V1), ' + fb + ' (plus de reps mais charge plus legere)'); });
+
+// Les 5 cas ou l'etape 1 (014c45e) declenchait une alerte que le V1 ne montrait pas — fixes, avec la conclusion de l'analyse.
+const CINQ = [
+  { cas: 937, attendu: null, pourquoi: 'faux positif corrige : 98x9 vs 100,5x8 = meme force (127,4 vs 127,3) ; l\'arrondi au kg cachait l\'egalite', hist: ['98x6,98x9,98x12', '98x10,98x7,98x10,98x11', '98x7,98x12,98x9,98x7', '100.5x7,100.5x6,100.5x8', '98x9,98x7'] },
+  { cas: 1315, attendu: null, pourquoi: 'faux positif corrige : a 22,5 kg la meilleure serie passe de 8 a 9 reps (+0,75 kg de force, invisible une fois arrondi)', hist: ['25x7,25x12', '25x10,25x10,25x6', '22.5x6,22.5x8,22.5x7,22.5x6', '22.5x9,22.5x8,22.5x7'] },
+  { cas: 1009, attendu: 'STAGNATION — PLAFOND', pourquoi: 'plafond reel : force 128-131 sur 3 seances, reps en haut de fourchette ; plus de reps seulement parce que la charge a baisse', hist: ['96x8,96x7', '96x10,96x8,96x7', '96x10,96x6,96x9,96x9', '96x6,96x11', '93.5x10,93.5x11,93.5x11'] },
+  { cas: 2248, attendu: 'STAGNATION — PLAFOND', pourquoi: 'plafond reel : force 116-117 sur 3 seances ; charge redescendue de 85,5 a 83 kg, series en plus', hist: ['83x7,83x12,83x9,83x7', '85.5x11,85.5x9', '83x10,83x12,83x12,83x10'] },
+  { cas: 2250, attendu: 'STAGNATION — PLAFOND', pourquoi: 'plafond reel : force 120 sur 3 seances ; charge redescendue de 88 a 85,5 kg', hist: ['88x10,88x11,88x11', '88x11,88x11,88x9,88x8', '85.5x12,85.5x11,85.5x12,85.5x7'] }];
+t('Les 5 alertes en plus de l\'etape 1 : 2 faux positifs (arrondi) corriges, 3 plafonds reels gardes (le V1 les masquait car plus de reps avec une charge plus legere)', () => {
+  CINQ.forEach(c => { const h = c.hist.map((x, k) => ({ date: day(k), sets: x.split(',').map(y => { const [w, r] = y.split('x').map(Number); return S(w, r); }) }));
+    const past = h.slice(0, -1), cur = h[h.length - 1]; const sessions = past.map((x, k) => sess(k + 1, x.date, [{ name: 'Exo test', repsTarget: '8-12', sets: x.sets }]));
+    const current = { exercises: [{ name: 'Exo test', repsTarget: '8-12', sets: cur.sets }] };
+    const a = stagnation(V1, sessions, current, 'Exo test', cur.sets, cur.date), b = stagnation(V2, sessions, current, 'Exo test', cur.sets, cur.date);
+    assert.strictEqual(a, null, 'cas ' + c.cas + ' : le V1 ne montrait rien'); assert.strictEqual(b ? b.title : null, c.attendu, 'cas ' + c.cas);
+    info('cas ' + c.cas + ' -> ' + (c.attendu || 'plus d\'alerte') + ' : ' + c.pourquoi); }); });
 
 // ── Badge de force (a cote de « Derniere fois ») ──
 t('Badge de force : meme valeur que le V1 ; « ≈ » ajoute quand la meilleure serie depasse 12 reps (estimation peu fiable)', () => {
@@ -128,6 +144,14 @@ if (EXP) t('Export reel : conseil affiche a la prochaine seance pour chaque exer
     if ((a && a.msg) !== (b && b.msg)) diffs.push(rt.name + ' / ' + ex.name + ' (' + ex.repsTarget + ', ' + (ex.sets || 3) + ' series) : V1 « ' + (a && a.msg) + ' » -> moteur « ' + (b && b.msg) + ' »'); }));
   assert.strictEqual(JSON.stringify(EXP), before, 'export non modifie');
   info(n + ' exercices de routine ; ' + (n - diffs.length) + ' conseils identiques ; ' + diffs.length + ' differents' + (diffs.length ? ' :\n         - ' + diffs.join('\n         - ') : '')); });
+
+if (EXP) t('Export reel : alerte de stagnation rejouee seance par seance (chaque exercice de chaque seance, comme si tu validais tes series), V1 contre moteur', () => {
+  const ss = [...EXP.sessions].sort((x, y) => x.date < y.date ? -1 : x.date > y.date ? 1 : x.id - y.id); let n = 0, alertsV1 = 0, alertsV2 = 0; const diffs = [];
+  ss.forEach((cur, k) => { const past = ss.slice(0, k); (cur.exercises || []).forEach(ex => { const sets = (ex.sets || []).filter(st => st.weight && st.reps); if (!sets.length) return; n++;
+    const current = { exercises: [{ name: ex.name, repsTarget: ex.repsTarget, sets }] };
+    const a = stagnation(V1, past, current, ex.name, sets, cur.date), b = stagnation(V2, past, current, ex.name, sets, cur.date); if (a) alertsV1++; if (b) alertsV2++;
+    if ((a && a.title) !== (b && b.title)) diffs.push(cur.date + ' ' + ex.name + ' : V1 ' + (a ? a.title : 'aucune') + ' / moteur ' + (b ? b.title + ' (' + b.msg + ')' : 'aucune')); }); });
+  info(n + ' validations rejouees ; alertes V1 ' + alertsV1 + ', moteur ' + alertsV2 + ' ; ' + diffs.length + ' difference(s)' + (diffs.length ? ' :\n         - ' + diffs.join('\n         - ') : '')); });
 
 (async () => { let fail = 0;
   console.log('Moteur v' + E.VERSION + ' branche sur : Seance en cours (conseil, badge de force, alerte de stagnation)');

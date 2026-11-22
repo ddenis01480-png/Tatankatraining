@@ -101,9 +101,9 @@ t('B', 'Series : virgule decimale lue (« 52,5 »), serie sans charge ou sans re
   const n = E.normaliserSerie; assert.strictEqual(n({ weight: '52,5', reps: '8' }).charge, 52.5); assert.strictEqual(n({ weight: '52,5', reps: '8' }).valide, true);
   assert.strictEqual(n({ weight: 0, reps: 8 }).valide, false); assert.strictEqual(n({ weight: 50, reps: '' }).valide, false); assert.strictEqual(n({ weight: -5, reps: 8 }).valide, false);
   assert.strictEqual(n({ weight: 50, reps: 8, setType: 'normal' }).type, 'normal'); });
-t('B', 'Exercice present deux fois dans une seance : une seule entree d\'historique, toutes les series regroupees', () => {
-  const ss = [sess(1, '2026-01-01', [ex('Curl haltères', [S(14, 10)]), ex('Squat barre', [S(100, 8)]), ex('Curl haltères', [S(10, 15), S(10, 14)])])];
-  const h = histOf(ss, 'Curl haltères'); assert.strictEqual(h.length, 1); assert.deepStrictEqual([h[0].series.length, h[0].occurrences], [3, 2]); });
+t('B', 'Exercice present deux fois dans une seance : une seule entree d\'historique, PREMIERE occurrence analysee (comme le V1), occurrences comptees', () => {
+  const ss = [sess(1, '2026-01-01', [ex('Curl haltères', [S(14, 10)]), ex('Squat barre', [S(100, 8)]), ex('Curl haltères', [S(10, 15), S(10, 14)], '15-20')])];
+  const h = histOf(ss, 'Curl haltères'); assert.strictEqual(h.length, 1); assert.deepStrictEqual([h[0].series.length, h[0].series[0].charge, h[0].fourchette.texte, h[0].occurrences], [1, 14, '8-12', 2]); });
 t('B', 'Noms differents = historiques distincts (aucune fusion d\'exercices renommes)', () => {
   const ss = [sess(1, '2026-01-01', [ex('Curl câble unilatéral face poulie', [S(10, 10)])]), sess(2, '2026-01-03', [ex('Curl câble unilatéral face poulie (nouveau nom)', [S(10, 11)])])];
   assert.strictEqual(histOf(ss, 'Curl câble unilatéral face poulie').length, 1); assert.strictEqual(histOf(ss, 'Curl câble unilatéral face poulie (nouveau nom)').length, 1); });
@@ -329,7 +329,7 @@ if (USING_REAL) {
       const hh = histOf(ss, n); const f = hh[hh.length - 1].fourchette; if (E.modeMesure(f) !== 'force') return;
       const a = v1.analyzeEx(h), b = E.diagnostiquer(hh, f); const over12 = hh.some(x => x.series.some(st => st.valide && st.reps > 12));
       const doublon = hh.some(x => x.occurrences > 1);
-      if ((a ? a.type : null) === (b ? b.typeV1 : null)) same++; else if (doublon) ecarts.push(n + ' (V1 ' + (a && a.type) + ' / moteur ' + (b && b.typeV1) + ')'); else assert.fail(n + ' : V1 ' + (a && a.type) + ' / moteur ' + (b && b.typeV1) + (over12 ? ' (series > 12 reps)' : '')); });
+      if ((a ? a.type : null) === (b ? b.typeV1 : null)) same++; else if (doublon) assert.fail(n + ' (doublon) : V1 ' + (a && a.type) + ' / moteur ' + (b && b.typeV1)); else assert.fail(n + ' : V1 ' + (a && a.type) + ' / moteur ' + (b && b.typeV1) + (over12 ? ' (series > 12 reps)' : '')); });
     info(same + ' exercices en mode force identiques au V1' + (ecarts.length ? ' ; ecart voulu (exercice present 2 fois dans une seance : le V1 ignorait la 2e occurrence) : ' + ecarts.join(', ') : '')); });
 }
 

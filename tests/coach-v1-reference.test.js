@@ -102,8 +102,9 @@ keep('Nouvelle serie : RIR reel vide + rirSaisi:false (5 endroits) ; RIR cible 3
   assert.strictEqual((SRC.match(/rir: "", rirCible: (?:i|si) === 0 \? 3 : (?:i|si) === 1 \? 2 : 1, rirSaisi: false/g) || []).length, 3, 'demarrer / ajouter / remplacer : cible 3/2/1');
   assert.ok(/rir: "", rirCible: 1, rirSaisi: false/.test(SRC), 'serie ajoutee : cible 1');
   assert.ok(!/rir: (?:i|si) === 0 \? "\d"/.test(SRC) && !/rir: "1", rirSaisi/.test(SRC), 'plus aucun RIR reel pre-rempli'); });
-keep('Liste RIR : la case vide affiche la cible (« cible 2 ») ou « RIR ? » ; choisir une valeur (meme egale a la cible) met rirSaisi:true ; la cible est enregistree a part', () => {
-  assert.ok(/<option value="">\{parseRir\(s\.rirCible\) !== null \? "cible " \+ parseRir\(s\.rirCible\) : "RIR \?"\}<\/option>/.test(SRC));
+keep('Liste RIR : RIR reel dans la liste (« RIR ? » = inconnu) ; RIR cible affiche A COTE, toujours visible ; choisir une valeur (meme egale a la cible) met rirSaisi:true ; la cible est enregistree a part', () => {
+  assert.ok(/aria-label="RIR effectué"[\s\S]{0,600}<option value="">RIR \?<\/option>/.test(SRC), 'liste du RIR reel, demarre sur « RIR ? »');
+  assert.ok(/\{parseRir\(s\.rirCible\) !== null && \(\s*<span[^>]*>cible \{parseRir\(s\.rirCible\)\}<\/span>/.test(SRC), 'cible affichee hors de la liste (reste visible apres la saisie)');
   assert.ok(/\.\.\.\(field === "rir" \? \{ rirSaisi: val !== "" \} : \{\}\)/.test(SRC));
   assert.ok(/rirSaisi: s\.rirSaisi === true && parseRir\(s\.rir\) !== null, \.\.\.\(parseRir\(s\.rirCible\) !== null \? \{ rirCible: parseRir\(s\.rirCible\) \} : \{\}\), done: true/.test(SRC), 'enregistre : saisi seulement si une valeur existe ; cible a part'); });
 known('Nombre de series attendu lu dans le programme code en dur (PROGRAMME), pas dans la routine de l\'utilisateur', 'le nombre de series vient de la routine reellement suivie', () => {

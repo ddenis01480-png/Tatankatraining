@@ -1,5 +1,5 @@
 /*
- * coach-engine.js — Moteur d'analyse du Coach Tatanka Training (Coach V2), version 0.2.0
+ * coach-engine.js — Moteur d'analyse du Coach Tatanka Training (Coach V2), version 0.2.1
  *
  * ROLE : lire les donnees qu'on lui transmet et retourner des analyses. RIEN D'AUTRE.
  *   - aucun acces a localStorage, Supabase, au reseau, au DOM ou a React ;
@@ -32,7 +32,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var VERSION = "0.2.0";
+  var VERSION = "0.2.1";
 
   // Reglages centralises (une seule valeur par regle).
   var REGLES = Object.freeze({
@@ -137,7 +137,9 @@
   }
 
   // Historique d'un exercice : UNE entree par seance ou il apparait (seances deja normalisees et triees).
-  // Si l'exercice figure deux fois dans la meme seance, ses series sont regroupees (le V1 ne lisait que la premiere occurrence).
+  // Si l'exercice figure deux fois dans la meme seance (ex. un bloc lourd 10-15 et un bloc leger 15-20), seule la PREMIERE
+  // occurrence est analysee, comme le V1 : regrouper deux blocs differents fausse les comparaisons (verifie sur donnees reelles).
+  // « occurrences » indique combien de fois l'exercice figurait dans la seance.
   function historiqueExercice(seancesNorm, nom) {
     var out = [];
     seancesNorm.forEach(function (s) {
@@ -145,7 +147,7 @@
       s.exercices.forEach(function (e) {
         if (e.nom !== nom) return;
         if (!entree) { entree = { date: s.date, id: s.id, fourchette: e.fourchette, series: e.series.slice(), occurrences: 1 }; out.push(entree); }
-        else { entree.series = entree.series.concat(e.series); entree.occurrences++; }
+        else entree.occurrences++;
       });
     });
     return out;
@@ -172,6 +174,7 @@
     return {
       seriesValides: v.length,
       force: best ? best.f : 0,
+      forcePrecise: v.reduce(function (m, s) { return Math.max(m, s.charge * (1 + s.reps / 30)); }, 0),
       forceFiable: !!best && best.reps <= REGLES.FORCE_REPS_MAX,
       tonnage: round1(v.reduce(function (a, s) { return a + s.charge * s.reps; }, 0)),
       repsTotal: repsTotal,
@@ -272,8 +275,9 @@
   }
 
   // UNE definition de la progression entre deux seances d'un meme exercice (utilisee par tous les diagnostics).
-  // Mode « force » (fourchette <= 12, comportement V1) :
-  //   progression : la force estimee monte, OU meme charge (ou plus) avec plus de repetitions au total ;
+  // Mode « force » (fourchette <= 12) :
+  //   progression : la force estimee monte (calculee SANS arrondi : +1 rep a 22,5 kg = +0,75 kg, invisible une fois arrondi),
+  //                 OU meme charge (ou plus) avec plus de repetitions au total ;
   //   regression  : la force baisse, sans hausse de charge ni de repetitions ; stable : le reste.
   // Mode « reps » (fourchette > 12, ex. 10-15, 15-20) : la force estimee n'est PAS le critere.
   //   progression en charge : charge plus lourde avec des repetitions dans la fourchette (moyenne >= bas de fourchette) ;
@@ -286,7 +290,7 @@
       if (cour.chargeMax === prec.chargeMax) return cour.repsAChargeMax > prec.repsAChargeMax ? "progression" : cour.repsAChargeMax < prec.repsAChargeMax ? "regression" : "stable";
       return cour.tonnage < prec.tonnage ? "regression" : "stable";
     }
-    var a = metrique(prec, mode), b = metrique(cour, mode);
+    var a = prec.forcePrecise !== undefined ? prec.forcePrecise : prec.force, b = cour.forcePrecise !== undefined ? cour.forcePrecise : cour.force;
     var plusDeReps = cour.repsTotal > prec.repsTotal && cour.chargeMax >= prec.chargeMax;
     if (b > a || plusDeReps) return "progression";
     if (b < a && cour.chargeMax <= prec.chargeMax && cour.repsTotal <= prec.repsTotal) return "regression";
@@ -334,7 +338,8 @@
       if (enBaisse && perte > metrique(last3[0], mode) * REGLES.REGRESSION_PCT && last.chargeMax <= prev.chargeMax && last.repsTotal <= prev.repsTotal)
         return res(3, { perte: round1(perte) });
     }
-    if (comparer(prev, last, mode, f) === "progression") return res(0, { nature: natureProgression(axes), repsGagnees: b > a ? 0 : last.repsTotal - prev.repsTotal });
+    // Derniere etape (regle V1, sur la force ARRONDIE comme les seuils ci-dessus) : force en hausse, ou plus de reps a charge egale ou plus lourde.
+    if (b > a || (last.repsTotal > prev.repsTotal && last.chargeMax >= prev.chargeMax)) return res(0, { nature: natureProgression(axes), repsGagnees: b > a ? 0 : last.repsTotal - prev.repsTotal });
     return res(-1);
   }
 

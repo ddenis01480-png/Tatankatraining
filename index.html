@@ -2040,11 +2040,17 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
                     <input type="number" value={s.reps} onChange={e => !s.done && updateSet(exIdx, si, "reps", e.target.value)}
                       placeholder={(ref && ref.reps) ? String(ref.reps) : "reps"} readOnly={s.done}
                       style={{ background: s.done ? "#111" : "#1a1a1a", border: "1px solid #2a2a2a", color: s.done ? "#444" : "#fff", borderRadius: 7, padding: "7px 4px", fontSize: 15, fontWeight: 800, textAlign: "center", width: "100%", boxSizing: "border-box" }} />
-                    <select value={s.rir === null || s.rir === undefined ? "" : String(s.rir)} onChange={e => updateSet(exIdx, si, "rir", e.target.value)}
-                      style={{ background: "#1a1a1a", border: "1px solid #2a2a2a", color: s.rirSaisi ? "#fff" : "#666", fontStyle: s.rirSaisi ? "normal" : "italic", borderRadius: 7, padding: "7px 2px", fontSize: 11, width: "100%" }}>
-                      <option value="">{parseRir(s.rirCible) !== null ? "cible " + parseRir(s.rirCible) : "RIR ?"}</option>
-                      {[0,1,2,3,4,5].map(r => <option key={r} value={String(r)}>RIR {r}</option>)}
-                    </select>
+                    {/* RIR : la liste = RIR REELLEMENT effectue (« RIR ? » = inconnu tant que rien n'est choisi) ; en dessous, toujours visible, le RIR CIBLE du programme. */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                      <select value={s.rir === null || s.rir === undefined ? "" : String(s.rir)} onChange={e => updateSet(exIdx, si, "rir", e.target.value)} aria-label="RIR effectué"
+                        style={{ background: "#1a1a1a", border: "1px solid " + (s.rirSaisi ? "#3a3a3a" : "#2a2a2a"), color: s.rirSaisi ? "#fff" : "#666", fontStyle: s.rirSaisi ? "normal" : "italic", fontWeight: s.rirSaisi ? 800 : 400, borderRadius: 7, padding: "7px 2px", fontSize: 11, width: "100%" }}>
+                        <option value="">RIR ?</option>
+                        {[0,1,2,3,4,5].map(r => <option key={r} value={String(r)}>RIR {r}</option>)}
+                      </select>
+                      {parseRir(s.rirCible) !== null && (
+                        <span style={{ fontSize: 8, color: "#4FC3F7", fontFamily: "monospace", textAlign: "center", lineHeight: 1 }}>cible {parseRir(s.rirCible)}</span>
+                      )}
+                    </div>
                     <button onClick={() => markSetDone(exIdx, si)} style={{
                       background: s.done ? "#1a3a1a" : "#1a1a1a",
                       border: "1px solid " + (s.done ? "#2a5a2a" : "#2a2a2a"),
