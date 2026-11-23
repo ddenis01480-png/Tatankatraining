@@ -13,7 +13,7 @@ function literal(start, open, close) { const i = SRC.indexOf(start); let d = 0;
   for (let p = SRC.indexOf(open, i); p < SRC.length; p++) { if (SRC[p] === open) d++; if (SRC[p] === close && --d === 0) return SRC.slice(SRC.indexOf(open, i), p + 1); } }
 
 const LIB = [fnSrc('function coachEngine('), fnSrc('function coachHistorique('), fnSrc('function coachConseilAffichage('), fnSrc('function coachDiagAffichage('), fnSrc('function coachEcartTexte('),
-  fnSrc('function coachFinSeance('), fnSrc('function coachBilanTexte('), fnSrc('function coachRecordTexte('), fnSrc('function coachRaisonsTexte('),
+  fnSrc('function coachFinSeance('), fnSrc('function coachBilanTexte('), fnSrc('function coachRecordTexte('), fnSrc('function coachRaisonsTexte('), fnSrc('function coachIncompleteTexte('), 'const COACH_RAISONS = ' + literal('const COACH_RAISONS = {', '{', '}') + ';', 
   fnSrc('function coachProgres('), fnSrc('function coachPlafondProgression('),
   fnSrc('function e1RM('), fnSrc('function fmtDate('), fnSrc('function parseRir('), fnSrc('function analyzeEx('),
   'const EXERCISE_NAME_FIXES = ' + literal('const EXERCISE_NAME_FIXES = {', '{', '}') + ';', fnSrc('function normalizeExName('),
@@ -37,7 +37,7 @@ function deuxEcrans(sessions, name) {
   const k = sessions.length - 1, today = sessions[k], past = sessions.slice(0, k), exs = today.exercises.filter(e => e.name === name).slice(0, 1);
   const fin = plain(ctx.coachFinSeance(ctx.window.CoachEngine, past, exs, today.date, today.id));
   const prog = plain(ctx.coachProgres(ctx.window.CoachEngine, sessions, name));
-  const cat = fin.progressed.includes(name) ? 'progression' : fin.regressed.includes(name) ? 'regression' : fin.stagnated.includes(name) ? 'stable' : fin.nonComparables.includes(name) ? 'non_comparable' : 'premiere';
+  const cat = fin.progressed.includes(name) ? 'progression' : fin.regressed.includes(name) ? 'regression' : fin.stagnated.includes(name) ? 'stable' : (fin.incompletes || []).includes(name) ? 'seance_incomplete' : fin.nonComparables.includes(name) ? 'non_comparable' : 'premiere';
   const alerteFin = (fin.alerts.find(a => a.exName === name) || {}).title || null;
   const a = prog.analyse, alerteProg = a && a.alerte ? prog.diag.title : null;
   return { fin: { performance: cat, alerte: alerteFin, plafondPositif: / haut de fourchette : augmenter la charge possible$/.test(fin.details[name] || ''), detail: fin.details[name] || null },
@@ -73,7 +73,8 @@ t('Serie aberrante (cas 6,8 kg x 112) : ignoree pareil dans les deux ecrans, dan
   let r = memes(deuxEcrans(build([['6.8x12,6.8x112,6.8x12', '12-15'], ['6.8x12,6.8x12,6.8x13', '12-15']]), 'Exo'));
   assert.deepStrictEqual([r.fin.performance, r.fin.detail], ['progression', '+13 reps à 6.8kg'], 'sans protection : fausse « baisse » (la serie x112 ignoree, la seance precedente compte 2 series x 12)');
   r = memes(deuxEcrans(build([['20x10,20x10,20x10'], ['20x10,20x100,20x10']]), 'Exo'));
-  assert.strictEqual(r.fin.performance, 'stable', 'faute de frappe du jour (x100) : ni progression ni record');
+  // Etape 3 (R-P3) : la serie x100 ignoree laisse 2 series analysables contre 3 -> « seance incomplete » (ni progression ni baisse).
+  assert.strictEqual(r.fin.performance, 'seance_incomplete', 'faute de frappe du jour (x100) : ni progression ni record');
   const s = build([['20x10,20x10,20x10'], ['20x10,20x100,20x10']]);
   assert.deepStrictEqual(plain(ctx.coachFinSeance(E, s.slice(0, 1), s[1].exercises, s[1].date, 2)).sessionPRs, [], 'pas de faux record'); });
 t('Historique insuffisant : premiere seance -> aucun bilan ni diagnostic dans les deux ecrans ; une seule seance avant -> bilan sans alerte', () => {
@@ -84,7 +85,7 @@ t('Historique insuffisant : premiere seance -> aucun bilan ni diagnostic dans le
 // Carte du diagnostic : coherente avec la ligne Performance.
 const CARTE_PERF = { 'CHARGE MAINTENUE': ['stable'], 'PERFORMANCE EN BAISSE': ['regression'], 'LEGERE PROGRESSION': ['progression'], 'PROGRESSION OPTIMALE': ['progression'],
   'PROGRESSION — HAUT DE FOURCHETTE ATTEINT': ['progression'], 'PROGRESSION — HAUT DE FOURCHETTE PRESQUE ATTEINT': ['progression'], 'PROGRESSION TROP RAPIDE': ['progression'],
-  'REGRESSION PERSISTANTE': ['regression'], 'STAGNATION — PLAFOND': ['stable', 'regression'], "PAS DE DIAGNOSTIC POUR L'INSTANT": ['non_comparable'] };
+  'REGRESSION PERSISTANTE': ['regression'], 'STAGNATION — PLAFOND': ['stable', 'regression'], "PAS DE DIAGNOSTIC POUR L'INSTANT": ['non_comparable'], 'SÉANCE INCOMPLÈTE': ['seance_incomplete'] };
 const carteCoherente = r => !r.progres.carte || (CARTE_PERF[r.progres.carte] || []).includes(r.progres.performance);
 t('Carte « CHARGE MAINTENUE » seulement si la performance est vraiment stable ; en baisse -> « PERFORMANCE EN BAISSE » ; legere hausse -> « LEGERE PROGRESSION »', () => {
   let r = memes(deuxEcrans(build([['60x10,60x10'], ['60x10,60x10']]), 'Exo'));

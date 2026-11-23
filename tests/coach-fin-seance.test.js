@@ -13,7 +13,7 @@ function literal(start, open, close) { const i = SRC.indexOf(start); let d = 0;
   for (let p = SRC.indexOf(open, i); p < SRC.length; p++) { if (SRC[p] === open) d++; if (SRC[p] === close && --d === 0) return SRC.slice(SRC.indexOf(open, i), p + 1); } }
 
 const LIB = [fnSrc('function coachEngine('), fnSrc('function coachHistorique('), fnSrc('function coachConseilAffichage('), fnSrc('function coachDiagAffichage('), fnSrc('function coachEcartTexte('),
-  fnSrc('function coachFinSeance('), fnSrc('function coachBilanTexte('), fnSrc('function coachRaisonsTexte('), fnSrc('function coachRecordTexte('),
+  fnSrc('function coachFinSeance('), fnSrc('function coachBilanTexte('), fnSrc('function coachRaisonsTexte('), fnSrc('function coachIncompleteTexte('), 'const COACH_RAISONS = ' + literal('const COACH_RAISONS = {', '{', '}') + ';',  fnSrc('function coachRecordTexte('),
   fnSrc('function e1RM('), fnSrc('function parseRir('), fnSrc('function analyzeEx('),
   'const EXERCISE_NAME_FIXES = ' + literal('const EXERCISE_NAME_FIXES = {', '{', '}') + ';', fnSrc('function normalizeExName('),
   // saveSession reel, dans une fabrique qui recoit l'etat et les fonctions de l'ecran
@@ -65,7 +65,9 @@ const detail = o => o.modal && o.modal.details ? o.modal.details['Exo test'] : u
 t('Bilan 8-12 : progression en charge, en reps, en force estimee ; stagnation ; regression — avec le detail affiche', () => {
   let o = bilan([[[60, 10], [60, 10]]], [[62.5, 9], [62.5, 9]]); assert.deepStrictEqual([verdict(o), detail(o)], ['progression', 'charge +2.5kg (62.5kg)']);
   o = bilan([[[60, 10], [60, 10]]], [[60, 11], [60, 10]]); assert.deepStrictEqual([verdict(o), detail(o)], ['progression', '+1 rep à 60kg']);
-  o = bilan([[[22.5, 8], [22.5, 8], [22.5, 7], [22.5, 6]]], [[22.5, 9], [22.5, 8], [22.5, 7]]); assert.deepStrictEqual([verdict(o), detail(o)], ['progression', 'force estimée +0.8kg'], 'meilleure serie 8 -> 9 reps, une serie de moins');
+  // Etape 3 (R-P3) : une serie de moins -> on compare les 3 meilleures series de chaque cote ; pas de baisse -> « seance incomplete », ni progression ni baisse.
+  o = bilan([[[22.5, 8], [22.5, 8], [22.5, 7], [22.5, 6]]], [[22.5, 9], [22.5, 8], [22.5, 7]]); assert.deepStrictEqual([verdict(o), o.modal.nonComparables, detail(o)], ['aucun', ['Exo test'], 'Séance incomplète (3 séries contre 4) : pas de baisse sur les 3 meilleures séries, ni progression ni baisse retenue'], 'meilleure serie 8 -> 9 reps, une serie de moins');
+  o = bilan([[[22.5, 8], [22.5, 8], [22.5, 7], [22.5, 6]]], [[22.5, 7], [22.5, 7], [22.5, 6]]); assert.deepStrictEqual([verdict(o), detail(o)], ['regression', '-3 reps à 22.5kg'], 'une serie de moins ET (8+8+7 contre 7+7+6) les 3 meilleures series en baisse : vraie baisse');
   o = bilan([[[60, 10], [60, 10]]], [[60, 10], [60, 10]]); assert.strictEqual(verdict(o), 'stable');
   o = bilan([[[60, 10], [60, 10]]], [[60, 10], [60, 10], [50, 5]]); assert.strictEqual(verdict(o), 'progression', 'une serie de plus a charge egale : +reps');
   o = bilan([[[60, 10], [60, 10]]], [[60, 8], [60, 8]]); assert.deepStrictEqual([verdict(o), detail(o)], ['regression', '-4 reps à 60kg']);
@@ -90,7 +92,7 @@ t('Alertes de fin de seance : meme diagnostic que pendant la seance (memes 5 cas
     return [finish(V1, sessions, cur([{ name: 'Exo test', repsTarget: rt, sets: last }]), day(rows.length - 1)), finish(V2, sessions, cur([{ name: 'Exo test', repsTarget: rt, sets: last }]), day(rows.length - 1))]; };
   // regression V1 sans garde : le V1 alertait alors que la meilleure serie progressait (+1 rep a 22,5 kg)
   let [a, b] = run(['25x7,25x12', '25x10,25x10,25x6', '22.5x6,22.5x8,22.5x7,22.5x6', '22.5x9,22.5x8,22.5x7'], '8-12');
-  assert.strictEqual(a.alert && a.alert.title, 'REGRESSION PERSISTANTE'); assert.strictEqual(b.alert, null); assert.ok(b.modal.progressed.includes('Exo test'));
+  assert.strictEqual(a.alert && a.alert.title, 'REGRESSION PERSISTANTE'); assert.strictEqual(b.alert, null); assert.ok(b.modal.nonComparables.includes('Exo test') && /^Séance incomplète/.test(b.modal.details['Exo test']), 'etape 3 (R-P3) : une serie de moins, meilleures series en hausse -> seance incomplete');
   [a, b] = run(['83x7,83x12,83x9,83x7', '85.5x11,85.5x9', '83x10,83x12,83x12,83x10'], '8-12'); assert.strictEqual(b.alert && b.alert.title, 'STAGNATION — PLAFOND'); assert.strictEqual(a.alert && a.alert.title, 'STAGNATION — PLAFOND', 'le V1 de fin de seance la montrait deja');
   [a, b] = run(['60x10,60x10', '66x10,66x10'], '8-12'); assert.deepStrictEqual([a.alert.title, b.alert.title], ['PROGRESSION TROP RAPIDE', 'PROGRESSION TROP RAPIDE']); assert.deepStrictEqual(b.alert, a.alert); });
 t('Alertes de fin de seance : identiques au V1 sur 3 000 seances generees, sauf la garde « progression reelle » de l\'ecran Seance (ecarts comptes)', () => {

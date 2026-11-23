@@ -12,7 +12,7 @@ function literal(start, open, close) { const i = SRC.indexOf(start); let d = 0;
   for (let p = SRC.indexOf(open, i); p < SRC.length; p++) { if (SRC[p] === open) d++; if (SRC[p] === close && --d === 0) return SRC.slice(SRC.indexOf(open, i), p + 1); } }
 
 const LIB = [fnSrc('function coachEngine('), fnSrc('function coachHistorique('), fnSrc('function coachDiagAffichage('), fnSrc('function coachEcartTexte('), fnSrc('function coachBilanTexte('),
-  fnSrc('function coachProgres('), fnSrc('function coachPlafondProgression('), fnSrc('function coachRaisonsTexte('), 'const COACH_TENDANCES = ' + literal('const COACH_TENDANCES = {', '{', '}') + ';',
+  fnSrc('function coachProgres('), fnSrc('function coachPlafondProgression('), fnSrc('function coachRaisonsTexte('), fnSrc('function coachIncompleteTexte('), 'const COACH_RAISONS = ' + literal('const COACH_RAISONS = {', '{', '}') + ';',  'const COACH_TENDANCES = ' + literal('const COACH_TENDANCES = {', '{', '}') + ';',
   fnSrc('function coachSens('), fnSrc('function coachPct('), fnSrc('function coachLectureDerniere('), fnSrc('function coachLecturePeriode('),
   fnSrc('function e1RM('), fnSrc('function fmtDate('), fnSrc('function parseRir('), fnSrc('function analyzeEx('),
   'const EXERCISE_NAME_FIXES = ' + literal('const EXERCISE_NAME_FIXES = {', '{', '}') + ';', fnSrc('function normalizeExName('),
@@ -76,10 +76,11 @@ t('PERFORMANCE / VOLUME / TENDANCE : une meilleure serie n\'est jamais confondue
   assert.deepStrictEqual(L(['60x10,60x10', '62.5x10,62.5x9']), ['PERFORMANCE: En hausse', 'VOLUME: Stable', 'TENDANCE: Performance en hausse, volume de travail stable'], 'charge +2,5 kg, tonnage -1 %');
   assert.deepStrictEqual(L(['60x10,60x10,60x10', '60x11,60x10,60x10']), ['PERFORMANCE: En hausse', 'VOLUME: En hausse', 'TENDANCE: Progression globale : meilleure performance et plus de travail'], '+1 rep = +3,3 % de tonnage');
   assert.deepStrictEqual(L(['60x10,60x10,60x10', '60x11,60x11,60x11,60x10']), ['PERFORMANCE: En hausse', 'VOLUME: En hausse', 'TENDANCE: Progression globale : meilleure performance et plus de travail']);
-  assert.deepStrictEqual(L(['160x10,160x10,160x10', '160x10,160x11']), ['PERFORMANCE: En hausse', 'VOLUME: En baisse', 'TENDANCE: Meilleure performance, mais moins de travail au total'], 'cas reel Leg press : 1 rep de plus, une serie de moins');
+  // Etape 3 (R-P3) : une serie de moins -> « seance incomplete » (ni progression ni baisse), le volume reste lu tel quel.
+  assert.deepStrictEqual(L(['160x10,160x10,160x10', '160x10,160x11']), ['PERFORMANCE: Séance incomplète', 'VOLUME: En baisse', 'TENDANCE: Non interprétée'], 'cas reel Leg press : 1 rep de plus, une serie de moins');
   assert.deepStrictEqual(L(['20x12', '20x12,20x12,20x12']), ['PERFORMANCE: En hausse', 'VOLUME: En hausse', 'TENDANCE: Plus de travail, sans meilleure performance'], 'cas reel Hip thrust : 2 series de plus, meme serie');
   assert.deepStrictEqual(L(['60x10,60x10', '60x10,60x10']), ['PERFORMANCE: Stable', 'VOLUME: Stable', 'TENDANCE: Performance et volume stables']);
-  assert.deepStrictEqual(L(['60x10,60x10,60x10', '60x10,60x10']), ['PERFORMANCE: Stable', 'VOLUME: En baisse', 'TENDANCE: Performance maintenue avec moins de travail']);
+  assert.deepStrictEqual(L(['60x10,60x10,60x10', '60x10,60x10']), ['PERFORMANCE: Séance incomplète', 'VOLUME: En baisse', 'TENDANCE: Non interprétée']);
   assert.deepStrictEqual(L(['60x10,60x10', '60x8,60x8']), ['PERFORMANCE: En baisse', 'VOLUME: En baisse', 'TENDANCE: Baisse de la performance et du volume']);
   const d = plain(V2.coachLectureDerniere(progres(hist(['20x12', '20x12,20x12,20x12']), 'Exo test').synthese.derniere));
   assert.deepStrictEqual([d[1][3], d[2][3]], ['1 → 3 séries · tonnage +200%', 'le gain vient des séries en plus, pas d\'une meilleure série']); });
@@ -207,7 +208,8 @@ if (EXP) t('Donnees reelles : chaque exercice de tes seances dans l\'onglet Prog
     if (b.synthese) b.synthese.pistes.forEach(p => { assert.strictEqual(p.statut, 'non_activee'); pistes[p.code] = (pistes[p.code] || 0) + 1; }); });
   assert.strictEqual(JSON.stringify(EXP), before, 'export non modifie');
   assert.strictEqual(same.hist, n, 'meme historique (dates, series) que le V1 : ' + ordre.join(', '));
-  assert.deepStrictEqual(chartDiff.map(x => x.split(' : ')[0]).sort(), ['Extension triceps overhead câble', 'Tractions lestées prise large', 'Écarté poulie basse (Fly câble bas)'].sort(), 'graphique = V1 sauf la serie aberrante et les saisies probablement inversees');
+  // Etape 3 (R-P2) : les charges « 1 » probablement erronees des Mollets debout machine sont aussi exclues du graphique (affichees ⚠ dans l'historique).
+  assert.deepStrictEqual(chartDiff.map(x => x.split(' : ')[0]).sort(), ['Extension triceps overhead câble', 'Mollets debout machine', 'Tractions lestées prise large', 'Écarté poulie basse (Fly câble bas)'].sort(), 'graphique = V1 sauf la serie aberrante, les saisies probablement inversees et les charges probablement erronees');
   chartDiff.forEach(x => info('graphique different : ' + x));
   info('derniere seance signalee « comparaison non fiable » : ' + nonFiables + ' exercice(s)');
   info(n + ' exercices ; historique identique au V1 : ' + same.hist + '/' + n + ' ; graphique identique : ' + same.chart + '/' + n + ' ; seances marquees « ≈ » : ' + approx);

@@ -33,7 +33,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var VERSION = "0.9.0";
+  var VERSION = "0.10.0";
 
   // Reglages centralises (une seule valeur par regle).
   var REGLES = Object.freeze({
@@ -65,7 +65,37 @@
     JOURS_SANS_MUSCLE: 7,          // V1 : alerte muscle non travaille depuis plus de 7 jours
     FATIGUE_VALEUR_MAX: 3,         // questionnaire fatigue : chaque critere note de 0 a 3
     FATIGUE_SEUILS: [2, 5, 9],     // une seule echelle, sur 15 (5 criteres) : 0-2 bas, 3-5 modere, 6-9 eleve, 10-15 tres eleve
-    VOLUME_SECONDAIRE: 0.5         // une serie compte 1 pour le muscle principal, 0,5 pour chaque muscle secondaire
+    // Etape 3 (0.10.0) : volume et performances par muscle. Aucun coefficient : direct et indirect sont deux compteurs separes.
+    CHARGE_SUSPECTE_MAX: 1,        // R-P2 : charge <= 1 kg...
+    CHARGE_SUSPECTE_REFERENCE: 10, // ... alors que l'exercice a deja ete enregistre avec >= 10 kg -> « charge probablement erronee »
+    PAUSE_JOURS: 7,                // pause = ecart >= 7 jours entre deux seances (toutes routines)
+    FENETRE_JOURS: 28,             // fenetre principale glissante (J-27 a J)
+    FENETRE_COURTE_JOURS: 14,      // detection des baisses (J-13 a J)
+    SEMAINES_ACTIVES_MIN: 2,       // en dessous : « donnees insuffisantes »
+    VOLUME_EVOLUTION_PCT: 0.2,     // R-V4 : ecart signale si >= 20 %...
+    VOLUME_EVOLUTION_SERIES: 2,    // ... ET >= 2 series par semaine
+    EFFICACE_RIR_MAX: 3,           // serie efficace = RIR reellement saisi <= 3...
+    EFFICACE_PART_SAISIE: 0.5,     // ... calculee seulement si >= 50 % des series du muscle ont un RIR saisi...
+    EFFICACE_MIN_SERIES: 8,        // ... et au moins 8 series au RIR saisi
+    PERF_MIN_FIABLES: 4,           // R-P6 : >= 4 comparaisons fiables,
+    PERF_MIN_SEANCES: 2,           //        >= 2 seances distinctes,
+    PERF_MIN_BLOC: 3,              //        >= 1 exercice avec >= 3 seances dans son bloc comparable
+    TENDANCE_HAUSSE_PCT: 0.6,      // R-P7 : hausse = P >= 60 % et B <= 10 %
+    TENDANCE_HAUSSE_BAISSE_MAX: 0.1,
+    TENDANCE_BAISSE_MIN: 2,        // baisse = B >= 2 sur >= 2 seances et B >= P
+    CONFIANCE_FIABLES: 8,          // R-P8 : confiance haute = >= 8 fiables, >= 2 exercices, >= 4 seances, >= 3 semaines actives,
+    CONFIANCE_EXERCICES: 2,
+    CONFIANCE_SEANCES: 4,
+    CONFIANCE_SEMAINES: 3,
+    CONFIANCE_NON_INTERPRETEES_MAX: 0.3, //  <= 30 % de comparaisons non interpretees
+    GENERALE_FIABLES: 10,          // R-D1 : >= 10 comparaisons fiables, >= 30 % de baisses, sur >= 3 muscles et >= 3 seances
+    GENERALE_BAISSE_PCT: 0.3,
+    GENERALE_MUSCLES: 3,
+    GENERALE_SEANCES: 3,
+    GENERALE_HAUTE_FIABLES: 20,    // confiance haute si >= 20 comparaisons et aucun retour de pause
+    LOCALE_BAISSES: 2,             // R-D2 : >= 2 baisses sur >= 2 seances, B >= P...
+    LOCALE_AUTRES_MAX: 0.2,        // ... et les autres muscles < 20 % de baisses
+    ISOLEE_BAISSES: 2              // R-D4 : une seance avec >= 2 baisses, sans baisse ailleurs sur ces exercices
   });
 
   // ─────────────────────────── outils internes (purs) ───────────────────────────
@@ -108,6 +138,8 @@
   // Date « AAAA-MM-JJ » d'une seance, ou null. Date du jour en heure LOCALE (pas UTC).
   function dateSeance(s) { var d = s && s.date; return (typeof d === "string" && /^\d{4}-\d{2}-\d{2}/.test(d)) ? d.slice(0, 10) : null; }
   function dateLocale(d) { if (typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d)) return d; var x = d instanceof Date ? d : new Date(d); var p = function (n) { return (n < 10 ? "0" : "") + n; }; return x.getFullYear() + "-" + p(x.getMonth() + 1) + "-" + p(x.getDate()); }
+  // SEULE lecture de l'horloge du moteur : la date du jour par defaut (analyser, volumeMuscles, performanceMuscles, bilanEntrainement).
+  function jourParDefaut() { return dateLocale(new Date()); }
   function joursEntre(a, b) { // a, b : "AAAA-MM-JJ" ; nombre de jours calendaires de a a b
     var pa = a.split("-").map(Number), pb = b.split("-").map(Number);
     return Math.round((Date.UTC(pb[0], pb[1] - 1, pb[2]) - Date.UTC(pa[0], pa[1] - 1, pa[2])) / 86400000);
@@ -128,7 +160,7 @@
   function normaliserSerie(st) {
     st = st || {};
     var w = num(st.weight), r = int(st.reps);
-    return { charge: w, reps: r, rir: lireRir(st.rir), statutRir: statutRir(st), rirCible: lireRir(st.rirCible), valide: !!(w && w > 0 && r && r > 0), type: st.setType || null };
+    return { charge: w, reps: r, rir: lireRir(st.rir), statutRir: statutRir(st), rirCible: lireRir(st.rirCible), valide: !!(w && w > 0 && r && r > 0), fait: st.done !== false, type: st.setType || null };
   }
 
   function nomParDefaut(n) { return String(n || "").trim(); }
@@ -152,13 +184,18 @@
   // (valide: false). Meme traitement pour une saisie PROBABLEMENT INVERSEE (charge et reps permutees, voir REGLES.INVERSION_*).
   // La donnee enregistree n'est JAMAIS modifiee : seule la copie analysee porte la marque.
   // Ne s'applique pas aux series de 100 ni aux exercices en duree.
+  // R-P2 (0.10.0) : « charge probablement erronee » (code charge_suspecte) = charge <= 1 kg alors que l'exercice a deja ete enregistre
+  // avec au moins 10 kg (contexte.chargeMaxAvant = plus lourde charge analysable des seances PRECEDENTES). Ex. Mollets debout machine « 1 ».
+  // Toute comparaison qui touche une seance portant cette marque est non fiable (voir comparabiliteEntre).
   function mediane(a) { a = a.slice().sort(function (x, y) { return x - y; }); var m = a.length >> 1; return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2; }
-  function filtrerSuspectes(series, fourchette) {
-    var f = fourchette || {}, nb = 0;
-    if (f.type === "serie100" || f.type === "duree") return { series: (series || []).slice(), nb: 0 };
-    var v = (series || []).filter(function (st) { return st && st.valide; });
+  function filtrerSuspectes(series, fourchette, contexte) {
+    var f = fourchette || {}, nb = 0, ref = contexte && contexte.chargeMaxAvant;
     var marquer = function (st, code) { nb++; var c = {}; Object.keys(st).forEach(function (k) { c[k] = st[k]; }); c.valide = false; c.suspecte = code; return c; };
-    var out = (series || []).map(function (st) {
+    var chargeSuspecte = function (st) { return st && st.valide && ref >= REGLES.CHARGE_SUSPECTE_REFERENCE && st.charge <= REGLES.CHARGE_SUSPECTE_MAX; };
+    series = (series || []).map(function (st) { return chargeSuspecte(st) ? marquer(st, "charge_suspecte") : st; });
+    if (f.type === "serie100" || f.type === "duree") return { series: series.slice(), nb: nb };
+    var v = series.filter(function (st) { return st && st.valide; });
+    var out = series.map(function (st) {
       if (!st || !st.valide) return st;
       // Saisie probablement inversee (charge <-> reps) : ex. Tractions 6 x 80 en 8-12 (en realite 80 kg x 6).
       if (f.type === "reps" && f.max && st.reps > REGLES.INVERSION_REPS_FACTEUR * f.max && st.charge >= f.min - REGLES.INVERSION_MARGE && st.charge <= f.max + REGLES.INVERSION_MARGE)
@@ -178,16 +215,22 @@
   // occurrence est analysee, comme le V1 : regrouper deux blocs differents fausse les comparaisons (verifie sur donnees reelles).
   // « occurrences » indique combien de fois l'exercice figurait dans la seance.
   function historiqueExercice(seancesNorm, nom) {
-    var out = [];
+    var out = [], chargeMaxAvant = 0;
     seancesNorm.forEach(function (s) {
       var entree = null;
       s.exercices.forEach(function (e) {
         if (e.nom !== nom) return;
-        if (!entree) { var fs = filtrerSuspectes(e.series, e.fourchette); entree = { date: s.date, id: s.id, fourchette: e.fourchette, series: fs.series, seriesSuspectes: fs.nb, occurrences: 1 }; out.push(entree); }
+        if (!entree) { var fs = filtrerSuspectes(e.series, e.fourchette, { chargeMaxAvant: chargeMaxAvant }); entree = { date: s.date, id: s.id, fourchette: e.fourchette, series: fs.series, seriesSuspectes: fs.nb, occurrences: 1 }; out.push(entree); }
         else entree.occurrences++;
       });
+      if (entree) chargeMaxAvant = Math.max(chargeMaxAvant, chargeMaxValide([entree]));
     });
     return out;
+  }
+  // Plus lourde charge ANALYSABLE (serie valide, non suspecte) d'une liste d'entrees d'historique.
+  function chargeMaxValide(entrees) {
+    var m = 0; (entrees || []).forEach(function (h) { ((h && h.series) || []).forEach(function (st) { st = st && st.statutRir ? st : normaliserSerie(st); if (st.valide && st.charge > m) m = st.charge; }); });
+    return m;
   }
 
   // ═══════════════════════ 2. MESURES ═══════════════════════
@@ -398,19 +441,43 @@
   // (celle de l'ecran Seance en cours). Retour :
   //   { verdict: "premiere" | "progression" | "stable" | "regression", nature?, mode, axes?, precedente?, jour }
   //   mode : "force" (<= 12), "reps" (> 12) ; series de 100 et gainage sont compares en charge puis en repetitions.
+  //
+  // R-P3 (0.10.0) SEANCE INCOMPLETE : la seance du jour a MOINS de series analysables que la precedente (k contre n).
+  //   On compare alors le MEME nombre de series : les k meilleures series de la precedente contre les k series du jour, avec la
+  //   meme definition (comparer), le meme mode et la meme fourchette. Meilleures series : mode force = force estimee (sans arrondi),
+  //   puis charge ; mode repetitions = charge la plus lourde, puis le plus de reps.
+  //   - si ces k series sont en baisse -> verdict "regression" (vraie baisse) ;
+  //   - sinon -> verdict "seance_incomplete" : ni progression ni baisse (une comparaison incomplete n'est jamais une progression).
+  //   Le detail est dans out.incomplete ; out.axes decrit la comparaison a nombre de series egal.
+  function meilleuresSeries(series, k, mode) {
+    var v = (series || []).filter(function (st) { return st.valide; }).slice();
+    var fp = function (st) { return st.charge * (1 + st.reps / 30); };
+    v.sort(mode === "force" ? function (a, b) { return fp(b) - fp(a) || b.charge - a.charge || b.reps - a.reps; }
+      : function (a, b) { return b.charge - a.charge || b.reps - a.reps; });
+    return v.slice(0, k);
+  }
   function bilanExercice(historiqueAvant, seriesDuJour, fourchette) {
     var hist = trierHist(historiqueAvant), f = fourchette || lireFourchette("");
-    var jourSeries = filtrerSuspectes(seriesNorm(seriesDuJour), f).series;
+    var jourSeries = filtrerSuspectes(seriesNorm(seriesDuJour), f, { chargeMaxAvant: chargeMaxValide(hist) }).series;
     var cur = mesuresSeance(jourSeries), mode = modeMesure(f), modeCmp = mode === "aucun" ? "reps" : mode;
     var resume = function (m, date) { return { date: date || null, chargeMax: m.chargeMax, repsAChargeMax: m.repsAChargeMax, repsTotal: m.repsTotal, force: m.force, forceFiable: m.forceFiable, series: m.seriesValides }; };
-    var prevEntry = null; for (var i = hist.length - 1; i >= 0; i--) { if (mesuresSeance(hist[i].series).seriesValides > 0) { prevEntry = hist[i]; break; } }
+    var iPrev = -1; for (var i = hist.length - 1; i >= 0; i--) { if (mesuresSeance(seriesNorm(hist[i].series)).seriesValides > 0) { iPrev = i; break; } }
+    var prevEntry = iPrev >= 0 ? hist[iPrev] : null;
     if (!prevEntry || cur.seriesValides === 0) return { verdict: "premiere", mode: mode, jour: resume(cur) };
-    var prev = mesuresSeance(prevEntry.series), axes = axesProgression(prev, cur);
-    var verdict = comparer(prev, cur, modeCmp, mode === "aucun" ? null : f);
+    var prev = mesuresSeance(seriesNorm(prevEntry.series)), fCmp = mode === "aucun" ? null : f;
+    var verdict = comparer(prev, cur, modeCmp, fCmp), axes = axesProgression(prev, cur), incomplete = null;
+    if (cur.seriesValides < prev.seriesValides) {
+      var k = cur.seriesValides, prevK = mesuresSeance(meilleuresSeries(seriesNorm(prevEntry.series), k, modeCmp));
+      var resK = comparer(prevK, cur, modeCmp, fCmp);
+      incomplete = { seriesPrecedente: prev.seriesValides, seriesJour: k, seriesComparees: k, resultatMeilleuresSeries: resK, precedenteMeilleures: resume(prevK, prevEntry.date) };
+      verdict = resK === "regression" ? "regression" : "seance_incomplete";
+      axes = axesProgression(prevK, cur);
+    }
     var out = { verdict: verdict, mode: mode, axes: axes, precedente: resume(prev, prevEntry.date), jour: resume(cur) };
+    if (incomplete) out.incomplete = incomplete;
     if (verdict === "progression") out.nature = natureProgression(axes);
     lectureTravail(out, prev, cur);
-    out.comparaison = comparabilite(prevEntry, { fourchette: f, series: jourSeries });
+    out.comparaison = comparabiliteEntre(hist.concat([{ date: null, fourchette: f, series: jourSeries }]), iPrev, hist.length);
     return out;
   }
 
@@ -420,7 +487,7 @@
   //   force : force estimee, avec forceFiable (meilleure serie <= 12 reps) — au-dela, c'est une estimation peu fiable.
   function recordsExercice(historiqueAvant, seriesDuJour, fourchette) {
     var passe = []; (historiqueAvant || []).forEach(function (h) { seriesNorm(h.series).forEach(function (st) { if (st.valide) passe.push(st); }); });
-    var jour = (fourchette ? filtrerSuspectes(seriesNorm(seriesDuJour), fourchette).series : seriesNorm(seriesDuJour)).filter(function (st) { return st.valide; });
+    var jour = (fourchette ? filtrerSuspectes(seriesNorm(seriesDuJour), fourchette, { chargeMaxAvant: chargeMaxValide(historiqueAvant) }).series : seriesNorm(seriesDuJour)).filter(function (st) { return st.valide; });
     if (!passe.length || !jour.length) return null;
     var fp = function (st) { return st.charge * (1 + st.reps / 30); };
     var forcePasse = Math.max.apply(null, passe.map(fp)), chargePasse = Math.max.apply(null, passe.map(function (st) { return st.charge; }));
@@ -499,19 +566,42 @@
     }
     return { fiable: raisons.length === 0, raisons: raisons };
   }
+  // Comparabilite de tous[iPrec] et tous[iCour] (historique TRIE, entrees de historiqueExercice) : comparabilite() + R-P2.
+  // La comparaison est non fiable (code charge_suspecte) si l'une des deux seances, ou une seance sautee entre les deux, porte une
+  // charge probablement erronee : on ne compare jamais par-dessus une periode de charges non fiables.
+  function aChargeSuspecte(h) { return ((h && h.series) || []).some(function (st) { return st && st.suspecte === "charge_suspecte"; }); }
+  function comparabiliteEntre(tous, iPrec, iCour) {
+    var c = comparabilite(tous[iPrec], tous[iCour]), dates = [];
+    for (var k = Math.max(0, iPrec); k <= iCour && k < tous.length; k++) if (aChargeSuspecte(tous[k])) dates.push(tous[k].date);
+    if (!dates.length) return c;
+    return { fiable: false, raisons: c.raisons.concat([{ code: "charge_suspecte", dates: dates }]) };
+  }
   // Dernier bloc comparable : les seances les plus recentes reliees entre elles par des comparaisons fiables.
   function blocComparable(historique) {
-    var hist = trierHist(historique).filter(function (h) { return mesuresSeance(seriesNorm(h.series)).seriesValides > 0; });
-    if (!hist.length) return { seances: [], rupture: null };
-    var i = hist.length - 1;
-    while (i > 0 && comparabilite(hist[i - 1], hist[i]).fiable) i--;
-    return { seances: hist.slice(i), rupture: i > 0 ? { date: hist[i].date, avant: hist[i - 1].date, raisons: comparabilite(hist[i - 1], hist[i]).raisons } : null };
+    var tous = trierHist(historique), idx = [];
+    tous.forEach(function (h, i) { if (mesuresSeance(seriesNorm(h.series)).seriesValides > 0) idx.push(i); });
+    if (!idx.length) return { seances: [], rupture: null };
+    var cmp = function (j) { return comparabiliteEntre(tous, idx[j - 1], idx[j]); };
+    var i = idx.length - 1;
+    while (i > 0 && cmp(i).fiable) i--;
+    return { seances: idx.slice(i).map(function (j) { return tous[j]; }), rupture: i > 0 ? { date: tous[idx[i]].date, avant: tous[idx[i - 1]].date, raisons: cmp(i).raisons } : null };
+  }
+
+  // Derniere seance sans AUCUNE serie analysable (toutes a charge suspecte, inversees, aberrantes ou sans charge) : bilan
+  // « non comparable » avec la raison. Jamais le resultat d'une seance plus ancienne a sa place.
+  function bilanNonAnalysable(dernierBrut, derniereAnalysable, f) {
+    var codes = []; seriesNorm(dernierBrut.series).forEach(function (st) { if (st.suspecte && codes.indexOf(st.suspecte) === -1) codes.push(st.suspecte); });
+    var raisons = codes.length ? codes.map(function (c) { return c === "charge_suspecte" ? { code: c, dates: [dernierBrut.date] } : { code: c }; }) : [{ code: "aucune_serie_analysable" }];
+    return { verdict: "non_comparable", mode: modeMesure(f), jour: { date: dernierBrut.date, series: 0 }, precedente: { date: derniereAnalysable ? derniereAnalysable.date : null },
+      comparaison: { fiable: false, raisons: raisons } };
   }
 
   // ANALYSE UNIQUE d'un exercice, utilisee par l'ecran Fin de seance ET par l'onglet Progres : memes seances = meme resultat.
   // historique : entrees de historiqueExercice, la seance analysee en DERNIER (la seance du jour en fin de seance).
   // Retour :
-  //   performance : "premiere" | "progression" | "stable" | "regression" | "non_comparable" (derniere seance vs la precedente)
+  //   performance : "premiere" | "progression" | "stable" | "regression" | "seance_incomplete" (R-P3) | "non_comparable"
+  //                 (derniere seance vs la precedente). Si la DERNIERE seance n'a aucune serie analysable (ex. toutes a charge
+  //                 suspecte, ou sans charge), performance = "non_comparable" avec la raison : jamais le resultat d'une seance plus ancienne.
   //   bilan       : bilanExercice (avec volume, tendance, comparaison { fiable, raisons })
   //   statut      : "ok" | "historique_insuffisant" | "non_comparable" | "hors_perimetre" (pour le diagnostic)
   //   diagnostic  : diagnostiquer() sur le DERNIER BLOC COMPARABLE seulement, ou null ;
@@ -521,12 +611,19 @@
   //   bloc        : { seances, rupture } (rupture = raisons de la derniere coupure)
   function analyseExercice(historique, options) {
     options = options || {};
-    var hist = trierHist(historique).filter(function (h) { return mesuresSeance(seriesNorm(h.series)).seriesValides > 0; });
+    var tous = trierHist(historique), dernierBrut = tous[tous.length - 1];
+    var hist = tous.filter(function (h) { return mesuresSeance(seriesNorm(h.series)).seriesValides > 0; });
     if (!hist.length) return { performance: "premiere", statut: "historique_insuffisant", bilan: null, diagnostic: null, alerte: null, bloc: { seances: 0, rupture: null } };
     var last = hist[hist.length - 1], f = options.fourchette || last.fourchette || lireFourchette("");
-    var bilan = bilanExercice(hist.slice(0, -1), last.series, f);
+    if (dernierBrut !== last) {
+      var bnc = bilanNonAnalysable(dernierBrut, last, f);
+      return { fourchette: f, performance: "non_comparable", statut: "non_comparable", diagnostic: null, alerte: null,
+        bloc: { seances: 0, rupture: { date: dernierBrut.date, avant: last.date, raisons: bnc.comparaison.raisons } }, bilan: bnc };
+    }
+    // Seances precedentes AVEC celles sans serie analysable : une periode de charges suspectes entre les deux rend la comparaison non fiable.
+    var bilan = bilanExercice(tous.slice(0, -1), last.series, f);
     var performance = bilan.verdict === "premiere" ? "premiere" : (bilan.comparaison && !bilan.comparaison.fiable) ? "non_comparable" : bilan.verdict;
-    var bc = blocComparable(hist), bloc = bc.seances, diag = null, statut;
+    var bc = blocComparable(tous), bloc = bc.seances, diag = null, statut;
     if (!(f.type === "reps" && f.max <= REGLES.DIAGNOSTIC_REPS_MAX)) statut = "hors_perimetre";
     else if (hist.length < 2) statut = "historique_insuffisant";
     else if (bloc.length < 2) statut = "non_comparable";
@@ -535,8 +632,16 @@
       if (diag && (diag.code === "plafond" || diag.code === "regression")) {
         var progresse = comparer(mesuresSeance(seriesNorm(bloc[bloc.length - 2].series)), mesuresSeance(seriesNorm(bloc[bloc.length - 1].series)), diag.mode, f) === "progression";
         if (progresse && diag.code === "regression") diag = null;
-        else if (progresse) diag.enProgression = true;
+        else if (progresse && performance !== "seance_incomplete") diag.enProgression = true;
       }
+      // R-P3 : une seance incomplete n'est ni une progression ni une baisse, pour le diagnostic aussi (meme definition partout) :
+      // pas de « regression persistante » ni de « progression » fondee sur une seance incomplete ; la carte le dit.
+      if (diag && performance === "seance_incomplete") {
+        if (diag.code === "regression") diag = null;
+        else if (diag.code === "progression" || diag.code === "stable") { diag.code = "stable"; diag.typeV1 = -1; diag.performance = "seance_incomplete"; diag.incomplete = bilan.incomplete; delete diag.nature; delete diag.repsGagnees; }
+      }
+      // La carte « stable » suit la ligne Performance (une seule definition, R-P3 comprise).
+      if (diag && diag.typeV1 === -1 && bilan.comparaison && bilan.comparaison.fiable && performance !== "premiere") diag.performance = performance;
     }
     return { fourchette: f, performance: performance, bilan: bilan, statut: statut, diagnostic: diag,
       alerte: diag && diag.typeV1 > 0 && !diag.enProgression ? diag : null, bloc: { seances: bloc.length, rupture: bc.rupture } };
@@ -549,13 +654,14 @@
   //   pistes   : futures adaptations PREPAREES, statut "non_activee" : ni affichees, ni appliquees.
   function syntheseExercice(historique, fourchette, options) {
     options = options || {};
-    var hist = trierHist(historique).filter(function (h) { return mesuresSeance(seriesNorm(h.series)).seriesValides > 0; });
+    var tous = trierHist(historique), dernierBrut = tous[tous.length - 1];
+    var hist = tous.filter(function (h) { return mesuresSeance(seriesNorm(h.series)).seriesValides > 0; });
     if (!hist.length) return null;
     var last = hist[hist.length - 1], f = fourchette || last.fourchette || lireFourchette("");
-    var derniere = bilanExercice(hist.slice(0, -1), last.series, f);
+    var derniere = dernierBrut !== last ? bilanNonAnalysable(dernierBrut, last, f) : bilanExercice(tous.slice(0, -1), last.series, f);
     // Fenetre : les N dernieres seances du dernier BLOC COMPARABLE (meme fourchette, pas de rupture de charge) : un changement de
     // programme (ex. 8-12 -> 15-20 avec une charge plus legere) ou de machine n'est pas lu comme une baisse de performance.
-    var bc = blocComparable(hist), bloc = bc.seances.length ? bc.seances : [last];
+    var bc = blocComparable(tous), bloc = bc.seances.length ? bc.seances : [last];
     var n = int(options.seances) || REGLES.SYNTHESE_SEANCES, fen = bloc.slice(-n), ms = fen.map(function (h) { return mesuresSeance(seriesNorm(h.series)); });
     var periode = null;
     if (fen.length >= 3) {
@@ -742,11 +848,13 @@
     return out;
   }
 
-  // Volume musculaire sur [aujourdhui - jours + 1 ; aujourdhui] : series valides par muscle (1 principal, 0,5 secondaire),
-  // dont series « dures » (RIR connu <= 4) et series au RIR saisi. Les exercices non classes sont listes a part.
+  // Volume musculaire sur [aujourdhui - jours + 1 ; aujourdhui] : series valides par muscle, dont series « dures » (RIR connu <= 4)
+  // et series au RIR saisi. Depuis 0.10.0 : AUCUN coefficient. Le muscle principal compte dans series / seriesDures / seriesRirSaisi ;
+  // un muscle secondaire compte a part, en nombres entiers, dans .indirect (jamais additionne au direct). Exercices non classes a part.
   function volume(seancesNorm, aujourdhui, jours, options) {
     var parMuscle = {}, nonClasses = {};
-    var add = function (m, k, v) { parMuscle[m] = parMuscle[m] || { series: 0, seriesDures: 0, seriesRirSaisi: 0 }; parMuscle[m][k] += v; };
+    var muscle = function (m) { return parMuscle[m] = parMuscle[m] || { series: 0, seriesDures: 0, seriesRirSaisi: 0, indirect: { series: 0, seriesDures: 0, seriesRirSaisi: 0 } }; };
+    var add = function (m, k, v) { muscle(m)[k] += v; }, addIndirect = function (m, k, v) { muscle(m).indirect[k] += v; };
     seancesNorm.forEach(function (s) {
       if (!s.date) return; var d = joursEntre(s.date, aujourdhui); if (d < 0 || d >= jours) return;
       s.exercices.forEach(function (e) {
@@ -755,7 +863,7 @@
         if (!c.principal) { nonClasses[e.nom] = (nonClasses[e.nom] || 0) + v.length; return; }
         var dures = v.filter(function (st) { return st.rir !== null && st.rir <= REGLES.RIR_DUR_MAX; }).length, saisis = v.filter(function (st) { return st.statutRir === "saisi"; }).length;
         add(c.principal, "series", v.length); add(c.principal, "seriesDures", dures); add(c.principal, "seriesRirSaisi", saisis);
-        c.secondaires.forEach(function (m) { add(m, "series", v.length * REGLES.VOLUME_SECONDAIRE); add(m, "seriesDures", dures * REGLES.VOLUME_SECONDAIRE); add(m, "seriesRirSaisi", saisis * REGLES.VOLUME_SECONDAIRE); });
+        c.secondaires.forEach(function (m) { addIndirect(m, "series", v.length); addIndirect(m, "seriesDures", dures); addIndirect(m, "seriesRirSaisi", saisis); });
       });
     });
     return { jours: jours, parMuscle: parMuscle, nonClasses: nonClasses };
@@ -821,6 +929,255 @@
       exercicesAClasser: inconnusSeance, conclusion: null };
   }
 
+  // ═══════════════════════ 5 bis. VOLUME ET PERFORMANCES PAR MUSCLE (etape 3, lecture seule) ═══════════════════════
+  // Trois fonctions de CONSTAT : aucune ne modifie les donnees, les routines ou le programme, aucune ne produit d'action
+  // (actions: [], adaptationAutomatique: false). Seuils : REGLES (R-V, R-P, R-D de la specification de l'etape 3).
+  //   serie effectuee  : enregistree, non marquee « non faite » (done:false), reps > 0 (ou duree > 0). Comptee meme si sa charge
+  //                      est suspecte : elle a ete faite. -> VOLUME
+  //   serie analysable : serie valide non suspecte (filtrerSuspectes). -> PERFORMANCE (via analyseExercice)
+  //   direct / indirect: muscle principal / muscle secondaire de l'exercice. Deux compteurs separes, jamais additionnes, sans coefficient.
+  function ajouterJours(d, n) { var p = d.split("-").map(Number); return new Date(Date.UTC(p[0], p[1] - 1, p[2] + n)).toISOString().slice(0, 10); }
+  // Date de fin de fenetre (J) : options.fin, sinon options.maintenant, sinon la date du jour (meme lecture d'horloge que analyser()).
+  function dateFin(options) { return options && options.fin !== undefined ? dateLocale(options.fin) : options && options.maintenant !== undefined ? dateLocale(options.maintenant) : jourParDefaut(); }
+  function serieEffectuee(st) { return !!st && st.fait !== false && st.reps !== null && st.reps > 0; }
+  function datesSeances(seancesNorm, au) {
+    var d = {}; seancesNorm.forEach(function (s) { if (s.date && s.date <= au && s.exercices.some(function (e) { return e.series.some(serieEffectuee); })) d[s.date] = true; });
+    return Object.keys(d).sort();
+  }
+  // Pauses dans [du ; au] : ecart >= PAUSE_JOURS entre deux seances (jours sans seance entre les deux), pause en cours jusqu'a « au »,
+  // et jours avant la toute premiere seance. Semaines actives = (jours de la fenetre - jours de pause) / 7.
+  function fenetre(dates, du, au) {
+    var jours = joursEntre(du, au) + 1, pauses = [];
+    var ajoute = function (a, b, type) { // jours a..b inclus, coupes a la fenetre
+      if (b < du || a > au) return; var x = a < du ? du : a, y = b > au ? au : b; var n = joursEntre(x, y) + 1; if (n > 0) pauses.push({ du: x, au: y, jours: n, type: type }); };
+    if (!dates.length) ajoute(du, au, "aucune_seance");
+    else {
+      if (dates[0] > du) ajoute(du, ajouterJours(dates[0], -1), "avant_historique");
+      for (var i = 1; i < dates.length; i++) if (joursEntre(dates[i - 1], dates[i]) >= REGLES.PAUSE_JOURS) ajoute(ajouterJours(dates[i - 1], 1), ajouterJours(dates[i], -1), "pause");
+      var der = dates[dates.length - 1]; if (joursEntre(der, au) >= REGLES.PAUSE_JOURS) ajoute(ajouterJours(der, 1), au, "pause_en_cours");
+    }
+    var jp = pauses.reduce(function (a, p) { return a + p.jours; }, 0);
+    return { du: du, au: au, jours: jours, pauses: pauses, joursPause: jp, joursActifs: jours - jp, semainesCalendaires: round1(jours / 7), semainesActives: round1((jours - jp) / 7),
+      suffisante: (jours - jp) / 7 >= REGLES.SEMAINES_ACTIVES_MIN };
+  }
+  function parSemaine(n, semaines) { return semaines > 0 ? round1(n / semaines) : null; }
+
+  // Comptage brut des series effectuees par muscle sur [du ; au].
+  function compterVolume(seancesNorm, du, au, options) {
+    var muscles = {}, nonClasses = {};
+    var role = function (m, r) { var x = muscles[m] = muscles[m] || { direct: { series: 0, jours: {}, exercices: {}, rirSaisi: 0, efficaces: 0 }, indirect: { series: 0, jours: {}, exercices: {} } }; return x[r]; };
+    seancesNorm.forEach(function (s) {
+      if (!s.date || s.date < du || s.date > au) return;
+      s.exercices.forEach(function (e) {
+        var faites = e.series.filter(serieEffectuee); if (!faites.length) return;
+        var c = classerExercice(e.nom, options);
+        if (!c.principal) { nonClasses[e.nom] = (nonClasses[e.nom] || 0) + faites.length; return; }
+        var d = role(c.principal, "direct"); d.series += faites.length; d.jours[s.date] = true; d.exercices[e.nom] = (d.exercices[e.nom] || 0) + faites.length;
+        faites.forEach(function (st) { if (st.statutRir === "saisi") { d.rirSaisi++; if (st.rir !== null && st.rir <= REGLES.EFFICACE_RIR_MAX) d.efficaces++; } });
+        c.secondaires.forEach(function (m) { var x = role(m, "indirect"); x.series += faites.length; x.jours[s.date] = true; x.exercices[e.nom] = (x.exercices[e.nom] || 0) + faites.length; });
+      });
+    });
+    return { muscles: muscles, nonClasses: nonClasses };
+  }
+  var listeExercices = function (o) { return Object.keys(o).sort().map(function (n) { return { nom: n, series: o[n] }; }); };
+
+  // VOLUME PAR MUSCLE sur 28 jours glissants (R-V1 a R-V6).
+  // options : { fin (date du jour, defaut maintenant), jours (defaut 28), normaliserNom, classements }
+  function volumeMuscles(seancesNorm, options) {
+    options = options || {}; seancesNorm = seancesNorm || [];
+    var n = int(options.jours) || REGLES.FENETRE_JOURS, au = dateFin(options), du = ajouterJours(au, -(n - 1));
+    var auAvant = ajouterJours(du, -1), duAvant = ajouterJours(auAvant, -(n - 1));
+    var dates = datesSeances(seancesNorm, au), fen = fenetre(dates, du, au), fenAvant = fenetre(dates.filter(function (d) { return d <= auAvant; }), duAvant, auAvant);
+    var cour = compterVolume(seancesNorm, du, au, options), avant = compterVolume(seancesNorm, duAvant, auAvant, options);
+    var resumeRole = function (r) {
+      var nj = r ? Object.keys(r.jours).length : 0, ns = r ? r.series : 0;
+      return { series: ns, parSemaineCalendaire: parSemaine(ns, n / 7), parSemaineActive: parSemaine(ns, fen.joursActifs / 7),
+        jours: nj, frequenceCalendaire: parSemaine(nj, n / 7), frequenceActive: parSemaine(nj, fen.joursActifs / 7), exercices: r ? listeExercices(r.exercices) : [] };
+    };
+    var muscles = {};
+    GROUPES.forEach(function (m) {
+      var c = cour.muscles[m] || null, a = avant.muscles[m] || null, d = c ? c.direct : null;
+      var direct = resumeRole(d), indirect = resumeRole(c ? c.indirect : null);
+      // R-V6 : series efficaces seulement si les RIR sont reellement saisis (>= 50 % et >= 8 series).
+      var saisis = d ? d.rirSaisi : 0, mesurable = direct.series > 0 && saisis >= REGLES.EFFICACE_MIN_SERIES && saisis / direct.series >= REGLES.EFFICACE_PART_SAISIE;
+      var efficaces = { statut: mesurable ? "mesure" : "non_mesurable", raison: mesurable ? null : "rir_non_saisis", valeur: mesurable ? d.efficaces : null,
+        seriesRirSaisi: saisis, series: direct.series, partRirSaisi: direct.series ? round1(saisis / direct.series * 100) : null };
+      // R-V4 : evolution du volume direct contre les 28 jours precedents.
+      var evolution;
+      var exAvant = a ? Object.keys(a.direct.exercices).sort() : [], exApres = d ? Object.keys(d.exercices).sort() : [];
+      if (!fen.suffisante || !fenAvant.suffisante) evolution = { statut: "non_calculable", raison: "semaines_actives_insuffisantes", avant: null, apres: null };
+      else {
+        var av = parSemaine(a ? a.direct.series : 0, fenAvant.joursActifs / 7), ap = direct.parSemaineActive, ecart = round1(ap - av), pct = av > 0 ? round1((ap - av) / av * 100) : null;
+        var signale = Math.abs(ap - av) >= REGLES.VOLUME_EVOLUTION_SERIES && (av === 0 ? ap > 0 : Math.abs(ap - av) / av >= REGLES.VOLUME_EVOLUTION_PCT);
+        var programme = exAvant.join("|") !== exApres.join("|");
+        evolution = { statut: !signale ? "non_signale" : programme ? "volume_modifie_par_le_programme" : ap > av ? "hausse" : "baisse",
+          avant: av, apres: ap, ecart: ecart, ecartPct: pct,
+          exercicesAjoutes: exApres.filter(function (x) { return exAvant.indexOf(x) === -1; }), exercicesRetires: exAvant.filter(function (x) { return exApres.indexOf(x) === -1; }) };
+      }
+      muscles[m] = { muscle: m, statut: !fen.suffisante ? "donnees_insuffisantes" : direct.series || indirect.series ? "ok" : "aucune_serie",
+        direct: direct, indirect: indirect, efficaces: efficaces, evolution: evolution };
+    });
+    return { periode: { du: du, au: au, jours: n }, fenetre: fen, precedente: { du: duAvant, au: auAvant, semainesActives: fenAvant.semainesActives, pauses: fenAvant.pauses },
+      statut: fen.suffisante ? "ok" : "donnees_insuffisantes", muscles: muscles,
+      nonClasses: Object.keys(cour.nonClasses).sort().map(function (k) { return { nom: k, series: cour.nonClasses[k], classification: "a_definir" }; }),
+      actions: [], adaptationAutomatique: false };
+  }
+
+  // COMPARAISONS de toutes les seances d'exercices dans [du ; au], avec analyseExercice (R-P1) et le classement de la specification :
+  //   fiables : "progression" | "stable" | "regression" ;
+  //   non interpretees : "premiere" | "charge_suspecte" (R-P2) | "non_comparable" | "retour_pause" (R-P4) | "seance_incomplete" (R-P3).
+  var NON_INTERPRETEES = Object.freeze(["premiere", "charge_suspecte", "non_comparable", "retour_pause", "seance_incomplete"]);
+  var FIABLES = Object.freeze(["progression", "stable", "regression"]);
+  function comparaisonsPeriode(seancesNorm, du, au, options) {
+    var seances = seancesNorm.filter(function (s) { return s.date && s.date <= au; });
+    var dates = datesSeances(seances, au), pauses = [];
+    for (var i = 1; i < dates.length; i++) if (joursEntre(dates[i - 1], dates[i]) >= REGLES.PAUSE_JOURS) pauses.push([dates[i - 1], dates[i]]);
+    var noms = []; seances.forEach(function (s) { s.exercices.forEach(function (e) { if (noms.indexOf(e.nom) === -1) noms.push(e.nom); }); });
+    var out = [], parExercice = {};
+    noms.forEach(function (nom) {
+      var c = classerExercice(nom, options), hist = historiqueExercice(seances, nom);
+      parExercice[nom] = { nom: nom, muscle: c.principal, secondaires: c.secondaires, historique: hist };
+      hist.forEach(function (h, i) {
+        if (h.date < du || h.date > au) return;
+        var aSerie = h.series.some(function (st) { return st.valide || st.suspecte; }); if (!aSerie) return; // rien d'enregistre a analyser
+        var a = analyseExercice(hist.slice(0, i + 1), { fourchette: h.fourchette }), b = a.bilan || {};
+        var raisons = b.comparaison ? b.comparaison.raisons : [], prec = b.precedente ? b.precedente.date : null, res;
+        if (a.performance === "premiere") res = "premiere";
+        else if (raisons.some(function (r) { return r.code === "charge_suspecte"; })) res = "charge_suspecte";
+        else if (a.performance === "non_comparable") res = "non_comparable";
+        else if (prec && pauses.some(function (p) { return p[0] >= prec && p[1] <= h.date; })) res = "retour_pause";
+        else res = a.performance;
+        out.push({ exercice: nom, muscle: c.principal, date: h.date, precedente: prec, resultat: res, fiable: FIABLES.indexOf(res) !== -1, mode: b.mode || modeMesure(h.fourchette),
+          raisons: raisons, incomplete: b.incomplete || null, jour: b.jour || null, avant: b.precedente || null });
+      });
+    });
+    out.sort(function (x, y) { return x.date < y.date ? -1 : x.date > y.date ? 1 : x.exercice < y.exercice ? -1 : 1; });
+    return { comparaisons: out, exercices: parExercice, dates: dates };
+  }
+  function compte(cs) {
+    var o = { fiables: 0, progression: 0, stable: 0, regression: 0, nonInterpretees: 0, total: cs.length, detailNonInterpretees: {} };
+    NON_INTERPRETEES.forEach(function (k) { o.detailNonInterpretees[k] = 0; });
+    cs.forEach(function (c) { if (c.fiable) { o.fiables++; o[c.resultat]++; } else { o.nonInterpretees++; o.detailNonInterpretees[c.resultat] = (o.detailNonInterpretees[c.resultat] || 0) + 1; } });
+    return o;
+  }
+  function distinctes(cs, k) { var d = {}; cs.forEach(function (c) { d[c[k]] = true; }); return Object.keys(d).sort(); }
+  function resumeComparaison(c) { return { exercice: c.exercice, date: c.date, precedente: c.precedente, resultat: c.resultat }; }
+
+  // Ampleur d'un exercice sur la fenetre (R-P5), dans son dernier bloc comparable.
+  function ampleurExercice(hist, du) {
+    var bloc = blocComparable(hist).seances.filter(function (h) { return h.date >= du; });
+    if (bloc.length < 2) return { statut: "insuffisant", seances: bloc.length };
+    var f = bloc[bloc.length - 1].fourchette, mode = modeMesure(f), ms = bloc.map(function (h) { return mesuresSeance(seriesNorm(h.series)); });
+    var p = ms[0], d = ms[ms.length - 1], o = { statut: "ok", mode: mode, du: bloc[0].date, au: bloc[bloc.length - 1].date, seances: bloc.length };
+    if (mode === "force") {
+      o.forceFiable = ms.every(function (m) { return m.forceFiable; });
+      o.forceDebut = round1(p.forcePrecise); o.forceFin = round1(d.forcePrecise);
+      o.variationPct = o.forceFiable && p.forcePrecise > 0 ? round1((d.forcePrecise - p.forcePrecise) / p.forcePrecise * 100) : null; // jamais de % si la force n'est pas fiable
+      return o;
+    }
+    if (mode !== "reps") return { statut: "non_applicable", mode: mode, seances: bloc.length };
+    // Mode repetitions : aucun % de force ni de tonnage. Reps a charge egale + montees de charge.
+    var montees = []; for (var i = 1; i < ms.length; i++) if (ms[i].chargeMax > ms[i - 1].chargeMax) montees.push({ date: bloc[i].date, avant: ms[i - 1].chargeMax, apres: ms[i].chargeMax });
+    var k = 0; while (k < ms.length - 1 && ms[k].chargeMax !== d.chargeMax) k++;
+    o.chargeDebut = p.chargeMax; o.chargeFin = d.chargeMax; o.monteesDeCharge = montees;
+    o.repsAChargeEgale = k < ms.length - 1 ? { charge: d.chargeMax, depuis: bloc[k].date, avant: ms[k].repsAChargeMax, apres: d.repsAChargeMax, ecart: d.repsAChargeMax - ms[k].repsAChargeMax } : null;
+    return o;
+  }
+
+  // Performance d'un groupe a partir de ses comparaisons (R-P6 a R-P8).
+  function evaluerMuscle(cs, fen, blocs) {
+    var n = compte(cs), fiables = cs.filter(function (c) { return c.fiable; }), seances = distinctes(fiables, "date");
+    var exercicesFiables = distinctes(fiables, "exercice"), blocMax = blocs.reduce(function (m, b) { return Math.max(m, b); }, 0);
+    var conditions = { fiables: n.fiables, seances: seances.length, blocMax: blocMax, semainesActives: fen.semainesActives,
+      minimum: { fiables: n.fiables >= REGLES.PERF_MIN_FIABLES, seances: seances.length >= REGLES.PERF_MIN_SEANCES, bloc: blocMax >= REGLES.PERF_MIN_BLOC, fenetre: fen.suffisante } };
+    var ok = conditions.minimum.fiables && conditions.minimum.seances && conditions.minimum.bloc && conditions.minimum.fenetre;
+    if (!ok) return { statut: "donnees_insuffisantes", tendance: null, confiance: null, compte: n, conditions: conditions,
+      raison: n.detailNonInterpretees.charge_suspecte > 0 && n.fiables < REGLES.PERF_MIN_FIABLES ? "charge_non_fiable" : !fen.suffisante ? "semaines_actives_insuffisantes" : "minimum_non_atteint" };
+    var P = n.progression, B = n.regression, F = n.fiables, seancesB = distinctes(fiables.filter(function (c) { return c.resultat === "regression"; }), "date").length;
+    var tendance = P / F >= REGLES.TENDANCE_HAUSSE_PCT && B / F <= REGLES.TENDANCE_HAUSSE_BAISSE_MAX ? "hausse"
+      : B >= REGLES.TENDANCE_BAISSE_MIN && seancesB >= 2 && B >= P ? "baisse"
+      : B === 0 && P / F < REGLES.TENDANCE_HAUSSE_PCT ? "stable" : "mixte";
+    var partNI = n.total ? n.nonInterpretees / n.total : 0;
+    var haute = F >= REGLES.CONFIANCE_FIABLES && exercicesFiables.length >= REGLES.CONFIANCE_EXERCICES && seances.length >= REGLES.CONFIANCE_SEANCES
+      && fen.semainesActives >= REGLES.CONFIANCE_SEMAINES && partNI <= REGLES.CONFIANCE_NON_INTERPRETEES_MAX;
+    conditions.haute = { fiables: F >= REGLES.CONFIANCE_FIABLES, exercices: exercicesFiables.length >= REGLES.CONFIANCE_EXERCICES, seances: seances.length >= REGLES.CONFIANCE_SEANCES,
+      semainesActives: fen.semainesActives >= REGLES.CONFIANCE_SEMAINES, nonInterpretees: partNI <= REGLES.CONFIANCE_NON_INTERPRETEES_MAX };
+    return { statut: "ok", tendance: tendance, confiance: haute ? "haute" : "moyenne", compte: n, conditions: conditions, raison: null,
+      partPct: { progression: round1(P / F * 100), stable: round1(n.stable / F * 100), regression: round1(B / F * 100), nonInterpretees: round1(partNI * 100) } };
+  }
+
+  // PERFORMANCES PAR MUSCLE sur 28 jours (R-P1 a R-P8). Seuls les exercices dont le muscle est le PRINCIPAL comptent.
+  // Chaque resultat liste les comparaisons qui le justifient (exercice, date, resultat) et son niveau de confiance.
+  function performanceMuscles(seancesNorm, options) {
+    options = options || {}; seancesNorm = seancesNorm || [];
+    var n = int(options.jours) || REGLES.FENETRE_JOURS, au = dateFin(options), du = ajouterJours(au, -(n - 1));
+    var cp = comparaisonsPeriode(seancesNorm, du, au, options), fen = fenetre(cp.dates, du, au);
+    var vol = compterVolume(seancesNorm, du, au, options), muscles = {};
+    GROUPES.forEach(function (m) {
+      var cs = cp.comparaisons.filter(function (c) { return c.muscle === m; });
+      var exos = Object.keys(cp.exercices).filter(function (k) { return cp.exercices[k].muscle === m && cs.some(function (c) { return c.exercice === k; }); }).sort();
+      if (!cs.length) {
+        var v = vol.muscles[m];
+        muscles[m] = { muscle: m, statut: v && v.indirect.series > 0 ? "secondaire_seulement" : "aucune_donnee", tendance: null, confiance: null, comparaisons: [], exercices: [],
+          raison: v && v.indirect.series > 0 ? "sollicite_seulement_en_secondaire" : "aucune_serie" };
+        return;
+      }
+      var blocs = exos.map(function (k) { return blocComparable(cp.exercices[k].historique).seances.length; });
+      var ev = evaluerMuscle(cs, fen, blocs);
+      muscles[m] = { muscle: m, statut: ev.statut, tendance: ev.tendance, confiance: ev.confiance, raison: ev.raison, compte: ev.compte, partPct: ev.partPct || null, conditions: ev.conditions,
+        exercices: exos.map(function (k, i) { var ce = cs.filter(function (c) { return c.exercice === k; });
+          return { nom: k, comparaisons: ce.length, fiables: ce.filter(function (c) { return c.fiable; }).length, blocSeances: blocs[i], ampleur: ampleurExercice(cp.exercices[k].historique, du) }; }),
+        comparaisons: cs.map(resumeComparaison) };
+    });
+    var nonClasses = Object.keys(cp.exercices).filter(function (k) { return !cp.exercices[k].muscle && cp.comparaisons.some(function (c) { return c.exercice === k; }); }).sort();
+    return { periode: { du: du, au: au, jours: n }, fenetre: fen, muscles: muscles, nonClasses: nonClasses, actions: [], adaptationAutomatique: false };
+  }
+
+  // BILAN D'ENTRAINEMENT sur 14 jours (R-D1 a R-D5) : CONSTATS seulement, jamais de decision ni d'action.
+  // Chaque constat : { type, muscles, periode, comparaisons:[{exercice, date, precedente, resultat}], confiance, raisons }.
+  function bilanEntrainement(seancesNorm, options) {
+    options = options || {}; seancesNorm = seancesNorm || [];
+    var n = int(options.jours) || REGLES.FENETRE_COURTE_JOURS, au = dateFin(options), du = ajouterJours(au, -(n - 1)), periode = { du: du, au: au, jours: n };
+    var cp = comparaisonsPeriode(seancesNorm, du, au, options), cs = cp.comparaisons.filter(function (c) { return c.muscle; });
+    var fiables = cs.filter(function (c) { return c.fiable; }), baisses = fiables.filter(function (c) { return c.resultat === "regression"; });
+    var tot = compte(cs), constats = [], perf = null;
+    var perfMuscles = function () { return perf = perf || performanceMuscles(seancesNorm, { fin: au, normaliserNom: options.normaliserNom, classements: options.classements }); };
+    var musclesB = distinctes(baisses, "muscle"), seancesB = distinctes(baisses, "date"), retours = cs.filter(function (c) { return c.resultat === "retour_pause"; }).length;
+    var partB = fiables.length ? baisses.length / fiables.length : 0;
+    // R-D1 : baisse generale.
+    if (fiables.length >= REGLES.GENERALE_FIABLES && partB >= REGLES.GENERALE_BAISSE_PCT && musclesB.length >= REGLES.GENERALE_MUSCLES && seancesB.length >= REGLES.GENERALE_SEANCES) {
+      constats.push({ type: "baisse_generale", muscles: musclesB, periode: periode, comparaisons: fiables.map(resumeComparaison),
+        confiance: fiables.length >= REGLES.GENERALE_HAUTE_FIABLES && retours === 0 ? "haute" : "moyenne",
+        raisons: [{ code: "baisses", valeur: baisses.length, sur: fiables.length, pct: round1(partB * 100) }, { code: "muscles", valeur: musclesB.length }, { code: "seances", valeur: seancesB.length }, { code: "retours_de_pause", valeur: retours }] });
+    } else {
+      var couverts = {};
+      GROUPES.forEach(function (m) {
+        var fm = fiables.filter(function (c) { return c.muscle === m; }), bm = fm.filter(function (c) { return c.resultat === "regression"; });
+        if (bm.length < REGLES.LOCALE_BAISSES || distinctes(bm, "date").length < 2 || bm.length < fm.filter(function (c) { return c.resultat === "progression"; }).length) return;
+        var autres = fiables.filter(function (c) { return c.muscle !== m; }), bAutres = autres.filter(function (c) { return c.resultat === "regression"; }).length;
+        var partAutres = autres.length ? bAutres / autres.length : 0;
+        bm.forEach(function (c) { couverts[c.exercice + "|" + c.date] = true; });
+        var raisons = [{ code: "baisses_muscle", valeur: bm.length, sur: fm.length, seances: distinctes(bm, "date").length }, { code: "baisses_autres_muscles", valeur: bAutres, sur: autres.length, pct: round1(partAutres * 100) }];
+        // R-D2 : baisse localisee ; R-D3 : baisse etendue a surveiller (les autres muscles baissent aussi, sans atteindre R-D1).
+        if (partAutres < REGLES.LOCALE_AUTRES_MAX) { var pm = perfMuscles().muscles[m];
+          constats.push({ type: "baisse_localisee", muscles: [m], periode: periode, comparaisons: fm.map(resumeComparaison), confiance: pm && pm.confiance ? pm.confiance : "basse", raisons: raisons }); }
+        else constats.push({ type: "baisse_etendue_a_surveiller", muscles: [m], periode: periode, comparaisons: fiables.map(resumeComparaison), confiance: "basse", raisons: raisons });
+      });
+      // R-D4 : seance isolee (>= 2 baisses, aucune autre baisse sur ces exercices dans la periode).
+      seancesB.forEach(function (d) {
+        var bd = baisses.filter(function (c) { return c.date === d && !couverts[c.exercice + "|" + c.date]; }); if (bd.length < REGLES.ISOLEE_BAISSES) return;
+        var exos = distinctes(bd, "exercice");
+        if (baisses.some(function (c) { return c.date !== d && exos.indexOf(c.exercice) !== -1; })) return;
+        constats.push({ type: "seance_isolee", muscles: distinctes(bd, "muscle"), periode: { du: d, au: d, jours: 1 }, comparaisons: bd.map(resumeComparaison), confiance: "basse",
+          raisons: [{ code: "baisses_seance", valeur: bd.length }, { code: "aucune_autre_baisse_sur_ces_exercices" }] });
+      });
+    }
+    // R-D5 : rien a signaler.
+    if (!constats.length) constats.push({ type: "rien_a_signaler", muscles: [], periode: periode, comparaisons: [], confiance: null,
+      raisons: [{ code: "baisses", valeur: baisses.length, sur: fiables.length }] });
+    return { periode: periode, compte: tot, comparaisons: cs.map(resumeComparaison), constats: constats, actions: [], adaptationAutomatique: false };
+  }
+
   // Priorites : muscles suivis non travailles depuis plus de 7 jours (regle V1), du plus ancien au plus recent ; jamais travaille = en tete.
   function priorites(recup, options) {
     var suivis = (options && options.musclesSuivis) || GROUPES_SUIVIS_V1;
@@ -848,7 +1205,7 @@
   // Seule l'application, apres validation explicite de l'utilisateur, pourra en tenir compte.
   function analyser(donnees, options) {
     donnees = donnees || {}; options = options || {};
-    var aujourdhui = dateLocale(options.maintenant !== undefined ? options.maintenant : new Date());
+    var aujourdhui = options.maintenant !== undefined ? dateLocale(options.maintenant) : jourParDefaut();
     var brutes = Array.isArray(donnees.sessions) ? donnees.sessions : [];
     var seances = normaliserSeances(brutes, options);
     // Qualite des donnees (aucune correction, seulement un constat).
@@ -905,6 +1262,8 @@
     syntheseExercice: syntheseExercice, pistesAdaptation: pistesAdaptation, comparabilite: comparabilite, blocComparable: blocComparable, analyseExercice: analyseExercice, filtrerSuspectes: filtrerSuspectes,
     // 5. domaines
     FATIGUE_CRITERES: FATIGUE_CRITERES, NIVEAUX_FATIGUE: NIVEAUX_FATIGUE, scoreFatigue: scoreFatigue, repondreFatigue: repondreFatigue, heureSeance: heureSeance, dernieresSollicitations: dernieresSollicitations, rirRecent: rirRecent, recuperation: recuperation, volume: volume, priorites: priorites, morphologie: morphologie,
+    // 5 bis. volume et performances par muscle (etape 3, constats seulement)
+    volumeMuscles: volumeMuscles, performanceMuscles: performanceMuscles, bilanEntrainement: bilanEntrainement,
     // 6. analyse complete
     analyser: analyser
   });

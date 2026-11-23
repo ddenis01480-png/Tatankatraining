@@ -934,6 +934,8 @@ function coachDiagAffichage(d) {
   // « CHARGE MAINTENUE » seulement si la performance est vraiment stable.
   if (d.performance === "regression") return { type: -1, color: "#FF8C00", icon: "↓", urgency: "A SURVEILLER", title: "PERFORMANCE EN BAISSE",
     msg: coachEcartTexte(d) + " depuis la derniere seance. Une seule seance en baisse : pas encore une regression persistante.", actions: ["Garde la meme charge et vise les reps de la seance precedente", "Verifie sommeil, fatigue et recuperation"] };
+  if (d.performance === "seance_incomplete") return { type: -1, color: "#888", icon: "-", urgency: "NON INTERPRÉTÉE", title: "SÉANCE INCOMPLÈTE",
+    msg: coachIncompleteTexte(d.incomplete) + ".", actions: [] };
   if (d.performance === "progression") return { type: 0, color: "#00C853", icon: "V", urgency: "EN PROGRESSION", title: "LEGERE PROGRESSION",
     msg: coachEcartTexte(d) + " depuis la derniere seance.", actions: ["+1 rep sur la derniere serie si tu atteins le haut de la fourchette"] };
   return { type: -1, color: "#888", icon: "-", urgency: "STABLE", title: "CHARGE MAINTENUE", msg: "Meme performance que la seance precedente.", actions: ["Essaie +1 rep sur la derniere serie seulement"] };
@@ -951,7 +953,7 @@ function coachEcartTexte(d) {
 // Seance en cours (diagnostic du moteur + definition unique de la progression). Lecture seule : rien n'est enregistre ici.
 // `sessions` = seances enregistrees AVANT celle du jour ; `validExs` = exercices du jour (series deja converties pour l'enregistrement).
 function coachFinSeance(CE, sessions, validExs, todayStr, nowId) {
-  const res = { alerts: [], progressed: [], stagnated: [], regressed: [], nonComparables: [], sessionPRs: [], details: {}, prDetails: {} }, vus = {};
+  const res = { alerts: [], progressed: [], stagnated: [], regressed: [], nonComparables: [], incompletes: [], sessionPRs: [], details: {}, prDetails: {} }, vus = {};
   const jour = { id: nowId, date: todayStr, exercises: validExs };
   validExs.forEach(ex => {
     if (vus[ex.name]) return; vus[ex.name] = true; // exercice en double dans la seance : premiere occurrence, comme l'historique
@@ -966,6 +968,9 @@ function coachFinSeance(CE, sessions, validExs, todayStr, nowId) {
     else if (a.performance === "regression") { res.regressed.push(ex.name); res.details[ex.name] = coachBilanTexte(b); }
     else if (a.performance === "stable") res.stagnated.push(ex.name);
     else if (a.performance === "non_comparable") { res.nonComparables.push(ex.name); res.details[ex.name] = coachRaisonsTexte(b.comparaison.raisons); }
+    // Seance incomplete (R-P3 : moins de series que la precedente, sans baisse sur les meilleures series) : ni progression ni baisse,
+    // rangee dans la rubrique existante « non comparable », avec la raison.
+    else if (a.performance === "seance_incomplete") { res.nonComparables.push(ex.name); res.incompletes.push(ex.name); res.details[ex.name] = coachIncompleteTexte(b.incomplete); }
     const r = CE.recordsExercice(avant, ex.sets, f);
     if (r && r.record) { res.sessionPRs.push(ex.name); res.prDetails[ex.name] = coachRecordTexte(r); }
   });
@@ -993,13 +998,15 @@ function coachRecordTexte(r) {
 function coachProgres(CE, sessions, exName) {
   // Series « suspectes » (ex. 6,8 kg x 112 entre deux x 12) : ignorees par l'analyse, affichees barrees ; la seance enregistree ne change pas.
   // Saisies « probablement inversees » (charge <-> reps) : meme traitement ; la seance reste dans la liste, avec l'avertissement.
-  const tout = coachHistorique(CE, sessions, exName).filter(e => e.series.some(st => st.valide || st.suspecte));
+  const brut = coachHistorique(CE, sessions, exName), tout = brut.filter(e => e.series.some(st => st.valide || st.suspecte));
   const h = tout.filter(e => e.series.some(st => st.valide));
   const f = h.length ? h[h.length - 1].fourchette : CE.lireFourchette("");
   const history = tout.map(e => { const m = CE.mesuresSeance(e.series); return { date: e.date, analysee: m.seriesValides > 0, sets: e.series.filter(st => st.valide || st.suspecte).map(st => ({ weight: st.charge, reps: st.reps, rir: st.rir, suspecte: st.suspecte || null })), best: m.force, fiable: m.forceFiable, m }; });
   // Analyse UNIQUE du moteur (la meme que l'ecran Fin de seance).
-  const a = h.length ? CE.analyseExercice(h, { fourchette: f }) : null, d = a ? a.diagnostic : null;
-  const synthese = h.length ? CE.syntheseExercice(h, f, { diagnostic: d }) : null;
+  // Historique complet (`brut`, pas seulement `h`) : une derniere seance sans serie analysable (ex. charges « 1 » probablement
+  // erronees) est signalee « non comparable », jamais remplacee par la comparaison d'une seance plus ancienne (meme regle que la Fin de seance).
+  const a = h.length ? CE.analyseExercice(brut, { fourchette: f }) : null, d = a ? a.diagnostic : null;
+  const synthese = h.length ? CE.syntheseExercice(brut, f, { diagnostic: d }) : null;
   let diag = d && d.enProgression ? coachPlafondProgression(d, synthese && synthese.derniere, f) : coachDiagAffichage(d);
   if (!diag && a && a.statut === "non_comparable" && a.bloc.rupture) diag = { type: -2, color: "#FFD600", icon: "?", urgency: "COMPARAISON NON FIABLE", title: "PAS DE DIAGNOSTIC POUR L'INSTANT",
     msg: coachRaisonsTexte(a.bloc.rupture.raisons).replace(/([^?])$/, "$1.") + " Le diagnostic reprendra après 2 séances comparables.", actions: [] };
@@ -1015,9 +1022,22 @@ function coachPlafondProgression(d, b, f) {
     actions: ["Augmente la charge quand toutes les séries atteignent le haut de fourchette", "Repars au bas de la fourchette avec la nouvelle charge"] };
 }
 // Raisons d'une comparaison non fiable, en clair.
+const COACH_RAISONS = {
+  charge_suspecte: "Charge probablement erronée (1 kg ou moins) : comparaison non fiable, données non modifiées",
+  inversion_probable: "Saisie probablement inversée (charge ↔ reps) : ignorée par l'analyse",
+  reps_aberrantes: "Série inhabituelle ignorée par l'analyse",
+  aucune_serie_analysable: "Aucune série analysable dans cette séance"
+};
 function coachRaisonsTexte(raisons) {
   return (raisons || []).map(r => r.code === "fourchette" ? "Fourchette changée (" + r.avant + " → " + r.apres + ")"
-    : r.code === "rupture_charge" ? "Charge " + r.avant + " → " + r.apres + "kg (" + (r.pct > 0 ? "+" : "−") + Math.abs(r.pct) + "%) avec les mêmes reps : changement de machine ou de réglage ?" : r.code).join(" · ");
+    : r.code === "rupture_charge" ? "Charge " + r.avant + " → " + r.apres + "kg (" + (r.pct > 0 ? "+" : "−") + Math.abs(r.pct) + "%) avec les mêmes reps : changement de machine ou de réglage ?" : COACH_RAISONS[r.code] || r.code).join(" · ");
+}
+// Seance incomplete (regle R-P3 du moteur), en clair.
+function coachIncompleteTexte(inc) {
+  if (!inc) return "Séance incomplète";
+  const pl = n => (n > 1 ? "s" : "");
+  const k = inc.seriesComparees, sur = k > 1 ? "les " + k + " meilleures séries" : "la meilleure série";
+  return "Séance incomplète (" + inc.seriesJour + " série" + pl(inc.seriesJour) + " contre " + inc.seriesPrecedente + ") : pas de baisse sur " + sur + ", ni progression ni baisse retenue";
 }
 const COACH_TENDANCES = {
   progression_globale: { c: "#00C853", t: "Progression globale : meilleure performance et plus de travail" },
@@ -1034,11 +1054,15 @@ function coachPct(x) { return (x > 0 ? "+" : x < 0 ? "−" : "±") + Math.abs(Ma
 // Lignes de la carte « Lecture » : [titre, etat, couleur, detail].
 function coachLectureDerniere(b) {
   if (!b || b.verdict === "premiere") return null;
+  // Derniere seance sans serie analysable (ex. charges « 1 ») : pas de volume compare, pas de verdict.
+  if (!b.volume) return [["PERFORMANCE", "Comparaison non fiable", "#FFD600", coachRaisonsTexte(b.comparaison && b.comparaison.raisons)], ["TENDANCE", "Non interprétée", "#888", "dernière séance sans série analysable"]];
   const perf = coachSens({ progression: "hausse", regression: "baisse" }[b.verdict] || "stable"), v = b.volume, vs = coachSens(v.sens), t = COACH_TENDANCES[b.tendance] || COACH_TENDANCES.stable;
   const j = b.jour, p = b.precedente, a = b.axes;
   const volLigne = ["VOLUME", vs.t, vs.c, (v.seriesAvant === v.seriesApres ? v.seriesApres + " séries" : v.seriesAvant + " → " + v.seriesApres + " séries") + " · tonnage " + coachPct(v.tonnagePct)];
   // Comparaison non fiable (fourchette changee, rupture de charge) : signalee comme telle, pas de verdict de performance ni de tendance.
   if (b.comparaison && !b.comparaison.fiable) return [["PERFORMANCE", "Comparaison non fiable", "#FFD600", coachRaisonsTexte(b.comparaison.raisons)], volLigne, ["TENDANCE", "Non interprétée", "#888", "séances pas comparables" + (p.date ? " (vs " + fmtDate(p.date) + ")" : "")]];
+  // Seance incomplete (R-P3) : ni progression ni baisse.
+  if (b.verdict === "seance_incomplete") return [["PERFORMANCE", "Séance incomplète", "#888", coachIncompleteTexte(b.incomplete)], volLigne, ["TENDANCE", "Non interprétée", "#888", "moins de séries que la séance précédente" + (p.date ? " (vs " + fmtDate(p.date) + ")" : "")]];
   const perfDetail = coachBilanTexte(b) || ("force estimée " + (a.forceFiable ? "" : "≈") + j.force + "kg, " + j.chargeMax + "kg max");
   const volDetail = (v.seriesAvant === v.seriesApres ? v.seriesApres + " séries" : v.seriesAvant + " → " + v.seriesApres + " séries") + " · tonnage " + coachPct(v.tonnagePct);
   return [["PERFORMANCE", perf.t, perf.c, perfDetail], ["VOLUME", vs.t, vs.c, volDetail], ["TENDANCE", t.t, t.c, b.gainParSeriesSeules ? "le gain vient des séries en plus, pas d'une meilleure série" : (p.date ? "vs " + fmtDate(p.date) : "")]];
@@ -2365,7 +2389,8 @@ function ProgressTab({ sessions }) {
                     <div style={{ fontSize: 10, color: "#555", fontFamily: "monospace" }}>{fmtDate(s.date)}</div>
                     <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>{s.sets.map((st, j) => <span key={j} style={{ marginRight: 8, ...(st.suspecte ? { textDecoration: "line-through", color: "#555" } : {}) }}>{st.weight}x{st.reps}{st.suspecte ? " ⚠" : ""}</span>)}</div>
                     {s.sets.some(st => st.suspecte === "inversion_probable") && <div style={{ fontSize: 8, color: "#FFD600", fontFamily: "monospace", marginTop: 2 }}>⚠ saisie probablement inversée (charge ↔ reps) · ignorée par l'analyse, non modifiée</div>}
-                    {s.sets.some(st => st.suspecte && st.suspecte !== "inversion_probable") && <div style={{ fontSize: 8, color: "#666", fontFamily: "monospace", marginTop: 2 }}>⚠ série inhabituelle ignorée par l'analyse (non modifiée)</div>}
+                    {s.sets.some(st => st.suspecte === "charge_suspecte") && <div style={{ fontSize: 8, color: "#FFD600", fontFamily: "monospace", marginTop: 2 }}>⚠ charge probablement erronée (1 kg ou moins) · ignorée par l'analyse, non modifiée</div>}
+                    {s.sets.some(st => st.suspecte && st.suspecte !== "inversion_probable" && st.suspecte !== "charge_suspecte") && <div style={{ fontSize: 8, color: "#666", fontFamily: "monospace", marginTop: 2 }}>⚠ série inhabituelle ignorée par l'analyse (non modifiée)</div>}
                   </div>
                   <div style={{ fontSize: 15, fontWeight: 900, color: s.analysee === false ? "#555" : "#ff6600" }}>{s.analysee === false ? "—" : (s.fiable === false ? "≈" : "") + best + "kg 1RM"}</div>
                 </div>

@@ -261,10 +261,13 @@ t('F', 'Recuperation et priorites : jours depuis le dernier travail par muscle ;
   assert.deepStrictEqual(r.recuperation.Biceps, { derniereDate: '2026-01-01', jours: 12 }); assert.strictEqual(r.recuperation.Quadriceps.jours, 3); assert.strictEqual(r.recuperation.Pectoraux.jours, 1);
   const pr = r.priorites.map(p => p.muscle); assert.ok(pr.includes('Biceps') && !pr.includes('Dos') && !pr.includes('Pectoraux')); assert.strictEqual(r.priorites.find(p => p.muscle === 'Mollets').raison, 'jamais_travaille');
   assert.strictEqual(pr[pr.length - 1], 'Biceps', 'jamais travailles d\'abord, puis du plus ancien au plus recent'); });
-t('F', 'Volume 7 jours : 1 serie pour le muscle principal, 0,5 pour les secondaires ; series dures et RIR saisis comptes a part', () => {
+t('F', 'Volume 7 jours : series du muscle principal ; muscles secondaires comptes a part (indirect), en entiers, sans coefficient (0,5 supprime a l\'etape 3)', () => {
   const ss = [sess(1, '2026-01-01', [ex('Développé couché barre', [S(80, 8)])]), sess(2, '2026-01-10', [ex('Développé couché barre', [S(80, 8, 2, { rirSaisi: true }), S(80, 8, 6), S(80, 8, null)]), ex('Exo perso test A', [S(10, 10)])])];
   const v = E.analyser({ sessions: ss }, { maintenant: '2026-01-12' }).volume;
-  assert.deepStrictEqual(v.parMuscle.Pectoraux, { series: 3, seriesDures: 1, seriesRirSaisi: 1 }); assert.deepStrictEqual(v.parMuscle.Triceps, { series: 1.5, seriesDures: 0.5, seriesRirSaisi: 0.5 });
+  const zero = { series: 0, seriesDures: 0, seriesRirSaisi: 0 };
+  assert.deepStrictEqual(v.parMuscle.Pectoraux, { series: 3, seriesDures: 1, seriesRirSaisi: 1, indirect: zero });
+  assert.deepStrictEqual(v.parMuscle.Triceps, { series: 0, seriesDures: 0, seriesRirSaisi: 0, indirect: { series: 3, seriesDures: 1, seriesRirSaisi: 1 } });
+  assert.ok(!('VOLUME_SECONDAIRE' in E.REGLES), 'plus de coefficient 0,5');
   assert.deepStrictEqual(v.nonClasses, { 'Exo perso test A': 1 }); });
 t('F', 'Morphologie : aucune donnee -> non disponible, champs manquants listes, aucune regle appliquee', () => {
   const m = E.morphologie(undefined); assert.deepStrictEqual([m.disponible, m.champsFournis, m.regles], [false, [], []]); assert.strictEqual(m.champsManquants.length, E.CHAMPS_MORPHO.length);
