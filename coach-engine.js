@@ -1,5 +1,5 @@
 /*
- * coach-engine.js — Moteur d'analyse du Coach Tatanka Training (Coach V2), version 0.4.0
+ * coach-engine.js — Moteur d'analyse du Coach Tatanka Training (Coach V2), version 0.5.0
  *
  * ROLE : lire les donnees qu'on lui transmet et retourner des analyses. RIEN D'AUTRE.
  *   - aucun acces a localStorage, Supabase, au reseau, au DOM ou a React ;
@@ -33,7 +33,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var VERSION = "0.4.0";
+  var VERSION = "0.5.0";
 
   // Reglages centralises (une seule valeur par regle).
   var REGLES = Object.freeze({
@@ -51,6 +51,10 @@
     REGRESSION_PCT: 0.04,          // V1
     TENDANCE_PCT: 0.01,            // tendance de cycle : +-1 % sur la droite = stable
     VOLUME_PCT: 0.02,              // volume de travail : tonnage a +-2 % = stable (meme seuil que le bilan V1)
+    SERIE_SUSPECTE_FACTEUR: 3,     // serie ignoree par l'analyse si ses reps >= 3 x la mediane des autres series du meme exercice (>= 2 autres)
+    SERIE_SUSPECTE_ECART: 20,      // ... et au moins 20 reps de plus que cette mediane (evite les faux positifs a 1-5 reps)
+    RUPTURE_CHARGE_PCT: 0.2,       // comparaison non fiable si la charge change de >= 20 % d'une seance a l'autre...
+    RUPTURE_REPS_MARGE: 1.5,       // ... avec des reps moyennes quasi identiques (+-1,5) : changement de machine ou de reglage probable
     SYNTHESE_SEANCES: 8,           // onglet Progres : tendance calculee sur les 8 dernieres seances (= liste affichee)
     RIR_DUR_MAX: 4,                // serie « dure » = RIR connu <= 4
     RIR_HAUT: 4,                   // V1 : RIR moyen >= 4 -> « pousse plus fort »
@@ -139,6 +143,27 @@
     });
   }
 
+  // PROTECTION ANALYTIQUE (lecture seule) : une serie dont les reps sont aberrantes par rapport aux autres series du meme exercice
+  // dans la meme seance (ex. 6,8 kg x 112 entre deux 6,8 kg x 12) est marquee « suspecte » et ignoree par l'analyse
+  // (valide: false). La donnee enregistree n'est JAMAIS modifiee : seule la copie analysee porte la marque.
+  // Ne s'applique pas aux series de 100 ni aux exercices en duree.
+  function mediane(a) { a = a.slice().sort(function (x, y) { return x - y; }); var m = a.length >> 1; return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2; }
+  function filtrerSuspectes(series, fourchette) {
+    var f = fourchette || {}, nb = 0;
+    if (f.type === "serie100" || f.type === "duree") return { series: (series || []).slice(), nb: 0 };
+    var v = (series || []).filter(function (st) { return st && st.valide; });
+    var out = (series || []).map(function (st) {
+      if (!st || !st.valide) return st;
+      var autres = v.filter(function (x) { return x !== st; }).map(function (x) { return x.reps; });
+      var md = autres.length >= 2 ? mediane(autres) : 0;
+      if (autres.length >= 2 && st.reps >= REGLES.SERIE_SUSPECTE_FACTEUR * md && st.reps - md >= REGLES.SERIE_SUSPECTE_ECART) {
+        nb++; var c = {}; Object.keys(st).forEach(function (k) { c[k] = st[k]; }); c.valide = false; c.suspecte = "reps_aberrantes"; return c;
+      }
+      return st;
+    });
+    return { series: out, nb: nb };
+  }
+
   // Historique d'un exercice : UNE entree par seance ou il apparait (seances deja normalisees et triees).
   // Si l'exercice figure deux fois dans la meme seance (ex. un bloc lourd 10-15 et un bloc leger 15-20), seule la PREMIERE
   // occurrence est analysee, comme le V1 : regrouper deux blocs differents fausse les comparaisons (verifie sur donnees reelles).
@@ -149,7 +174,7 @@
       var entree = null;
       s.exercices.forEach(function (e) {
         if (e.nom !== nom) return;
-        if (!entree) { entree = { date: s.date, id: s.id, fourchette: e.fourchette, series: e.series.slice(), occurrences: 1 }; out.push(entree); }
+        if (!entree) { var fs = filtrerSuspectes(e.series, e.fourchette); entree = { date: s.date, id: s.id, fourchette: e.fourchette, series: fs.series, seriesSuspectes: fs.nb, occurrences: 1 }; out.push(entree); }
         else entree.occurrences++;
       });
     });
@@ -358,7 +383,8 @@
   //   mode : "force" (<= 12), "reps" (> 12) ; series de 100 et gainage sont compares en charge puis en repetitions.
   function bilanExercice(historiqueAvant, seriesDuJour, fourchette) {
     var hist = trierHist(historiqueAvant), f = fourchette || lireFourchette("");
-    var cur = mesuresSeance(seriesNorm(seriesDuJour)), mode = modeMesure(f), modeCmp = mode === "aucun" ? "reps" : mode;
+    var jourSeries = filtrerSuspectes(seriesNorm(seriesDuJour), f).series;
+    var cur = mesuresSeance(jourSeries), mode = modeMesure(f), modeCmp = mode === "aucun" ? "reps" : mode;
     var resume = function (m, date) { return { date: date || null, chargeMax: m.chargeMax, repsAChargeMax: m.repsAChargeMax, repsTotal: m.repsTotal, force: m.force, forceFiable: m.forceFiable, series: m.seriesValides }; };
     var prevEntry = null; for (var i = hist.length - 1; i >= 0; i--) { if (mesuresSeance(hist[i].series).seriesValides > 0) { prevEntry = hist[i]; break; } }
     if (!prevEntry || cur.seriesValides === 0) return { verdict: "premiere", mode: mode, jour: resume(cur) };
@@ -367,6 +393,7 @@
     var out = { verdict: verdict, mode: mode, axes: axes, precedente: resume(prev, prevEntry.date), jour: resume(cur) };
     if (verdict === "progression") out.nature = natureProgression(axes);
     lectureTravail(out, prev, cur);
+    out.comparaison = comparabilite(prevEntry, { fourchette: f, series: jourSeries });
     return out;
   }
 
@@ -374,9 +401,9 @@
   // > meilleure force passee + 1 %), mais le moteur dit de quel record il s'agit :
   //   chargeMax : charge jamais soulevee ; reps : plus de reps que jamais a cette charge (ou plus lourde) ;
   //   force : force estimee, avec forceFiable (meilleure serie <= 12 reps) — au-dela, c'est une estimation peu fiable.
-  function recordsExercice(historiqueAvant, seriesDuJour) {
+  function recordsExercice(historiqueAvant, seriesDuJour, fourchette) {
     var passe = []; (historiqueAvant || []).forEach(function (h) { seriesNorm(h.series).forEach(function (st) { if (st.valide) passe.push(st); }); });
-    var jour = seriesNorm(seriesDuJour).filter(function (st) { return st.valide; });
+    var jour = (fourchette ? filtrerSuspectes(seriesNorm(seriesDuJour), fourchette).series : seriesNorm(seriesDuJour)).filter(function (st) { return st.valide; });
     if (!passe.length || !jour.length) return null;
     var fp = function (st) { return st.charge * (1 + st.reps / 30); };
     var forcePasse = Math.max.apply(null, passe.map(fp)), chargePasse = Math.max.apply(null, passe.map(function (st) { return st.charge; }));
@@ -436,6 +463,34 @@
   }
   function sensDe(v, seuil) { return v > seuil ? "hausse" : v < -seuil ? "baisse" : "stable"; }
 
+  // COMPARABILITE de deux seances (entrees d'historique). Une comparaison est signalee « non fiable » si :
+  //   fourchette : la fourchette a change (ex. 8-12 -> 15-20 : la charge baisse volontairement, ce n'est pas une regression) ;
+  //   rupture_charge : la charge change de >= 20 % avec les memes reps (+-1,5) — progression ou baisse invraisemblable
+  //                    d'une seance a l'autre : changement de machine, de reglage ou de facon de noter la charge probable.
+  // Rien n'est fusionne, renomme ni corrige : la comparaison est seulement marquee.
+  function texteFourchette(f) { f = f || {}; return f.min === null || f.min === undefined ? (f.texte || "") : f.min === f.max ? String(f.min) : f.min + "-" + f.max; }
+  function comparabilite(precEntree, courEntree) {
+    var raisons = [];
+    if (!precEntree || !courEntree) return { fiable: true, raisons: raisons };
+    var fa = precEntree.fourchette, fb = courEntree.fourchette;
+    if (fa && fb && !(fa.type === fb.type && fa.min === fb.min && fa.max === fb.max)) raisons.push({ code: "fourchette", avant: texteFourchette(fa), apres: texteFourchette(fb) });
+    var a = mesuresSeance(seriesNorm(precEntree.series)), b = mesuresSeance(seriesNorm(courEntree.series));
+    if (a.chargeMax > 0 && b.chargeMax > 0) {
+      var pct = (b.chargeMax - a.chargeMax) / a.chargeMax;
+      if (Math.abs(pct) >= REGLES.RUPTURE_CHARGE_PCT && Math.abs(b.repsMoy - a.repsMoy) <= REGLES.RUPTURE_REPS_MARGE)
+        raisons.push({ code: "rupture_charge", avant: a.chargeMax, apres: b.chargeMax, pct: Math.round(pct * 100) });
+    }
+    return { fiable: raisons.length === 0, raisons: raisons };
+  }
+  // Dernier bloc comparable : les seances les plus recentes reliees entre elles par des comparaisons fiables.
+  function blocComparable(historique) {
+    var hist = trierHist(historique).filter(function (h) { return mesuresSeance(seriesNorm(h.series)).seriesValides > 0; });
+    if (!hist.length) return { seances: [], rupture: null };
+    var i = hist.length - 1;
+    while (i > 0 && comparabilite(hist[i - 1], hist[i]).fiable) i--;
+    return { seances: hist.slice(i), rupture: i > 0 ? { date: hist[i].date, avant: hist[i - 1].date, raisons: comparabilite(hist[i - 1], hist[i]).raisons } : null };
+  }
+
   // Synthese d'un exercice pour l'onglet Progres (lecture seule).
   //   derniere : la derniere seance contre la precedente (bilanExercice : performance + volume + tendance) ;
   //   periode  : sur les N dernieres seances (defaut 8) : performance = meilleure serie (force estimee, « fiable » si toutes
@@ -447,11 +502,9 @@
     if (!hist.length) return null;
     var last = hist[hist.length - 1], f = fourchette || last.fourchette || lireFourchette("");
     var derniere = bilanExercice(hist.slice(0, -1), last.series, f);
-    // Fenetre : les N dernieres seances faites avec la MEME fourchette que la derniere (un changement de programme, ex. 8-12 -> 15-20
-    // avec une charge plus legere, n'est pas une baisse de performance).
-    var memeF = function (h) { var g = h.fourchette || {}; return g.type === f.type && g.min === f.min && g.max === f.max; }, bloc = [];
-    for (var i = hist.length - 1; i >= 0 && memeF(hist[i]); i--) bloc.unshift(hist[i]);
-    if (!bloc.length) bloc = [last];
+    // Fenetre : les N dernieres seances du dernier BLOC COMPARABLE (meme fourchette, pas de rupture de charge) : un changement de
+    // programme (ex. 8-12 -> 15-20 avec une charge plus legere) ou de machine n'est pas lu comme une baisse de performance.
+    var bc = blocComparable(hist), bloc = bc.seances.length ? bc.seances : [last];
     var n = int(options.seances) || REGLES.SYNTHESE_SEANCES, fen = bloc.slice(-n), ms = fen.map(function (h) { return mesuresSeance(seriesNorm(h.series)); });
     var periode = null;
     if (fen.length >= 3) {
@@ -460,9 +513,9 @@
         debut: Math.round(ms[0].forcePrecise), fin: Math.round(ms[ms.length - 1].forcePrecise) };
       var vol = { sens: sensDe(vv, REGLES.VOLUME_PCT), variationPct: round1(vv * 100),
         seriesDebut: ms[0].seriesValides, seriesFin: ms[ms.length - 1].seriesValides };
-      periode = { seances: fen.length, fourchette: f.min === null ? (f.texte || "") : f.min === f.max ? String(f.min) : f.min + "-" + f.max, du: fen[0].date, au: last.date, performance: perf, volume: vol, tendance: tendanceGenerale(perf.sens, vol.sens, false) };
+      periode = { seances: fen.length, fourchette: texteFourchette(f), du: fen[0].date, au: last.date, performance: perf, volume: vol, tendance: tendanceGenerale(perf.sens, vol.sens, false) };
     }
-    var out = { mode: modeMesure(f), derniere: derniere, periode: periode };
+    var out = { mode: modeMesure(f), derniere: derniere, periode: periode, rupture: bc.rupture, seancesComparables: bc.seances.length };
     out.pistes = pistesAdaptation(options.diagnostic || null, out);
     return out;
   }
@@ -678,7 +731,7 @@
     modeMesure: modeMesure, axesProgression: axesProgression, comparer: comparer, natureProgression: natureProgression, diagnostiquer: diagnostiquer, tendance: tendance, conseilProgression: conseilProgression,
     bilanExercice: bilanExercice, recordsExercice: recordsExercice,
     volumeEntre: volumeEntre, meilleureSerieEntre: meilleureSerieEntre, tendanceGenerale: tendanceGenerale, TENDANCES: TENDANCES,
-    syntheseExercice: syntheseExercice, pistesAdaptation: pistesAdaptation,
+    syntheseExercice: syntheseExercice, pistesAdaptation: pistesAdaptation, comparabilite: comparabilite, blocComparable: blocComparable, filtrerSuspectes: filtrerSuspectes,
     // 5. domaines
     scoreFatigue: scoreFatigue, rirRecent: rirRecent, recuperation: recuperation, volume: volume, priorites: priorites, morphologie: morphologie,
     // 6. analyse complete
