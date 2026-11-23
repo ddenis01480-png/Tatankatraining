@@ -13,7 +13,7 @@ function literal(start, open, close) { const i = SRC.indexOf(start); let d = 0;
   for (let p = SRC.indexOf(open, i); p < SRC.length; p++) { if (SRC[p] === open) d++; if (SRC[p] === close && --d === 0) return SRC.slice(SRC.indexOf(open, i), p + 1); } }
 
 const LIB = [fnSrc('function coachEngine('), fnSrc('function coachHistorique('), fnSrc('function coachConseilAffichage('), fnSrc('function coachDiagAffichage('),
-  fnSrc('function coachFinSeance('), fnSrc('function coachBilanTexte('), fnSrc('function coachRecordTexte('),
+  fnSrc('function coachFinSeance('), fnSrc('function coachBilanTexte('), fnSrc('function coachRaisonsTexte('), fnSrc('function coachRecordTexte('),
   fnSrc('function e1RM('), fnSrc('function parseRir('), fnSrc('function analyzeEx('),
   'const EXERCISE_NAME_FIXES = ' + literal('const EXERCISE_NAME_FIXES = {', '{', '}') + ';', fnSrc('function normalizeExName('),
   // saveSession reel, dans une fabrique qui recoit l'etat et les fonctions de l'ecran
@@ -142,7 +142,7 @@ if (EXP) t('Donnees reelles : tes 141 seances rejouees une par une (« Terminer 
     all(a).forEach(x => { if (!all(b).some(y => y.exName === x.exName && y.title === x.title) && exAl.length < 4 && x.title.includes('PLAFOND')) exAl.push(s.date + ' ' + x.exName + ' : ' + (b.modal && b.modal.details ? (b.modal.details[x.exName] || 'stable') : '(autre alerte)')); });
     [['V1', a], ['V2', b]].forEach(([v, o]) => { if (o.alert) tally[v].al++; if (o.modal && a.modal && b.modal) { tally[v].p += o.modal.progressed.length; tally[v].s += o.modal.stagnated.length; tally[v].r += o.modal.regressed.length; tally[v].pr += o.modal.sessionPRs.length; } });
     if (a.modal && b.modal) both++;
-    if (a.modal && b.modal) exs.forEach(e => { const cl = m => m.progressed.includes(e.name) ? 'progression' : m.regressed.includes(e.name) ? 'baisse' : m.stagnated.includes(e.name) ? 'stable' : 'premiere';
+    if (a.modal && b.modal) exs.forEach(e => { const cl = m => m.progressed.includes(e.name) ? 'progression' : m.regressed.includes(e.name) ? 'baisse' : m.stagnated.includes(e.name) ? 'stable' : (m.nonComparables || []).includes(e.name) ? 'non_comparable' : 'premiere';
       const x = cl(a.modal), y = cl(b.modal); if (x !== y) { const key = x + ' -> ' + y; changes[key] = (changes[key] || 0) + 1; if (key === 'progression -> baisse' || key === 'stable -> baisse' || (exemples.length < 12 && key === 'baisse -> progression')) exemples.push(s.date + ' ' + e.name + ' : V1 ' + x + ' / moteur ' + y + ' (' + (b.modal.details[e.name] || '') + ')'); } }); });
   assert.strictEqual(JSON.stringify(EXP), before, 'export non modifie'); assert.strictEqual(savedSame, n, 'enregistrement identique pour chaque seance');
   info(n + ' fins de seance rejouees ; enregistrement identique ' + savedSame + '/' + n);

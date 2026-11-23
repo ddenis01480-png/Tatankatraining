@@ -37,7 +37,7 @@ const tests = []; const t = (n, f) => tests.push([n, f]); let infos = []; const 
 t('Moteur charge : coachEngine() le trouve ; sans moteur : null (l\'appli garde le V1)', () => { assert.strictEqual(V2.coachEngine(), E); assert.strictEqual(V1.coachEngine(), null); });
 t('index.html n\'appelle que des fonctions de LECTURE du moteur (aucune ecriture possible)', () => {
   const calls = [...new Set([...SRC.matchAll(/\bCE(?:fin)?\.(\w+)/g)].map(m => m[1]))].sort();
-  const allowed = ['bilanExercice', 'syntheseExercice', 'blocComparable', 'recordsExercice', 'trierSeances', 'comparer', 'conseilProgression', 'diagnostiquer', 'historiqueExercice', 'lireFourchette', 'mesuresSeance', 'normaliserSeances', 'normaliserSerie', 'analyser'];
+  const allowed = ['bilanExercice', 'syntheseExercice', 'blocComparable', 'analyseExercice', 'recordsExercice', 'trierSeances', 'comparer', 'conseilProgression', 'diagnostiquer', 'historiqueExercice', 'lireFourchette', 'mesuresSeance', 'normaliserSeances', 'normaliserSerie', 'analyser'];
   calls.forEach(c => assert.ok(allowed.includes(c), 'appel non prevu : CE.' + c)); info('fonctions du moteur utilisees : ' + calls.join(', ')); });
 
 // ── Conseil de progression (encadre au-dessus des series) ──

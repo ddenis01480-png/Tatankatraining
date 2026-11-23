@@ -1,5 +1,5 @@
 /*
- * coach-engine.js — Moteur d'analyse du Coach Tatanka Training (Coach V2), version 0.5.0
+ * coach-engine.js — Moteur d'analyse du Coach Tatanka Training (Coach V2), version 0.6.0
  *
  * ROLE : lire les donnees qu'on lui transmet et retourner des analyses. RIEN D'AUTRE.
  *   - aucun acces a localStorage, Supabase, au reseau, au DOM ou a React ;
@@ -33,7 +33,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var VERSION = "0.5.0";
+  var VERSION = "0.6.0";
 
   // Reglages centralises (une seule valeur par regle).
   var REGLES = Object.freeze({
@@ -55,6 +55,7 @@
     SERIE_SUSPECTE_ECART: 20,      // ... et au moins 20 reps de plus que cette mediane (evite les faux positifs a 1-5 reps)
     RUPTURE_CHARGE_PCT: 0.2,       // comparaison non fiable si la charge change de >= 20 % d'une seance a l'autre...
     RUPTURE_REPS_MARGE: 1.5,       // ... avec des reps moyennes quasi identiques (+-1,5) : changement de machine ou de reglage probable
+    DIAGNOSTIC_REPS_MAX: 15,       // perimetre V1 du diagnostic : fourchettes jusqu'a 15 reps
     SYNTHESE_SEANCES: 8,           // onglet Progres : tendance calculee sur les 8 dernieres seances (= liste affichee)
     RIR_DUR_MAX: 4,                // serie « dure » = RIR connu <= 4
     RIR_HAUT: 4,                   // V1 : RIR moyen >= 4 -> « pousse plus fort »
@@ -491,6 +492,40 @@
     return { seances: hist.slice(i), rupture: i > 0 ? { date: hist[i].date, avant: hist[i - 1].date, raisons: comparabilite(hist[i - 1], hist[i]).raisons } : null };
   }
 
+  // ANALYSE UNIQUE d'un exercice, utilisee par l'ecran Fin de seance ET par l'onglet Progres : memes seances = meme resultat.
+  // historique : entrees de historiqueExercice, la seance analysee en DERNIER (la seance du jour en fin de seance).
+  // Retour :
+  //   performance : "premiere" | "progression" | "stable" | "regression" | "non_comparable" (derniere seance vs la precedente)
+  //   bilan       : bilanExercice (avec volume, tendance, comparaison { fiable, raisons })
+  //   statut      : "ok" | "historique_insuffisant" | "non_comparable" | "hors_perimetre" (pour le diagnostic)
+  //   diagnostic  : diagnostiquer() sur le DERNIER BLOC COMPARABLE seulement, ou null ;
+  //                 plafond atteint alors que la derniere seance progresse -> diagnostic.enProgression = true (indication positive) ;
+  //                 regression sur 3 seances alors que la derniere progresse -> pas de diagnostic (meme garde partout)
+  //   alerte      : le diagnostic s'il faut ALERTER (trop rapide, vrai plafond, vraie regression), sinon null
+  //   bloc        : { seances, rupture } (rupture = raisons de la derniere coupure)
+  function analyseExercice(historique, options) {
+    options = options || {};
+    var hist = trierHist(historique).filter(function (h) { return mesuresSeance(seriesNorm(h.series)).seriesValides > 0; });
+    if (!hist.length) return { performance: "premiere", statut: "historique_insuffisant", bilan: null, diagnostic: null, alerte: null, bloc: { seances: 0, rupture: null } };
+    var last = hist[hist.length - 1], f = options.fourchette || last.fourchette || lireFourchette("");
+    var bilan = bilanExercice(hist.slice(0, -1), last.series, f);
+    var performance = bilan.verdict === "premiere" ? "premiere" : (bilan.comparaison && !bilan.comparaison.fiable) ? "non_comparable" : bilan.verdict;
+    var bc = blocComparable(hist), bloc = bc.seances, diag = null, statut;
+    if (!(f.type === "reps" && f.max <= REGLES.DIAGNOSTIC_REPS_MAX)) statut = "hors_perimetre";
+    else if (hist.length < 2) statut = "historique_insuffisant";
+    else if (bloc.length < 2) statut = "non_comparable";
+    else {
+      statut = "ok"; diag = diagnostiquer(bloc, f);
+      if (diag && (diag.code === "plafond" || diag.code === "regression")) {
+        var progresse = comparer(mesuresSeance(seriesNorm(bloc[bloc.length - 2].series)), mesuresSeance(seriesNorm(bloc[bloc.length - 1].series)), diag.mode, f) === "progression";
+        if (progresse && diag.code === "regression") diag = null;
+        else if (progresse) diag.enProgression = true;
+      }
+    }
+    return { fourchette: f, performance: performance, bilan: bilan, statut: statut, diagnostic: diag,
+      alerte: diag && diag.typeV1 > 0 && !diag.enProgression ? diag : null, bloc: { seances: bloc.length, rupture: bc.rupture } };
+  }
+
   // Synthese d'un exercice pour l'onglet Progres (lecture seule).
   //   derniere : la derniere seance contre la precedente (bilanExercice : performance + volume + tendance) ;
   //   periode  : sur les N dernieres seances (defaut 8) : performance = meilleure serie (force estimee, « fiable » si toutes
@@ -731,7 +766,7 @@
     modeMesure: modeMesure, axesProgression: axesProgression, comparer: comparer, natureProgression: natureProgression, diagnostiquer: diagnostiquer, tendance: tendance, conseilProgression: conseilProgression,
     bilanExercice: bilanExercice, recordsExercice: recordsExercice,
     volumeEntre: volumeEntre, meilleureSerieEntre: meilleureSerieEntre, tendanceGenerale: tendanceGenerale, TENDANCES: TENDANCES,
-    syntheseExercice: syntheseExercice, pistesAdaptation: pistesAdaptation, comparabilite: comparabilite, blocComparable: blocComparable, filtrerSuspectes: filtrerSuspectes,
+    syntheseExercice: syntheseExercice, pistesAdaptation: pistesAdaptation, comparabilite: comparabilite, blocComparable: blocComparable, analyseExercice: analyseExercice, filtrerSuspectes: filtrerSuspectes,
     // 5. domaines
     scoreFatigue: scoreFatigue, rirRecent: rirRecent, recuperation: recuperation, volume: volume, priorites: priorites, morphologie: morphologie,
     // 6. analyse complete
