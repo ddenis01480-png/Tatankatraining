@@ -12,7 +12,7 @@ function fnSrc(sig) { const i = SRC.indexOf(sig); if (i < 0) throw new Error('in
 function literal(start, open, close) { const i = SRC.indexOf(start); let d = 0;
   for (let p = SRC.indexOf(open, i); p < SRC.length; p++) { if (SRC[p] === open) d++; if (SRC[p] === close && --d === 0) return SRC.slice(SRC.indexOf(open, i), p + 1); } }
 
-const LIB = [fnSrc('function coachEngine('), fnSrc('function coachHistorique('), fnSrc('function coachConseilAffichage('), fnSrc('function coachDiagAffichage('),
+const LIB = [fnSrc('function coachEngine('), fnSrc('function coachHistorique('), fnSrc('function coachConseilAffichage('), fnSrc('function coachDiagAffichage('), fnSrc('function coachEcartTexte('),
   fnSrc('function coachFinSeance('), fnSrc('function coachBilanTexte('), fnSrc('function coachRecordTexte('), fnSrc('function coachRaisonsTexte('),
   fnSrc('function coachProgres('), fnSrc('function coachPlafondProgression('),
   fnSrc('function e1RM('), fnSrc('function fmtDate('), fnSrc('function parseRir('), fnSrc('function analyzeEx('),
@@ -27,6 +27,7 @@ vm.createContext(ctx); vm.runInContext(LIB, ctx);
 const plain = o => JSON.parse(JSON.stringify(o));
 
 const S = (w, r) => ({ weight: w, reps: r, rir: 2, done: true });
+const fmt = d => d.slice(8, 10) + '/' + d.slice(5, 7);
 const day = i => new Date(Date.UTC(2026, 0, 1 + i * 2)).toISOString().slice(0, 10);
 // rows : [['60x10,60x10', '8-12'], ...] ; la DERNIERE ligne est la seance du jour.
 const build = rows => rows.map(([txt, rt], k) => ({ id: k + 1, date: day(k), routineId: 1, routineName: 'R', exercises: [{ name: 'Exo', repsTarget: rt || '8-12', sets: txt.split(',').map(y => S(...y.split('x').map(Number))) }] }));
@@ -79,7 +80,43 @@ t('Historique insuffisant : premiere seance -> aucun bilan ni diagnostic dans le
   let r = memes(deuxEcrans(build([['60x10,60x10']]), 'Exo'));
   assert.deepStrictEqual([r.fin.performance, r.progres.statut, r.progres.carte], ['premiere', 'historique_insuffisant', null]);
   r = memes(deuxEcrans(build([['60x10,60x10'], ['60x9,60x9']]), 'Exo'));
-  assert.deepStrictEqual([r.fin.performance, r.fin.alerte, r.progres.carte], ['regression', null, 'CHARGE MAINTENUE'], 'il faut 3 seances pour une alerte de regression'); });
+  assert.deepStrictEqual([r.fin.performance, r.fin.alerte, r.progres.carte], ['regression', null, 'PERFORMANCE EN BAISSE'], 'il faut 3 seances pour une alerte de regression ; la carte ne dit plus « meme performance »'); });
+// Carte du diagnostic : coherente avec la ligne Performance.
+const CARTE_PERF = { 'CHARGE MAINTENUE': ['stable'], 'PERFORMANCE EN BAISSE': ['regression'], 'LEGERE PROGRESSION': ['progression'], 'PROGRESSION OPTIMALE': ['progression'],
+  'PROGRESSION — HAUT DE FOURCHETTE ATTEINT': ['progression'], 'PROGRESSION — HAUT DE FOURCHETTE PRESQUE ATTEINT': ['progression'], 'PROGRESSION TROP RAPIDE': ['progression'],
+  'REGRESSION PERSISTANTE': ['regression'], 'STAGNATION — PLAFOND': ['stable', 'regression'], "PAS DE DIAGNOSTIC POUR L'INSTANT": ['non_comparable'] };
+const carteCoherente = r => !r.progres.carte || (CARTE_PERF[r.progres.carte] || []).includes(r.progres.performance);
+t('Carte « CHARGE MAINTENUE » seulement si la performance est vraiment stable ; en baisse -> « PERFORMANCE EN BAISSE » ; legere hausse -> « LEGERE PROGRESSION »', () => {
+  let r = memes(deuxEcrans(build([['60x10,60x10'], ['60x10,60x10']]), 'Exo'));
+  assert.deepStrictEqual([r.progres.performance, r.progres.carte, r.progres.raison], ['stable', 'CHARGE MAINTENUE', 'Meme performance que la seance precedente.']);
+  r = memes(deuxEcrans(build([['60x10,60x10'], ['60x9,60x9']]), 'Exo'));
+  assert.deepStrictEqual([r.fin.performance, r.progres.performance, r.progres.carte, r.progres.raison],
+    ['regression', 'regression', 'PERFORMANCE EN BAISSE', '−2 reps a 60kg depuis la derniere seance. Une seule seance en baisse : pas encore une regression persistante.']);
+  r = memes(deuxEcrans(build([['60x10,60x10'], ['57.5x10,57.5x10']]), 'Exo'));
+  assert.deepStrictEqual([r.progres.carte, r.progres.raison.split(' depuis')[0]], ['PERFORMANCE EN BAISSE', 'Charge −2.5kg']);
+  r = memes(deuxEcrans(build([['22.5x8,22.5x8'], ['22.5x9,22.5x7']]), 'Exo'));
+  assert.deepStrictEqual([r.progres.performance, r.progres.carte, r.progres.raison], ['progression', 'LEGERE PROGRESSION', 'Force estimee +0.8kg depuis la derniere seance.'], '+0,75 kg de force : invisible une fois arrondi, le V1 disait « meme performance »');
+  r = memes(deuxEcrans(build([['20x13,20x13', '10-15'], ['20x12,20x12', '10-15']]), 'Exo'));
+  assert.deepStrictEqual([r.progres.carte, r.progres.raison.split(' depuis')[0]], ['PERFORMANCE EN BAISSE', '−2 reps a 20kg'], 'mode repetitions (10-15)'); });
+t('Saisies probablement inversees (cas reels Tractions 6 x 80 et 7 x 80, Extension triceps 12 x 32) : exclues des graphiques, force, records et comparaisons ; visibles avec l\'avertissement ; donnees intactes ; les deux ecrans d\'accord', () => {
+  const deepFreeze = o => { Object.values(o).forEach(v => v && typeof v === 'object' && deepFreeze(v)); return Object.freeze(o); };
+  const tr = build([['6x80,6x80,6x80'], ['6x80,6x80,7x80'], ['80x8,80x8,80x8'], ['80x8,80x8,80x9']]); const avant = JSON.stringify(tr); deepFreeze(tr);
+  const p = plain(ctx.coachProgres(E, tr, 'Exo'));
+  assert.deepStrictEqual(p.history.map(h => [h.date, h.analysee, h.sets.map(x => x.suspecte)[0]]), [[day(0), false, 'inversion_probable'], [day(1), false, 'inversion_probable'], [day(2), true, null], [day(3), true, null]], 'visibles dans l\'historique');
+  assert.deepStrictEqual(p.chartData.map(c => [c.date, c.rm, c.charge]), [[fmt(day(2)), 101, 80], [fmt(day(3)), 104, 80]], 'graphique et force : seulement les seances fiables');
+  assert.ok(SRC.includes('⚠ saisie probablement inversée (charge ↔ reps) · ignorée par l\'analyse, non modifiée'), 'avertissement affiche');
+  let r = memes(deuxEcrans(tr.slice(0, 3), 'Exo'));
+  assert.deepStrictEqual([r.fin.performance, r.fin.alerte], ['premiere', null], 'plus de faux « charge +73kg » ni « PROGRESSION TROP RAPIDE » le 08/06');
+  assert.deepStrictEqual(plain(ctx.coachFinSeance(E, tr.slice(0, 2), tr[2].exercises, tr[2].date, 3)).sessionPRs, [], 'pas de faux record « charge max 80kg » contre 7 kg');
+  r = memes(deuxEcrans(tr.slice(0, 2), 'Exo')); assert.strictEqual(r.fin.performance, 'premiere', 'le 30/05 : plus de faux « trop rapide » 6 -> 7 kg');
+  assert.deepStrictEqual(plain(ctx.coachFinSeance(E, tr.slice(0, 1), tr[1].exercises, tr[1].date, 2)).sessionPRs, [], 'pas de faux record « charge max 7kg »');
+  r = memes(deuxEcrans(tr, 'Exo')); assert.deepStrictEqual([r.fin.performance, r.fin.detail], ['progression', '+1 rep à 80kg']);
+  assert.strictEqual(JSON.stringify(tr), avant, 'seances enregistrees intactes');
+  const tri = build([['12x32,12x32,12x32', '12-15'], ['32x12,32x12,32x12', '12-15']]);
+  r = memes(deuxEcrans(tri, 'Exo')); assert.deepStrictEqual([r.fin.performance, r.fin.detail], ['premiere', null], 'plus de fausse progression « charge +20kg » le 26/03');
+  assert.deepStrictEqual(plain(ctx.coachProgres(E, tri, 'Exo')).chartData.map(c => c.charge), [32]);
+  const le = build([['47.5x10,47.5x10', '15-20'], ['15x32,15x32,15x32', '15-20'], ['15x35,15x35,15x35', '15-20']]);
+  assert.ok(plain(ctx.coachProgres(E, le, 'Exo')).history.every(h => h.analysee && h.sets.every(x => !x.suspecte)), 'Leg extension 15 x 32 / 15 x 35 (non confirme) : regle NON appliquee'); });
 t('Ecran Fin de seance reel (saveSession) : la rubrique « ≠ NON COMPARABLE » recoit l\'exercice et sa raison ; l\'enregistrement ne change pas', () => {
   const sessions = build([['160x11,160x12,160x12']]);
   const out = {}; const env = { currentSets: { routineId: 1, routineName: 'R', exercises: [{ name: 'Exo', repsTarget: '15-20', sets: [1, 2, 3].map(() => ({ weight: '120', reps: '15', rir: '', done: true })) }] },
@@ -95,13 +132,18 @@ t('Une seule regle : les deux ecrans passent par CE.analyseExercice (pas de diag
 const REAL = process.env.EXPORT_FILE; const EXP = REAL && fs.existsSync(REAL) ? JSON.parse(fs.readFileSync(REAL, 'utf8')) : null;
 if (EXP) t('Donnees reelles : chaque exercice de chaque seance, rejoue en Fin de seance et dans l\'onglet Progres -> meme resultat ; export non modifie', () => {
   const before = JSON.stringify(EXP); const ss = [...EXP.sessions].sort((x, y) => x.date < y.date ? -1 : x.date > y.date ? 1 : x.id - y.id);
-  let n = 0, ecarts = []; const tally = {}, alertes = {};
+  let n = 0, ecarts = [], ecartsCarte = []; const tally = {}, alertes = {};
   ss.forEach((s, k) => { const names = [...new Set((s.exercises || []).filter(e => (e.sets || []).some(st => st.weight && st.reps)).map(e => e.name))];
     names.forEach(nm => { const r = deuxEcrans(ss.slice(0, k + 1), nm); n++;
       if (JSON.stringify([r.fin.performance, r.fin.alerte, r.fin.plafondPositif]) !== JSON.stringify([r.progres.performance, r.progres.alerte, r.progres.plafondPositif])) ecarts.push(s.date + ' ' + nm + ' ' + JSON.stringify(r));
+      if (!carteCoherente(r)) ecartsCarte.push(s.date + ' ' + nm + ' : ' + r.progres.carte + ' / ' + r.progres.performance);
       tally[r.fin.performance] = (tally[r.fin.performance] || 0) + 1; if (r.fin.alerte) alertes[r.fin.alerte] = (alertes[r.fin.alerte] || 0) + 1; }); });
   assert.strictEqual(JSON.stringify(EXP), before, 'export non modifie');
   assert.deepStrictEqual(ecarts.slice(0, 3), [], ecarts.length + ' ecart(s)');
+  assert.deepStrictEqual(ecartsCarte.slice(0, 3), [], ecartsCarte.length + ' carte(s) incoherente(s) avec la ligne Performance');
+  const inv = []; [...new Set(ss.flatMap(x => (x.exercises || []).map(e => e.name)))].forEach(nm => plain(ctx.coachProgres(E, ss, nm)).history.forEach(h => { if (h.sets.some(x => x.suspecte === 'inversion_probable')) inv.push(nm + ' ' + h.date); }));
+  assert.deepStrictEqual(inv.sort(), ['Extension triceps overhead câble 2026-03-19', 'Tractions lestées prise large 2026-05-22', 'Tractions lestées prise large 2026-05-30'], 'exactement les 3 seances signalees, pas la Leg extension');
+  info('cartes coherentes avec la ligne Performance : ' + (n - ecartsCarte.length) + '/' + n + ' ; saisies probablement inversees : ' + inv.join(', '));
   info(n + ' analyses (exercice x seance) : resultat identique dans les deux ecrans ' + (n - ecarts.length) + '/' + n);
   info('performance : ' + JSON.stringify(tally)); info('alertes : ' + JSON.stringify(alertes)); });
 

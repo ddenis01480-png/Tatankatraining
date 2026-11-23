@@ -11,7 +11,7 @@ function fnSrc(sig) { const i = SRC.indexOf(sig); if (i < 0) throw new Error('in
 function literal(start, open, close) { const i = SRC.indexOf(start); let d = 0;
   for (let p = SRC.indexOf(open, i); p < SRC.length; p++) { if (SRC[p] === open) d++; if (SRC[p] === close && --d === 0) return SRC.slice(SRC.indexOf(open, i), p + 1); } }
 
-const CODE = [fnSrc('function coachEngine('), fnSrc('function coachHistorique('), fnSrc('function coachConseilAffichage('), fnSrc('function coachDiagAffichage('),
+const CODE = [fnSrc('function coachEngine('), fnSrc('function coachHistorique('), fnSrc('function coachConseilAffichage('), fnSrc('function coachDiagAffichage('), fnSrc('function coachEcartTexte('),
   fnSrc('function e1RM('), fnSrc('function parseRir('), fnSrc('function analyzeEx('), fnSrc('function getProgressionTip('),
   'const EXERCISE_NAME_FIXES = ' + literal('const EXERCISE_NAME_FIXES = {', '{', '}') + ';', fnSrc('function normalizeExName('),
   'this.api = { coachEngine, coachHistorique, coachConseilAffichage, coachDiagAffichage, e1RM, analyzeEx, getProgressionTip, normalizeExName };'].join('\n');
@@ -67,10 +67,13 @@ t('Conseil : historique trie par date avant l\'analyse (resultat independant de 
   assert.ok(V2.getProgressionTip(last, sessions, 'Exo test', '8-12', 3).msg.startsWith('Régression')); });
 
 // ── Diagnostic (texte des alertes) ──
-t('Alertes : en mode force, le texte du diagnostic du moteur = celui du V1 (analyzeEx) sur 3 000 historiques', () => {
-  const r = rng(11); for (let i = 0; i < 3000; i++) { const h = genHist(r, 2 + Math.floor(r() * 6), 6, 12); const a = V1.analyzeEx(h);
+t('Alertes : en mode force, le texte du diagnostic du moteur = celui du V1 (analyzeEx) sur 3 000 historiques ; seule exception voulue : « CHARGE MAINTENUE » du V1 quand la derniere seance est en baisse ou en legere hausse', () => {
+  let changees = { baisse: 0, hausse: 0 }; const r = rng(11); for (let i = 0; i < 3000; i++) { const h = genHist(r, 2 + Math.floor(r() * 6), 6, 12); const a = V1.analyzeEx(h);
     const b = V2.coachDiagAffichage(E.diagnostiquer(h.map(x => ({ date: x.date, series: x.sets.map(E.normaliserSerie) })), E.lireFourchette('8-12')));
-    assert.deepStrictEqual(JSON.parse(JSON.stringify(b)), JSON.parse(JSON.stringify(a)), 'cas ' + i); } });
+    const d = E.diagnostiquer(h.map(x => ({ date: x.date, series: x.sets.map(E.normaliserSerie) })), E.lireFourchette('8-12'));
+    if (a && a.title === 'CHARGE MAINTENUE' && d.performance !== 'stable') { assert.strictEqual(b.title, d.performance === 'regression' ? 'PERFORMANCE EN BAISSE' : 'LEGERE PROGRESSION', 'cas ' + i); changees[d.performance === 'regression' ? 'baisse' : 'hausse']++; continue; }
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(b)), JSON.parse(JSON.stringify(a)), 'cas ' + i); }
+  info('cartes « CHARGE MAINTENUE » du V1 remplacees : ' + changees.baisse + ' en baisse, ' + changees.hausse + ' en legere hausse (sur 3 000)'); });
 t('Alertes en mode repetitions (10-15) : textes en reps et en charge, jamais « 1RM »', () => {
   const h = (...ss) => ss.map((x, i) => ({ date: day(i), series: x.map(([w, k]) => E.normaliserSerie(S(w, k))) })); const f = E.lireFourchette('10-15');
   const p = V2.coachDiagAffichage(E.diagnostiquer(h([[20, 15], [20, 14]], [[20, 15], [20, 14]], [[20, 15], [20, 15]]), f)); assert.strictEqual(p.title, 'STAGNATION — PLAFOND'); assert.ok(!p.msg.includes('1RM') && p.msg.includes('20kg'), p.msg);

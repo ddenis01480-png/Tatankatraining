@@ -11,7 +11,7 @@ function fnSrc(sig) { const i = SRC.indexOf(sig); if (i < 0) throw new Error('in
 function literal(start, open, close) { const i = SRC.indexOf(start); let d = 0;
   for (let p = SRC.indexOf(open, i); p < SRC.length; p++) { if (SRC[p] === open) d++; if (SRC[p] === close && --d === 0) return SRC.slice(SRC.indexOf(open, i), p + 1); } }
 
-const LIB = [fnSrc('function coachEngine('), fnSrc('function coachHistorique('), fnSrc('function coachDiagAffichage('), fnSrc('function coachBilanTexte('),
+const LIB = [fnSrc('function coachEngine('), fnSrc('function coachHistorique('), fnSrc('function coachDiagAffichage('), fnSrc('function coachEcartTexte('), fnSrc('function coachBilanTexte('),
   fnSrc('function coachProgres('), fnSrc('function coachPlafondProgression('), fnSrc('function coachRaisonsTexte('), 'const COACH_TENDANCES = ' + literal('const COACH_TENDANCES = {', '{', '}') + ';',
   fnSrc('function coachSens('), fnSrc('function coachPct('), fnSrc('function coachLectureDerniere('), fnSrc('function coachLecturePeriode('),
   fnSrc('function e1RM('), fnSrc('function fmtDate('), fnSrc('function parseRir('), fnSrc('function analyzeEx('),
@@ -133,7 +133,7 @@ t('Serie aberrante (cas reel 6,8 kg x 112 entre deux x 12) : ignoree pour force,
   assert.strictEqual(JSON.stringify(s), before, 'donnee enregistree non modifiee');
   assert.deepStrictEqual(a.chartData.map(d => [d.rm, Math.round(d.tonnage)]), [[32, 925], [10, 252], [13, 324]], 'V1 : force 32 kg et tonnage x5,7 le 1er jour');
   assert.deepStrictEqual(b.chartData.map(d => [d.rm, d.tonnage]), [[10, 163.2], [10, 251.6], [13, 324]]);
-  assert.deepStrictEqual(b.history[0].sets.map(x => [x.reps, x.suspecte]), [[12, false], [112, true], [12, false]], 'serie montee barree, pas cachee');
+  assert.deepStrictEqual(b.history[0].sets.map(x => [x.reps, x.suspecte]), [[12, null], [112, 'reps_aberrantes'], [12, null]], 'serie montee barree, pas cachee');
   const r = E.recordsExercice(E.historiqueExercice(E.normaliserSeances(s.slice(0, 2)), 'Exo test'), [{ weight: 9, reps: 12 }], E.lireFourchette('12-15'));
   assert.deepStrictEqual([r.record, r.force.avant], [true, 10], 'records : la reference passe de 32 kg (faux) a 10 kg');
   const nonFiltre = E.recordsExercice([{ date: 'x', series: s[0].exercises[0].sets.map(E.normaliserSerie) }, { date: 'y', series: s[1].exercises[0].sets.map(E.normaliserSerie) }], [{ weight: 9, reps: 12 }]);
@@ -197,7 +197,7 @@ if (EXP) t('Donnees reelles : chaque exercice de tes seances dans l\'onglet Prog
     const key = h => h.map(x => x.date + ':' + x.sets.map(st => st.weight + 'x' + st.reps).join(','));
     if (JSON.stringify(key(a.history)) === JSON.stringify(key(b.history))) same.hist++; else ordre.push(nm);
     const cv = c => c.map(d => [d.date, d.rm, d.charge, Math.round(d.tonnage * 10) / 10]);
-    if (JSON.stringify(cv(a.chartData)) === JSON.stringify(cv(b.chartData))) same.chart++; else chartDiff.push(nm + ' : ' + a.chartData.map((d, k) => JSON.stringify(cv([d])) === JSON.stringify(cv([b.chartData[k]])) ? '' : d.date + ' V1 ' + d.rm + 'kg / ' + d.tonnage + 'kg -> moteur ' + b.chartData[k].rm + 'kg / ' + b.chartData[k].tonnage + 'kg').filter(Boolean).join(', '));
+    if (JSON.stringify(cv(a.chartData)) === JSON.stringify(cv(b.chartData))) same.chart++; else chartDiff.push(nm + ' : ' + a.chartData.map(d => { const m = b.chartData.find(x => x.date === d.date); return !m ? d.date + ' V1 ' + d.rm + 'kg (charge ' + d.charge + ') -> moteur : exclue' : JSON.stringify(cv([d])) === JSON.stringify(cv([m])) ? '' : d.date + ' V1 ' + d.rm + 'kg / ' + d.tonnage + 'kg -> moteur ' + m.rm + 'kg / ' + m.tonnage + 'kg'; }).filter(Boolean).join(', '));
     nonFiables += b.synthese && b.synthese.derniere.comparaison && !b.synthese.derniere.comparaison.fiable ? 1 : 0;
     approx += b.history.filter(h => h.fiable === false).length;
     const da = a.diag ? a.diag.title : '-', db = b.diag ? b.diag.title : '-';
@@ -207,7 +207,7 @@ if (EXP) t('Donnees reelles : chaque exercice de tes seances dans l\'onglet Prog
     if (b.synthese) b.synthese.pistes.forEach(p => { assert.strictEqual(p.statut, 'non_activee'); pistes[p.code] = (pistes[p.code] || 0) + 1; }); });
   assert.strictEqual(JSON.stringify(EXP), before, 'export non modifie');
   assert.strictEqual(same.hist, n, 'meme historique (dates, series) que le V1 : ' + ordre.join(', '));
-  assert.deepStrictEqual(chartDiff.map(x => x.split(' : ')[0]), ['Écarté poulie basse (Fly câble bas)'], 'graphique = V1 sauf la serie aberrante');
+  assert.deepStrictEqual(chartDiff.map(x => x.split(' : ')[0]).sort(), ['Extension triceps overhead câble', 'Tractions lestées prise large', 'Écarté poulie basse (Fly câble bas)'].sort(), 'graphique = V1 sauf la serie aberrante et les saisies probablement inversees');
   chartDiff.forEach(x => info('graphique different : ' + x));
   info('derniere seance signalee « comparaison non fiable » : ' + nonFiables + ' exercice(s)');
   info(n + ' exercices ; historique identique au V1 : ' + same.hist + '/' + n + ' ; graphique identique : ' + same.chart + '/' + n + ' ; seances marquees « ≈ » : ' + approx);

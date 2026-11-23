@@ -1,5 +1,5 @@
 /*
- * coach-engine.js — Moteur d'analyse du Coach Tatanka Training (Coach V2), version 0.6.0
+ * coach-engine.js — Moteur d'analyse du Coach Tatanka Training (Coach V2), version 0.7.0
  *
  * ROLE : lire les donnees qu'on lui transmet et retourner des analyses. RIEN D'AUTRE.
  *   - aucun acces a localStorage, Supabase, au reseau, au DOM ou a React ;
@@ -33,7 +33,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var VERSION = "0.6.0";
+  var VERSION = "0.7.0";
 
   // Reglages centralises (une seule valeur par regle).
   var REGLES = Object.freeze({
@@ -53,6 +53,8 @@
     VOLUME_PCT: 0.02,              // volume de travail : tonnage a +-2 % = stable (meme seuil que le bilan V1)
     SERIE_SUSPECTE_FACTEUR: 3,     // serie ignoree par l'analyse si ses reps >= 3 x la mediane des autres series du meme exercice (>= 2 autres)
     SERIE_SUSPECTE_ECART: 20,      // ... et au moins 20 reps de plus que cette mediane (evite les faux positifs a 1-5 reps)
+    INVERSION_REPS_FACTEUR: 2,     // saisie « probablement inversee » : reps > 2 x le haut de fourchette...
+    INVERSION_MARGE: 3,            // ... ET charge qui, lue comme des reps, tombe dans la fourchette (+-3) : ex. 6 x 80 en 8-12 = 80 kg x 6
     RUPTURE_CHARGE_PCT: 0.2,       // comparaison non fiable si la charge change de >= 20 % d'une seance a l'autre...
     RUPTURE_REPS_MARGE: 1.5,       // ... avec des reps moyennes quasi identiques (+-1,5) : changement de machine ou de reglage probable
     DIAGNOSTIC_REPS_MAX: 15,       // perimetre V1 du diagnostic : fourchettes jusqu'a 15 reps
@@ -146,19 +148,24 @@
 
   // PROTECTION ANALYTIQUE (lecture seule) : une serie dont les reps sont aberrantes par rapport aux autres series du meme exercice
   // dans la meme seance (ex. 6,8 kg x 112 entre deux 6,8 kg x 12) est marquee « suspecte » et ignoree par l'analyse
-  // (valide: false). La donnee enregistree n'est JAMAIS modifiee : seule la copie analysee porte la marque.
+  // (valide: false). Meme traitement pour une saisie PROBABLEMENT INVERSEE (charge et reps permutees, voir REGLES.INVERSION_*).
+  // La donnee enregistree n'est JAMAIS modifiee : seule la copie analysee porte la marque.
   // Ne s'applique pas aux series de 100 ni aux exercices en duree.
   function mediane(a) { a = a.slice().sort(function (x, y) { return x - y; }); var m = a.length >> 1; return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2; }
   function filtrerSuspectes(series, fourchette) {
     var f = fourchette || {}, nb = 0;
     if (f.type === "serie100" || f.type === "duree") return { series: (series || []).slice(), nb: 0 };
     var v = (series || []).filter(function (st) { return st && st.valide; });
+    var marquer = function (st, code) { nb++; var c = {}; Object.keys(st).forEach(function (k) { c[k] = st[k]; }); c.valide = false; c.suspecte = code; return c; };
     var out = (series || []).map(function (st) {
       if (!st || !st.valide) return st;
+      // Saisie probablement inversee (charge <-> reps) : ex. Tractions 6 x 80 en 8-12 (en realite 80 kg x 6).
+      if (f.type === "reps" && f.max && st.reps > REGLES.INVERSION_REPS_FACTEUR * f.max && st.charge >= f.min - REGLES.INVERSION_MARGE && st.charge <= f.max + REGLES.INVERSION_MARGE)
+        return marquer(st, "inversion_probable");
       var autres = v.filter(function (x) { return x !== st; }).map(function (x) { return x.reps; });
       var md = autres.length >= 2 ? mediane(autres) : 0;
       if (autres.length >= 2 && st.reps >= REGLES.SERIE_SUSPECTE_FACTEUR * md && st.reps - md >= REGLES.SERIE_SUSPECTE_ECART) {
-        nb++; var c = {}; Object.keys(st).forEach(function (k) { c[k] = st[k]; }); c.valide = false; c.suspecte = "reps_aberrantes"; return c;
+        return marquer(st, "reps_aberrantes");
       }
       return st;
     });
@@ -356,7 +363,8 @@
         var perteT = last3[0].tonnage - last.tonnage;
         if (baisse && perteT > last3[0].tonnage * REGLES.REGRESSION_PCT) return res(3, { perte: round1(perteT) });
       }
-      return comparer(prev, last, mode, f) === "progression" ? res(0, { nature: natureProgression(axes) }) : res(-1);
+      var cmpR = comparer(prev, last, mode, f);
+      return cmpR === "progression" ? res(0, { nature: natureProgression(axes) }) : res(-1, { performance: cmpR });
     }
     // Mode force : regles et seuils du V1.
     if (pct > REGLES.TROP_RAPIDE_PCT && jump > REGLES.TROP_RAPIDE_KG) return res(1);
@@ -371,7 +379,9 @@
     }
     // Derniere etape (regle V1, sur la force ARRONDIE comme les seuils ci-dessus) : force en hausse, ou plus de reps a charge egale ou plus lourde.
     if (b > a || (last.repsTotal > prev.repsTotal && last.chargeMax >= prev.chargeMax)) return res(0, { nature: natureProgression(axes), repsGagnees: b > a ? 0 : last.repsTotal - prev.repsTotal });
-    return res(-1);
+    // Pas de diagnostic V1 (ni alerte, ni progression arrondie) : on dit quand meme si la derniere seance est stable, en baisse ou en
+    // legere hausse (meme definition que la ligne Performance), pour ne jamais afficher « meme performance » a tort.
+    return res(-1, { performance: comparer(prev, last, mode, f) });
   }
 
   // ── Fin de seance ──

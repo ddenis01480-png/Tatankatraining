@@ -870,7 +870,21 @@ function coachDiagAffichage(d) {
       ? (d.nature === "charge" ? "+" + d.axes.charge + "kg de charge, repetitions dans la fourchette." : "+" + (d.axes.reps !== null ? d.axes.reps : d.axes.repsTotal) + " rep(s) a " + D.chargeMax + "kg depuis la derniere seance.")
       : (d.mesure.derniere > d.mesure.precedente ? "+" + (d.mesure.derniere - d.mesure.precedente) + "kg 1RM depuis la derniere seance." : "+" + d.repsGagnees + " rep(s) au total depuis la derniere seance."),
     actions: ["+1 rep sur la derniere serie si tu atteins le haut de la fourchette"] };
+  // Pas de diagnostic V1 : la carte suit la performance de la derniere seance (meme definition que la ligne Performance).
+  // « CHARGE MAINTENUE » seulement si la performance est vraiment stable.
+  if (d.performance === "regression") return { type: -1, color: "#FF8C00", icon: "↓", urgency: "A SURVEILLER", title: "PERFORMANCE EN BAISSE",
+    msg: coachEcartTexte(d) + " depuis la derniere seance. Une seule seance en baisse : pas encore une regression persistante.", actions: ["Garde la meme charge et vise les reps de la seance precedente", "Verifie sommeil, fatigue et recuperation"] };
+  if (d.performance === "progression") return { type: 0, color: "#00C853", icon: "V", urgency: "EN PROGRESSION", title: "LEGERE PROGRESSION",
+    msg: coachEcartTexte(d) + " depuis la derniere seance.", actions: ["+1 rep sur la derniere serie si tu atteins le haut de la fourchette"] };
   return { type: -1, color: "#888", icon: "-", urgency: "STABLE", title: "CHARGE MAINTENUE", msg: "Meme performance que la seance precedente.", actions: ["Essaie +1 rep sur la derniere serie seulement"] };
+}
+// Ecart de la derniere seance, en clair : charge, reps a charge egale, ou force estimee (« ≈ » au-dela de 12 reps).
+function coachEcartTexte(d) {
+  const a = d.axes || {}, kg = (d.derniere || {}).chargeMax, sg = x => (x > 0 ? "+" : x < 0 ? "−" : "") + Math.abs(x);
+  if (a.charge) return "Charge " + sg(a.charge) + "kg";
+  if (a.reps !== null && a.reps !== undefined && a.reps !== 0) return sg(a.reps) + " rep" + (Math.abs(a.reps) > 1 ? "s" : "") + " a " + kg + "kg";
+  if (a.repsTotal) return sg(a.repsTotal) + " rep" + (Math.abs(a.repsTotal) > 1 ? "s" : "") + " au total";
+  return "Force estimee " + (a.forceFiable ? "" : "≈") + sg(a.forcePrecise) + "kg";
 }
 
 // Fin de seance (Coach V2) : alertes, bilan progression / stagnation / regression et records, avec les MEMES regles que l'ecran
@@ -918,9 +932,11 @@ function coachRecordTexte(r) {
 // Seance et Fin de seance, et trois lectures distinctes : performance, volume de travail, tendance generale. Lecture seule.
 function coachProgres(CE, sessions, exName) {
   // Series « suspectes » (ex. 6,8 kg x 112 entre deux x 12) : ignorees par l'analyse, affichees barrees ; la seance enregistree ne change pas.
-  const h = coachHistorique(CE, sessions, exName).filter(e => e.series.some(st => st.valide));
+  // Saisies « probablement inversees » (charge <-> reps) : meme traitement ; la seance reste dans la liste, avec l'avertissement.
+  const tout = coachHistorique(CE, sessions, exName).filter(e => e.series.some(st => st.valide || st.suspecte));
+  const h = tout.filter(e => e.series.some(st => st.valide));
   const f = h.length ? h[h.length - 1].fourchette : CE.lireFourchette("");
-  const history = h.map(e => { const m = CE.mesuresSeance(e.series); return { date: e.date, sets: e.series.filter(st => st.valide || st.suspecte).map(st => ({ weight: st.charge, reps: st.reps, rir: st.rir, suspecte: !!st.suspecte })), best: m.force, fiable: m.forceFiable, m }; });
+  const history = tout.map(e => { const m = CE.mesuresSeance(e.series); return { date: e.date, analysee: m.seriesValides > 0, sets: e.series.filter(st => st.valide || st.suspecte).map(st => ({ weight: st.charge, reps: st.reps, rir: st.rir, suspecte: st.suspecte || null })), best: m.force, fiable: m.forceFiable, m }; });
   // Analyse UNIQUE du moteur (la meme que l'ecran Fin de seance).
   const a = h.length ? CE.analyseExercice(h, { fourchette: f }) : null, d = a ? a.diagnostic : null;
   const synthese = h.length ? CE.syntheseExercice(h, f, { diagnostic: d }) : null;
@@ -928,7 +944,7 @@ function coachProgres(CE, sessions, exName) {
   if (!diag && a && a.statut === "non_comparable" && a.bloc.rupture) diag = { type: -2, color: "#FFD600", icon: "?", urgency: "COMPARAISON NON FIABLE", title: "PAS DE DIAGNOSTIC POUR L'INSTANT",
     msg: coachRaisonsTexte(a.bloc.rupture.raisons).replace(/([^?])$/, "$1.") + " Le diagnostic reprendra après 2 séances comparables.", actions: [] };
   return { history, fourchette: f, diag, analyse: a, synthese,
-    chartData: history.map(x => ({ date: fmtDate(x.date), rm: x.m.force, charge: x.m.chargeMax, tonnage: x.m.tonnage, fiable: x.m.forceFiable })) };
+    chartData: history.filter(x => x.analysee).map(x => ({ date: fmtDate(x.date), rm: x.m.force, charge: x.m.chargeMax, tonnage: x.m.tonnage, fiable: x.m.forceFiable })) };
 }
 // Haut de fourchette atteint ALORS que la performance progresse : diagnostic positif, avec l'indication de la prochaine etape possible.
 function coachPlafondProgression(d, b, f) {
@@ -2332,9 +2348,10 @@ function ProgressTab({ sessions }) {
                   <div>
                     <div style={{ fontSize: 10, color: "#555", fontFamily: "monospace" }}>{fmtDate(s.date)}</div>
                     <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>{s.sets.map((st, j) => <span key={j} style={{ marginRight: 8, ...(st.suspecte ? { textDecoration: "line-through", color: "#555" } : {}) }}>{st.weight}x{st.reps}{st.suspecte ? " ⚠" : ""}</span>)}</div>
-                    {s.sets.some(st => st.suspecte) && <div style={{ fontSize: 8, color: "#666", fontFamily: "monospace", marginTop: 2 }}>⚠ série inhabituelle ignorée par l'analyse (non modifiée)</div>}
+                    {s.sets.some(st => st.suspecte === "inversion_probable") && <div style={{ fontSize: 8, color: "#FFD600", fontFamily: "monospace", marginTop: 2 }}>⚠ saisie probablement inversée (charge ↔ reps) · ignorée par l'analyse, non modifiée</div>}
+                    {s.sets.some(st => st.suspecte && st.suspecte !== "inversion_probable") && <div style={{ fontSize: 8, color: "#666", fontFamily: "monospace", marginTop: 2 }}>⚠ série inhabituelle ignorée par l'analyse (non modifiée)</div>}
                   </div>
-                  <div style={{ fontSize: 15, fontWeight: 900, color: "#ff6600" }}>{s.fiable === false ? "≈" : ""}{best}kg 1RM</div>
+                  <div style={{ fontSize: 15, fontWeight: 900, color: s.analysee === false ? "#555" : "#ff6600" }}>{s.analysee === false ? "—" : (s.fiable === false ? "≈" : "") + best + "kg 1RM"}</div>
                 </div>
               </Card>
             );
