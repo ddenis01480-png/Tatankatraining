@@ -94,11 +94,11 @@ t('Les 4 ecrans affichent exactement le meme resultat (score, niveau, couleur) d
   // ... puis on execute le VRAI code du demarrage de seance : la fenetre recoit exactement le resultat des autres ecrans.
   const trig = between('      // Fatigue ressentie (calcul unique du moteur)', '    }\n  }, [activeRoutine]);');
   for (const [k, fiche] of Object.entries(SC)) {
-    let modal = null; const ctx = contexte({ load: () => fiche, KEYS: { fatigue: 'it3_fatigue' }, activeRoutine: { name: 'R' }, recovScore: 'optimal', recovColor: '#0f0', minHoursSince: 80, setAdaptModal: m => { modal = m; } });
+    let modal = null; const ctx = contexte({ load: () => fiche, KEYS: { fatigue: 'it3_fatigue' }, activeRoutine: { name: 'R' }, sessions: [], exercises: [], recupSollicitations: () => null, setRecupInfo: () => {}, Date, setAdaptModal: m => { modal = m; } });
     vm.runInContext(trig, ctx); const ref = aff(fiche);
     if (ref.fatigueElevee) assert.deepStrictEqual(plain(modal.fatigue), ref, k); else assert.strictEqual(modal, null, k + ' : fenetre ouverte sans fatigue elevee');
-    let m2 = null; const ctx2 = contexte({ load: () => fiche, KEYS: { fatigue: 'it3_fatigue' }, activeRoutine: { name: 'R' }, recovScore: 'insuffisant', recovColor: '#f00', minHoursSince: 10, setAdaptModal: m => { m2 = m; } });
-    vm.runInContext(trig, ctx2); assert.deepStrictEqual(plain(m2.fatigue), ref, k + ' (recuperation insuffisante)'); }
+    // Etape 2 : la recuperation ne declenche plus la fenetre ; seule une fatigue elevee certaine l'ouvre.
+    assert.ok(!/recovScore|insuffisant/.test(trig)); }
   info('scenarios : ' + Object.entries(SC).map(([k, f]) => k + ' = ' + aff(f).scoreTexte + ' ' + aff(f).titre).join(' | ')); });
 
 t('Aucune baisse de charge ou de volume declenchee par ce score : textes de reduction retires des 4 ecrans', () => {

@@ -859,6 +859,33 @@ function fatigueAffichage(fiche) {
   const n = FATIGUE_NIVEAUX_AFFICHAGE[r.niveau];
   return Object.assign(base, { titre: n.titre, couleur: n.couleur, emoji: n.emoji, texte: r.score === 0 ? "Aucun signe de fatigue déclaré." : n.texte });
 }
+// Recuperation musculaire : information DESCRIPTIVE seulement (moteur dernieresSollicitations : catalogue unique, muscles
+// secondaires, heure reelle d'enregistrement). Aucune conclusion « recupere / insuffisant » n'est tiree du seul delai.
+function recupSollicitations(sessions, exercices, maintenant) {
+  const CE = coachEngine(); if (!CE || typeof CE.dernieresSollicitations !== "function") return null;
+  const seances = CE.normaliserSeances(sessions || [], { normaliserNom: typeof normalizeExName === "function" ? normalizeExName : undefined });
+  return CE.dernieresSollicitations(seances, maintenant, exercices ? { exercices: exercices } : undefined);
+}
+const RECUP_JOURS = ["dim.", "lun.", "mar.", "mer.", "jeu.", "ven.", "sam."];
+function recupDelaiTexte(ec) {
+  if (!ec) return "aucune séance";
+  if (ec.minutes === null || ec.minutes === undefined) return (ec.jours === 0 ? "aujourd'hui" : ec.jours === 1 ? "hier" : "il y a " + ec.jours + " jours") + " (heure inconnue)";
+  const h = Math.floor(ec.minutes / 60);
+  if (h < 1) return "il y a " + ec.minutes + " min";
+  if (h < 24) return "il y a " + h + " h";
+  if (h >= 7 * 24) return "il y a " + Math.floor(h / 24) + " jours";
+  return "il y a " + Math.floor(h / 24) + " j " + (h % 24) + " h";
+}
+function recupQuandTexte(evt) {
+  if (!evt) return "";
+  const p = evt.date.split("-"), jour = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+  const base = RECUP_JOURS[jour.getDay()] + " " + p[2] + "/" + p[1];
+  if (!evt.heureFiable) return base + " · heure inconnue";
+  const x = new Date(evt.heureMs);
+  return base + " · enregistrée à " + String(x.getHours()).padStart(2, "0") + ":" + String(x.getMinutes()).padStart(2, "0");
+}
+function recupExercicesTexte(evt) { return evt ? evt.exercices.map(e => e.nom + (e.role === "secondaire" ? " (secondaire)" : "")).join(", ") : ""; }
+const RECUP_NOTE = "Information seulement : le temps écoulé ne dit pas si un muscle est récupéré. Heure = enregistrement de la séance (fin de séance).";
 function coachEngine() { const CE = (typeof window !== "undefined") ? window.CoachEngine : null; return (CE && typeof CE.analyser === "function") ? CE : null; }
 // Historique d'un exercice (trie par date, une entree par seance). `seanceEnCours` : seance pas encore enregistree, ajoutee a la fin.
 function coachHistorique(CE, sessions, exName, seanceEnCours) {
@@ -1295,6 +1322,8 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
   const [validationToast, setValidationToast] = useState(null);
   const [postSeanceModal, setPostSeanceModal] = useState(null);
   const [adaptModal, setAdaptModal] = useState(null);
+  const [recupInfo, setRecupInfo] = useState(null);
+  useEffect(() => { if (!currentSets) setRecupInfo(null); }, [currentSets]); // l'info appartient a la seance demarree
 
   // Démarrer le chrono de séance si pas encore démarré
   useEffect(() => {
@@ -1385,38 +1414,13 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
       setActiveRoutine(null);
       setTimeout(() => window.scrollTo({ top: 0, behavior: "smooth" }), 50);
 
-      // Score de récupération
-      
-  const MUSCLE_MAP = {
-    "Élévations latérales": "Épaules", "Développé militaire": "Épaules", "Développé couché": "Pectoraux",
-    "Écarté": "Pectoraux", "Extension triceps": "Triceps", "Dips": "Triceps",
-    "Oiseau": "Deltoïde post.", "Tractions": "Dos", "Tirage": "Dos", "Rowing": "Dos",
-    "Pull-over": "Dos", "Curl": "Biceps", "Adducteurs": "Jambes", "Leg extension": "Quadriceps",
-    "Hack squat": "Quadriceps", "Leg press": "Quadriceps", "Leg curl": "Ischio-jambiers",
-    "Mollets": "Mollets"
-  };
-  function getMuscle(exName) {
-    return Object.entries(MUSCLE_MAP).find(([k]) => exName.includes(k))?.[1] || "Autre";
-  }
-      const routineMuscles = [...new Set(exercises.map(ex => getMuscle(ex.name)))];
-      const now2 = new Date();
-      let minHoursSince = 999;
-      routineMuscles.forEach(muscle => {
-        const lastS = [...sessions].reverse().find(s => s.exercises && s.exercises.some(ex => getMuscle(ex.name) === muscle));
-        if (lastS) {
-          const hours = Math.round((now2 - new Date(lastS.date)) / 3600000);
-          if (hours < minHoursSince) minHoursSince = hours;
-        }
-      });
-      // Score récup : < 24h = insuffisant, 24-48h = moyen, 48-72h = bon, > 72h = optimal
-      const recovScore = minHoursSince >= 72 ? "optimal" : minHoursSince >= 48 ? "bon" : minHoursSince >= 24 ? "moyen" : "insuffisant";
-      const recovColor = { optimal: "#00C853", bon: "#4FC3F7", moyen: "#FFD600", insuffisant: "#FF4444" }[recovScore];
+      // Derniere sollicitation des muscles de cette seance : information descriptive affichee en haut de la seance.
+      // (Plus de verdict « optimal / bon / moyen / insuffisant » ni de fenetre declenchee par les seuils 24 / 48 / 72 h.)
+      setRecupInfo(recupSollicitations(sessions, exercises.map(e => e.name), Date.now()));
 
       // Fatigue ressentie (calcul unique du moteur). Elle informe seulement : aucune baisse de charge ou de volume n'est proposee sur ce score seul.
       const fat = fatigueAffichage(load(KEYS.fatigue));
-      if (fat.fatigueElevee || recovScore === "insuffisant") {
-        setAdaptModal({ fatigue: fat, routine: activeRoutine.name, recovScore, recovColor, minHoursSince: minHoursSince === 999 ? null : minHoursSince });
-      }
+      if (fat.fatigueElevee) setAdaptModal({ fatigue: fat, routine: activeRoutine.name });
     }
   }, [activeRoutine]);
 
@@ -1828,6 +1832,28 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
         <div style={{ width: (totalSets > 0 ? (totalDone / totalSets) * 100 : 0) + "%", height: "100%", background: "#ff6600", borderRadius: 4, transition: "width 0.3s" }} />
       </div>
 
+      {recupInfo && (
+        <div style={{ background: "#0d0d0d", border: "1px solid #1d1d1d", borderRadius: 12, padding: "10px 12px", marginBottom: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 6 }}>
+            <div style={{ fontSize: 9, color: "#4FC3F7", fontFamily: "monospace", fontWeight: 900, letterSpacing: 1 }}>DERNIÈRE SOLLICITATION DES MUSCLES DE CETTE SÉANCE</div>
+            <button onClick={() => setRecupInfo(null)} style={{ background: "none", border: "1px solid #222", color: "#666", borderRadius: 6, padding: "2px 8px", fontSize: 9, cursor: "pointer", flexShrink: 0 }}>Masquer</button>
+          </div>
+          {Object.values(recupInfo.groupes).map(g => (
+            <div key={g.muscle} style={{ marginBottom: 5 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                <span style={{ fontSize: 11, color: "#ccc" }}>{g.muscle}</span>
+                <span style={{ fontSize: 10, color: "#888", fontFamily: "monospace", textAlign: "right" }}>{recupDelaiTexte(g.ecoule)}</span>
+              </div>
+              {g.derniere && <div style={{ fontSize: 9, color: "#555", lineHeight: 1.4 }}>{recupQuandTexte(g.derniere)} · {recupExercicesTexte(g.derniere)}</div>}
+            </div>
+          ))}
+          {recupInfo.exercicesAClasser.length > 0 && (
+            <div style={{ fontSize: 9, color: "#FFD600", marginTop: 4, lineHeight: 1.4 }}>Classification à définir : {recupInfo.exercicesAClasser.join(", ")} (rattaché à aucun muscle)</div>
+          )}
+          <div style={{ fontSize: 9, color: "#444", marginTop: 6, lineHeight: 1.5 }}>{RECUP_NOTE}</div>
+        </div>
+      )}
+
       {adaptModal && (
         <div style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(0,0,0,0.92)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
           <div style={{ background: "#0d0d0d", border: "1px solid " + adaptModal.fatigue.couleur + "44", borderRadius: 20, padding: "24px 20px", width: "100%", maxWidth: 400 }}>
@@ -1836,15 +1862,6 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
               FATIGUE RESSENTIE — {adaptModal.fatigue.titre}
             </div>
             <div style={{ fontSize: 14, fontWeight: 900, color: "#fff", marginBottom: 4, textAlign: "center" }}>Score fatigue : {adaptModal.fatigue.scoreTexte}{adaptModal.fatigue.statut === "partiel" ? " (" + adaptModal.fatigue.detail + ")" : ""}</div>
-            {adaptModal.recovScore && (
-              <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "center", marginBottom: 8 }}>
-                <span style={{ fontSize: 11, color: "#666" }}>Récupération :</span>
-                <span style={{ fontSize: 12, fontWeight: 900, color: adaptModal.recovColor }}>
-                  {adaptModal.recovScore.toUpperCase()}
-                  {adaptModal.minHoursSince !== null ? " (" + (adaptModal.minHoursSince < 24 ? adaptModal.minHoursSince + "h" : Math.round(adaptModal.minHoursSince/24) + "j") + ")" : ""}
-                </span>
-              </div>
-            )}
             <div style={{ fontSize: 11, color: "#888", textAlign: "center", marginBottom: 20, lineHeight: 1.6 }}>{adaptModal.fatigue.texte}</div>
 
             <div style={{ background: "#111", borderRadius: 12, padding: "14px 16px", marginBottom: 16 }}>
@@ -2886,31 +2903,8 @@ function BilanTab({ fatigue, setFatigue, sessions }) {
   }
   function startNewCycle() { const nc = { startDate: today(), num: (cycleData.num || 1) + 1 }; save(KEYS.cycle, nc); setShowCycleBilan(false); alert("Cycle " + nc.num + " demarre !"); }
 
-  // Alertes groupes musculaires non entraînés depuis > 7 jours
-  const MUSCLE_GROUPS = {
-    "Épaules": ["Élévations latérales","Développé militaire"],
-    "Pectoraux": ["Développé couché","Écarté"],
-    "Triceps": ["Extension triceps","Dips"],
-    "Deltoïde post.": ["Oiseau"],
-    "Dos": ["Tractions","Tirage","Rowing","Pull-over"],
-    "Biceps": ["Curl"],
-    "Quadriceps": ["Hack squat","Leg extension","Leg press"],
-    "Ischio-jambiers": ["Leg curl"],
-    "Mollets": ["Mollets"],
-    "Adducteurs": ["Adducteurs"]
-  };
-  const sevenDaysAgo = new Date(); sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-  const sevenDaysAgoStr = sevenDaysAgo.toISOString().split("T")[0];
-  const muscleAlerts = Object.entries(MUSCLE_GROUPS).map(([muscle, keywords]) => {
-    const lastS = [...sessions].sort((a,b)=>b.date.localeCompare(a.date)).find(s =>
-      s.exercises && s.exercises.some(ex => keywords.some(kw => ex.name.includes(kw)))
-    );
-    if (!lastS || lastS.date < sevenDaysAgoStr) {
-      const daysSince = lastS ? Math.round((new Date() - new Date(lastS.date)) / 86400000) : null;
-      return { muscle, daysSince, lastDate: lastS ? lastS.date : null };
-    }
-    return null;
-  }).filter(Boolean);
+  // Derniere sollicitation de chaque muscle (moteur : catalogue unique, muscles secondaires, heure reelle). Information seulement.
+  const recupBilan = recupSollicitations(sessions, null, Date.now());
 
   // RIR automatique — calcul depuis les 7 derniers jours de séances
   const last7Days = new Date(); last7Days.setDate(last7Days.getDate() - 7);
@@ -2960,19 +2954,25 @@ function BilanTab({ fatigue, setFatigue, sessions }) {
         </div>
       )}
 
-      {muscleAlerts.length > 0 && (
-        <div style={{ background: "#1a0800", border: "1px solid #ff440044", borderRadius: 12, padding: "12px 14px", marginBottom: 12 }}>
-          <div style={{ fontSize: 9, color: "#FF4444", fontFamily: "monospace", fontWeight: 900, marginBottom: 8, letterSpacing: 1 }}>
-            ⚠ GROUPES NON ENTRAÎNÉS DEPUIS + 7 JOURS
-          </div>
-          {muscleAlerts.map((a, i) => (
-            <div key={i} style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-              <span style={{ fontSize: 11, color: "#ccc" }}>{a.muscle}</span>
-              <span style={{ fontSize: 10, color: "#FF4444", fontFamily: "monospace" }}>
-                {a.daysSince ? a.daysSince + "j" : "jamais"}
-              </span>
-            </div>
-          ))}
+      {recupBilan && (
+        <div style={{ background: "#0d0d0d", border: "1px solid #1d1d1d", borderRadius: 12, padding: "12px 14px", marginBottom: 12 }}>
+          <div style={{ fontSize: 9, color: "#4FC3F7", fontFamily: "monospace", fontWeight: 900, marginBottom: 8, letterSpacing: 1 }}>DERNIÈRE SOLLICITATION PAR MUSCLE</div>
+          {Object.values(recupBilan.groupes).sort((a, b) => (b.ecoule ? b.ecoule.jours : 1e9) - (a.ecoule ? a.ecoule.jours : 1e9)).map(g => {
+            const ancien = !g.ecoule || g.ecoule.jours > 7;
+            return (
+              <div key={g.muscle} style={{ marginBottom: 5 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                  <span style={{ fontSize: 11, color: "#ccc" }}>{g.muscle}</span>
+                  <span style={{ fontSize: 10, color: ancien ? "#FF8C00" : "#888", fontFamily: "monospace", textAlign: "right" }}>{recupDelaiTexte(g.ecoule)}{g.ecoule && g.ecoule.jours > 7 ? " · plus de 7 jours" : ""}</span>
+                </div>
+                {g.derniere && <div style={{ fontSize: 9, color: "#555", lineHeight: 1.4 }}>{recupQuandTexte(g.derniere)} · {recupExercicesTexte(g.derniere)}</div>}
+              </div>
+            );
+          })}
+          {recupBilan.nonClasses.length > 0 && (
+            <div style={{ fontSize: 9, color: "#FFD600", marginTop: 4, lineHeight: 1.4 }}>Classification à définir : {recupBilan.nonClasses.map(x => x.nom).join(", ")} (rattaché à aucun muscle)</div>
+          )}
+          <div style={{ fontSize: 9, color: "#444", marginTop: 6, lineHeight: 1.5 }}>{RECUP_NOTE}</div>
         </div>
       )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 18 }}>

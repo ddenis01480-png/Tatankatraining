@@ -22,11 +22,14 @@ function fnSrc(sig) { const i = SRC.indexOf(sig); if (i < 0) throw new Error('in
   for (let p = SRC.indexOf('{', i); p < SRC.length; p++) { if (SRC[p] === '{') d++; if (SRC[p] === '}' && --d === 0) return SRC.slice(i, p + 1); } }
 function literal(start, open, close) { const i = SRC.indexOf(start); if (i < 0) throw new Error('introuvable : ' + start); let d = 0;
   for (let p = SRC.indexOf(open, i); p < SRC.length; p++) { if (SRC[p] === open) d++; if (SRC[p] === close && --d === 0) return SRC.slice(SRC.indexOf(open, i), p + 1); } }
+// Tables V1 retirees d'index.html a l'etape 2 recuperation (commit 432b2ca = derniere version qui les contient) : copie figee pour comparaison.
+const V1_MUSCLE_MAP = { "Élévations latérales": "Épaules", "Développé militaire": "Épaules", "Développé couché": "Pectoraux", "Écarté": "Pectoraux", "Extension triceps": "Triceps", "Dips": "Triceps", "Oiseau": "Deltoïde post.", "Tractions": "Dos", "Tirage": "Dos", "Rowing": "Dos", "Pull-over": "Dos", "Curl": "Biceps", "Adducteurs": "Jambes", "Leg extension": "Quadriceps", "Hack squat": "Quadriceps", "Leg press": "Quadriceps", "Leg curl": "Ischio-jambiers", "Mollets": "Mollets" };
+const V1_MUSCLE_GROUPS = { "Épaules": ["Élévations latérales","Développé militaire"], "Pectoraux": ["Développé couché","Écarté"], "Triceps": ["Extension triceps","Dips"], "Deltoïde post.": ["Oiseau"], "Dos": ["Tractions","Tirage","Rowing","Pull-over"], "Biceps": ["Curl"], "Quadriceps": ["Hack squat","Leg extension","Leg press"], "Ischio-jambiers": ["Leg curl"], "Mollets": ["Mollets"], "Adducteurs": ["Adducteurs"] };
 const V = { Math, JSON, Object, Array, String, Number, parseInt, parseFloat, isNaN, PROGRAMME: REAL_PROGRAMME, console };
 vm.createContext(V);
 vm.runInContext([fnSrc('function coachEngine('), fnSrc('function e1RM('), fnSrc('function parseRir('), fnSrc('function analyzeEx('), fnSrc('function getProgressionTip('),
   'const DB = ' + literal('const DB = {', '{', '}') + '; const ALL_EXERCISES = Object.values(DB).flat();',
-  'const MUSCLE_MAP = ' + literal('const MUSCLE_MAP = {', '{', '}') + ';', 'const MUSCLE_GROUPS = ' + literal('const MUSCLE_GROUPS = {', '{', '}') + ';',
+  'const MUSCLE_MAP = ' + JSON.stringify(V1_MUSCLE_MAP) + ';', 'const MUSCLE_GROUPS = ' + JSON.stringify(V1_MUSCLE_GROUPS) + ';',
   'const EXERCISE_NAME_FIXES = ' + literal('const EXERCISE_NAME_FIXES = {', '{', '}') + ';', fnSrc('function normalizeExName('),
   'this.v1 = { e1RM, parseRir, analyzeEx, getProgressionTip, ALL_EXERCISES, MUSCLE_MAP, MUSCLE_GROUPS, normalizeExName };'].join('\n'), V);
 const v1 = V.v1;

@@ -33,7 +33,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var VERSION = "0.8.0";
+  var VERSION = "0.9.0";
 
   // Reglages centralises (une seule valeur par regle).
   var REGLES = Object.freeze({
@@ -244,14 +244,19 @@
     [["fly"], "Pectoraux", [], I],
     [["chest", "press"], "Pectoraux", ["Triceps", "Épaules"], P],
     [["pompe"], "Pectoraux", ["Triceps", "Épaules"], P],
-    [["developpe"], "Pectoraux", ["Triceps", "Épaules"], P],
+    // « Developpe » seul ne suffit pas (ex. developpe Arnold = epaules) : seules les variantes pectoraux connues sont classees.
+    [["developpe", "couche"], "Pectoraux", ["Triceps", "Épaules"], P],
+    [["developpe", "incline"], "Pectoraux", ["Triceps", "Épaules"], P],
+    [["developpe", "decline"], "Pectoraux", ["Triceps", "Épaules"], P],
+    [["developpe", "convergent"], "Pectoraux", ["Triceps", "Épaules"], P],
     [["triceps"], "Triceps", [], I],
     [["dips"], "Triceps", ["Pectoraux", "Épaules"], P],
     [["pull-over"], "Dos", [], I],
     [["pullover"], "Dos", [], I],
     [["traction"], "Dos", ["Biceps"], P],
+    [["tirage", "horizontal"], "Dos", ["Biceps", "Deltoïde post.", "Trapèzes"], P],
     [["tirage"], "Dos", ["Biceps"], P],
-    [["rowing"], "Dos", ["Biceps", "Deltoïde post."], P],
+    [["rowing"], "Dos", ["Biceps", "Deltoïde post.", "Trapèzes"], P],
     [["shrug"], "Trapèzes", [], I],
     [["leg", "curl"], "Ischio-jambiers", [], I],
     [["curl"], "Biceps", [], I],
@@ -756,6 +761,66 @@
     return { jours: jours, parMuscle: parMuscle, nonClasses: nonClasses };
   }
 
+  // Heure d'enregistrement d'une seance. L'id d'une seance = Date.now() au moment du bouton « Terminer » (fin de seance), en
+  // millisecondes UTC ; l'affichage la convertit en heure locale de l'appareil. Elle n'est retenue que si l'id est un horodatage
+  // plausible ET que son jour (local ou UTC, car la date de seance est ecrite en UTC) = la date de la seance. Sinon : heure inconnue
+  // (ex. id refait lors d'un import ou d'une reparation), jamais une heure fabriquee (pas de « minuit » fictif).
+  var HORODATAGE_MIN = Date.UTC(2020, 0, 1);
+  function heureSeance(s, maintenantMs) {
+    var brut = s ? s.id : null;
+    var id = typeof brut === "number" ? brut : (typeof brut === "string" && /^\d{12,14}$/.test(brut) ? Number(brut) : NaN);
+    if (!isFinite(id) || id < HORODATAGE_MIN || (isFinite(maintenantMs) && id > maintenantMs + 3600000)) return { ms: null, fiable: false, raison: "id_non_horodatage" };
+    var jour = s && s.date, x = new Date(id);
+    if (!jour) return { ms: null, fiable: false, raison: "date_absente" };
+    if (jour !== dateLocale(x) && jour !== x.toISOString().slice(0, 10)) return { ms: null, fiable: false, raison: "jour_different" };
+    return { ms: id, fiable: true, raison: null };
+  }
+
+  // Derniere sollicitation de chaque groupe musculaire (principal OU secondaire), avec l'heure reelle quand elle est fiable.
+  // Information DESCRIPTIVE uniquement : aucune conclusion « recupere / insuffisant » n'est produite (conclusion: null).
+  // Un exercice non classe n'est rattache a aucun groupe : il est liste a part (« classification a definir ») et ne modifie aucun autre groupe.
+  // options.exercices (facultatif) : ne garder que les groupes sollicites par ces exercices (ex. les exercices de la seance qui demarre).
+  function dernieresSollicitations(seancesNorm, maintenantMs, options) {
+    options = options || {};
+    var maintenant = isFinite(maintenantMs) ? maintenantMs : Date.now(), aujourdhui = dateLocale(new Date(maintenant));
+    var groupes = {}, nonClasses = {};
+    seancesNorm.forEach(function (s) {
+      if (!s.date || s.date > aujourdhui) return;
+      var h = heureSeance(s, maintenant); if (h.fiable && h.ms > maintenant) return;
+      var parMuscle = {};
+      s.exercices.forEach(function (e) {
+        var n = e.series.filter(function (st) { return st.valide; }).length; if (!n) return;
+        var c = classerExercice(e.nom, options);
+        if (!c.principal) { nonClasses[e.nom] = { nom: e.nom, derniereDate: s.date, series: n }; return; }
+        [[c.principal, "principal"]].concat(c.secondaires.map(function (m) { return [m, "secondaire"]; })).forEach(function (mr) {
+          var x = parMuscle[mr[0]] = parMuscle[mr[0]] || { exercices: [], principal: false };
+          x.exercices.push({ nom: e.nom, role: mr[1], series: n }); if (mr[1] === "principal") x.principal = true;
+        });
+      });
+      Object.keys(parMuscle).forEach(function (m) {
+        var evt = { date: s.date, heureMs: h.ms, heureFiable: h.fiable, raisonHeure: h.raison, seanceId: s.id, routine: s.routine, exercices: parMuscle[m].exercices,
+          role: parMuscle[m].principal ? "principal" : "secondaire" };
+        var g = groupes[m] = groupes[m] || { muscle: m, derniere: null, dernierePrincipale: null };
+        g.derniere = evt; if (evt.role === "principal") g.dernierePrincipale = evt;   // seances deja triees : la derniere ecrase
+      });
+    });
+    var ecart = function (evt) { if (!evt) return null; return { heures: evt.heureFiable ? Math.floor((maintenant - evt.heureMs) / 3600000) : null,
+      minutes: evt.heureFiable ? Math.floor((maintenant - evt.heureMs) / 60000) : null, jours: joursEntre(evt.date, aujourdhui) }; };
+    var filtre = null;
+    if (Array.isArray(options.exercices)) { filtre = {}; options.exercices.forEach(function (nom) { var c = classerExercice(nom, options);
+      if (c.principal) [c.principal].concat(c.secondaires).forEach(function (m) { filtre[m] = true; }); }); }
+    var out = {};
+    GROUPES.forEach(function (m) {
+      if (filtre && !filtre[m]) return;
+      var g = groupes[m];
+      out[m] = { muscle: m, derniere: g ? g.derniere : null, ecoule: g ? ecart(g.derniere) : null,
+        dernierePrincipale: g ? g.dernierePrincipale : null, ecoulePrincipale: g ? ecart(g.dernierePrincipale) : null, conclusion: null };
+    });
+    var inconnusSeance = Array.isArray(options.exercices) ? options.exercices.filter(function (nom) { return !classerExercice(nom, options).principal; }) : [];
+    return { maintenant: maintenant, aujourdhui: aujourdhui, groupes: out, nonClasses: Object.keys(nonClasses).map(function (k) { return nonClasses[k]; }),
+      exercicesAClasser: inconnusSeance, conclusion: null };
+  }
+
   // Priorites : muscles suivis non travailles depuis plus de 7 jours (regle V1), du plus ancien au plus recent ; jamais travaille = en tete.
   function priorites(recup, options) {
     var suivis = (options && options.musclesSuivis) || GROUPES_SUIVIS_V1;
@@ -839,7 +904,7 @@
     volumeEntre: volumeEntre, meilleureSerieEntre: meilleureSerieEntre, tendanceGenerale: tendanceGenerale, TENDANCES: TENDANCES,
     syntheseExercice: syntheseExercice, pistesAdaptation: pistesAdaptation, comparabilite: comparabilite, blocComparable: blocComparable, analyseExercice: analyseExercice, filtrerSuspectes: filtrerSuspectes,
     // 5. domaines
-    FATIGUE_CRITERES: FATIGUE_CRITERES, NIVEAUX_FATIGUE: NIVEAUX_FATIGUE, scoreFatigue: scoreFatigue, repondreFatigue: repondreFatigue, rirRecent: rirRecent, recuperation: recuperation, volume: volume, priorites: priorites, morphologie: morphologie,
+    FATIGUE_CRITERES: FATIGUE_CRITERES, NIVEAUX_FATIGUE: NIVEAUX_FATIGUE, scoreFatigue: scoreFatigue, repondreFatigue: repondreFatigue, heureSeance: heureSeance, dernieresSollicitations: dernieresSollicitations, rirRecent: rirRecent, recuperation: recuperation, volume: volume, priorites: priorites, morphologie: morphologie,
     // 6. analyse complete
     analyser: analyser
   });

@@ -22,13 +22,16 @@ function literal(start, open, close) { const i = SRC.indexOf(start); if (i < 0) 
   for (let p = SRC.indexOf(open, i); p < SRC.length; p++) { if (SRC[p] === open) d++; if (SRC[p] === close && --d === 0) return SRC.slice(SRC.indexOf(open, i), p + 1); } }
 function between(a, b) { const i = SRC.indexOf(a); if (i < 0) throw new Error('introuvable : ' + a); const j = SRC.indexOf(b, i); if (j < 0) throw new Error('introuvable : ' + b); return SRC.slice(i, j); }
 
+// Tables V1 retirees d'index.html a l'etape 2 recuperation (commit 432b2ca = derniere version qui les contient) : copie figee pour comparaison.
+const V1_MUSCLE_MAP = { "Élévations latérales": "Épaules", "Développé militaire": "Épaules", "Développé couché": "Pectoraux", "Écarté": "Pectoraux", "Extension triceps": "Triceps", "Dips": "Triceps", "Oiseau": "Deltoïde post.", "Tractions": "Dos", "Tirage": "Dos", "Rowing": "Dos", "Pull-over": "Dos", "Curl": "Biceps", "Adducteurs": "Jambes", "Leg extension": "Quadriceps", "Hack squat": "Quadriceps", "Leg press": "Quadriceps", "Leg curl": "Ischio-jambiers", "Mollets": "Mollets" };
+const V1_MUSCLE_GROUPS = { "Épaules": ["Élévations latérales","Développé militaire"], "Pectoraux": ["Développé couché","Écarté"], "Triceps": ["Extension triceps","Dips"], "Deltoïde post.": ["Oiseau"], "Dos": ["Tractions","Tirage","Rowing","Pull-over"], "Biceps": ["Curl"], "Quadriceps": ["Hack squat","Leg extension","Leg press"], "Ischio-jambiers": ["Leg curl"], "Mollets": ["Mollets"], "Adducteurs": ["Adducteurs"] };
 const C = { Math, JSON, Object, Array, String, Number, parseInt, parseFloat, isNaN, PROGRAMME: REAL_PROGRAMME, console };
 vm.createContext(C);
 vm.runInContext([fnSrc('function coachEngine('), fnSrc('function e1RM('), fnSrc('function parseRir('), fnSrc('function analyzeEx('), fnSrc('function getProgressionTip('),
   'const PALIERS = ' + literal('const PALIERS = [', '[', ']') + ';', fnSrc('function getPalier('),
   'const DB = ' + literal('const DB = {', '{', '}') + '; const ALL_EXERCISES = Object.values(DB).flat();',
-  'const MUSCLE_MAP = ' + literal('const MUSCLE_MAP = {', '{', '}') + ';',
-  'const MUSCLE_GROUPS = ' + literal('const MUSCLE_GROUPS = {', '{', '}') + ';',
+  'const MUSCLE_MAP = ' + JSON.stringify(V1_MUSCLE_MAP) + ';',
+  'const MUSCLE_GROUPS = ' + JSON.stringify(V1_MUSCLE_GROUPS) + ';',
   'this.e1RM=e1RM; this.analyzeEx=analyzeEx; this.getProgressionTip=getProgressionTip; this.PALIERS=PALIERS; this.ALL_EXERCISES=ALL_EXERCISES; this.MUSCLE_MAP=MUSCLE_MAP; this.MUSCLE_GROUPS=MUSCLE_GROUPS;'].join('\n'), C);
 const { e1RM, analyzeEx, getProgressionTip } = C;
 // getMuscle (l. SessionTab) : meme expression que dans index.html
@@ -125,10 +128,10 @@ known('« En progression » a plusieurs definitions : force estimee (diagnostic)
 known('Bilan de cycle : progression = derniere seance contre premiere seance seulement (pas de tendance)', 'tendance calculee sur l\'ensemble des seances du cycle', () => {
   const ss = [sess(1, '2026-01-01', 'Exo test', [S(50, 10), S(50, 10), S(50, 10)]), sess(2, '2026-01-08', 'Exo test', [S(60, 10), S(60, 10), S(60, 10)]), sess(3, '2026-01-15', 'Exo test', [S(60, 10), S(60, 10), S(60, 10)]), sess(4, '2026-01-22', 'Exo test', [S(50, 10), S(50, 10), S(50, 11)])];
   const st = cycleStats(ss, ['Exo test'])[0]; return st && st.gainT > 0; }); // 1 rep de plus que la 1re seance = « progresse », malgre la chute depuis 60 kg
-known('Deux tables muscle <-> exercice qui ne concordent pas (ex. Adducteurs : « Jambes » contre « Adducteurs »)', 'un seul catalogue d\'exercices (muscle principal, secondaires, type de mouvement)', () =>
-  getMuscle('Adducteurs machine') !== groupOf('Adducteurs machine'));
-known('Exercices de la base classes « Autre » ou sans groupe (squat, soulevé de terre, hip thrust, développé incliné...)', 'chaque exercice de la base a un muscle principal ; les exercices perso sont « non classes » jusqu\'au choix de l\'utilisateur', () => {
-  const autres = C.ALL_EXERCISES.filter(n => getMuscle(n) === 'Autre'); return autres.length > 0 && autres.includes('Squat barre') && autres.includes('Développé incliné haltères'); });
+keep('Une seule table muscle <-> exercice : les deux tables V1 (MUSCLE_MAP, MUSCLE_GROUPS) ne sont plus dans index.html (corrige a l\'etape 2 recuperation)', () => {
+  assert.ok(!/MUSCLE_MAP|MUSCLE_GROUPS|getMuscle\(/.test(SRC)); assert.ok(/dernieresSollicitations/.test(SRC)); });
+keep('Aucun exercice de la base classe « Autre » : chacun a un muscle principal dans le catalogue du moteur (corrige a l\'etape 2 recuperation)', () => {
+  const E = require('../coach-engine.js'); assert.deepStrictEqual(C.ALL_EXERCISES.filter(n => !E.classerExercice(n).principal), []); });
 keep('Score fatigue : un seul calcul (moteur) et une seule echelle /15 sur les 4 ecrans, sans bonus RIR (corrige a l\'etape 1 fatigue)', () => {
   assert.ok(!/score <= 2 \? "#00C853" : score <= 5/.test(SRC) && !/score <= 3  \? \{ level: "OPTIMAL"/.test(SRC) && !/\+ rirAutoScore/.test(SRC));
   assert.ok((SRC.match(/fatigueAffichage\(/g) || []).length >= 5); });
