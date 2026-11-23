@@ -826,6 +826,39 @@ function getProgressionTip(lastSets, sessions, exName, repsTarget, seriesPrevues
 // Ecrans branches : Seance en cours (conseil de progression, badge de force, alerte de stagnation) ; Fin de seance (alertes, bilan, records) ;
 // onglet Progres (historique, diagnostic, graphique, lectures performance / volume / tendance).
 // Fin de seance et Progres utilisent la MEME analyse du moteur (CE.analyseExercice) : memes seances = meme diagnostic.
+// Fatigue ressentie : UN seul affichage pour Accueil, En-tete, Bilan et Demarrage de seance. Le calcul est dans le moteur
+// (CoachEngine.scoreFatigue : 5 criteres, score sur 15, sans bonus RIR, sans « perte de reps »). Ce score seul ne declenche
+// jamais de baisse de charge ou de volume.
+const FATIGUE_NIVEAUX_AFFICHAGE = {
+  bas:        { titre: "BASSE",       couleur: "#00C853", emoji: "😊", texte: "Peu de signes de fatigue déclarés." },
+  modere:     { titre: "MODÉRÉE",     couleur: "#FFD600", emoji: "😐", texte: "Quelques signes de fatigue. Surveille tes sensations et tes performances." },
+  eleve:      { titre: "ÉLEVÉE",      couleur: "#FF8C00", emoji: "😓", texte: "Fatigue ressentie élevée. Regarde tes performances des dernières séances avant de changer quoi que ce soit." },
+  tres_eleve: { titre: "TRÈS ÉLEVÉE", couleur: "#FF4444", emoji: "🥵", texte: "Fatigue ressentie très élevée. Si elle dure ou se voit dans tes performances, prends le temps d'en chercher la cause (sommeil, stress, santé)." }
+};
+const FATIGUE_NOTE = "Ce score seul ne modifie ni les charges ni le volume.";
+function fatigueAffichage(fiche) {
+  const CE = (typeof window !== "undefined") ? window.CoachEngine : null;
+  if (!CE || typeof CE.scoreFatigue !== "function") {
+    return { statut: "indisponible", titre: "INDISPONIBLE", couleur: "#666", emoji: "❔", score: null, max: 15, scoreTexte: "—/15", scoreCourt: "—/15", detail: "", pct: 0,
+      texte: "Calcul de la fatigue indisponible (moteur non chargé).", note: FATIGUE_NOTE, fatigueElevee: false, repondus: 0, total: 5, reponses: {}, criteres: [] };
+  }
+  const r = CE.scoreFatigue(fiche);
+  const base = { statut: r.statut, score: r.score, max: r.max, repondus: r.repondus, total: r.total, reponses: r.reponses, criteres: CE.FATIGUE_CRITERES,
+    fatigueElevee: r.fatigueElevee, niveau: r.niveau, niveauMinimum: r.niveauMinimum, note: FATIGUE_NOTE,
+    scoreTexte: (r.score === null ? "—" : r.score) + "/" + r.max, detail: r.repondus + "/" + r.total + " réponses",
+    // Forme courte (En-tete, Accueil) : un score partiel est toujours suivi du nombre de reponses, pour ne jamais passer pour un score complet.
+    scoreCourt: (r.score === null ? "—" : r.score) + "/" + r.max + (r.statut === "partiel" ? " (" + r.repondus + "/" + r.total + ")" : ""),
+    pct: r.score === null ? 0 : Math.min(r.score / r.max, 1) };
+  if (r.statut === "non_renseigne") return Object.assign(base, { titre: "NON RENSEIGNÉ", couleur: "#666", emoji: "❔",
+    texte: "Aucune réponse cette semaine. Réponds aux " + r.total + " questions pour connaître ton niveau de fatigue." });
+  if (r.statut === "partiel") {
+    const reste = r.total - r.repondus, m = FATIGUE_NIVEAUX_AFFICHAGE[r.niveauMinimum];
+    return Object.assign(base, { titre: "INCOMPLET", couleur: r.fatigueElevee ? m.couleur : "#888", emoji: r.fatigueElevee ? m.emoji : "📝",
+      texte: "Score provisoire : " + reste + (reste > 1 ? " questions restent" : " question reste") + " sans réponse." + (r.fatigueElevee ? " Avec tes réponses, la fatigue est déjà au moins " + m.titre.toLowerCase() + "." : "") });
+  }
+  const n = FATIGUE_NIVEAUX_AFFICHAGE[r.niveau];
+  return Object.assign(base, { titre: n.titre, couleur: n.couleur, emoji: n.emoji, texte: r.score === 0 ? "Aucun signe de fatigue déclaré." : n.texte });
+}
 function coachEngine() { const CE = (typeof window !== "undefined") ? window.CoachEngine : null; return (CE && typeof CE.analyser === "function") ? CE : null; }
 // Historique d'un exercice (trie par date, une entree par seance). `seanceEnCours` : seance pas encore enregistree, ajoutee a la fin.
 function coachHistorique(CE, sessions, exName, seanceEnCours) {
@@ -1379,20 +1412,10 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
       const recovScore = minHoursSince >= 72 ? "optimal" : minHoursSince >= 48 ? "bon" : minHoursSince >= 24 ? "moyen" : "insuffisant";
       const recovColor = { optimal: "#00C853", bon: "#4FC3F7", moyen: "#FFD600", insuffisant: "#FF4444" }[recovScore];
 
-      // Adaptation dynamique SNS — lire depuis localStorage
-      const snsScore = Object.values((function(){ try{ return JSON.parse(lsGetNs("it3_fatigue")||"{}"); }catch(e){return{};} })()).reduce((a,b)=>a+(parseInt(b)||0),0);
-      if (snsScore >= 8) {
-        setAdaptModal({
-          score: snsScore,
-          routine: activeRoutine.name,
-          level: snsScore >= 13 ? "danger" : snsScore >= 10 ? "alerte" : "surveille",
-          recovScore, recovColor, minHoursSince: minHoursSince === 999 ? null : minHoursSince
-        });
-      } else if (recovScore === "insuffisant") {
-        setAdaptModal({
-          score: snsScore, routine: activeRoutine.name, level: "surveille",
-          recovScore, recovColor, minHoursSince
-        });
+      // Fatigue ressentie (calcul unique du moteur). Elle informe seulement : aucune baisse de charge ou de volume n'est proposee sur ce score seul.
+      const fat = fatigueAffichage(load(KEYS.fatigue));
+      if (fat.fatigueElevee || recovScore === "insuffisant") {
+        setAdaptModal({ fatigue: fat, routine: activeRoutine.name, recovScore, recovColor, minHoursSince: minHoursSince === 999 ? null : minHoursSince });
       }
     }
   }, [activeRoutine]);
@@ -1807,12 +1830,12 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
 
       {adaptModal && (
         <div style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(0,0,0,0.92)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
-          <div style={{ background: "#0d0d0d", border: "1px solid " + (adaptModal.level === "danger" ? "#FF4444" : adaptModal.level === "alerte" ? "#FF8C00" : "#FFD600") + "44", borderRadius: 20, padding: "24px 20px", width: "100%", maxWidth: 400 }}>
-            <div style={{ fontSize: 28, marginBottom: 8, textAlign: "center" }}>{adaptModal.level === "danger" ? "🔴" : adaptModal.level === "alerte" ? "🟠" : "🟡"}</div>
-            <div style={{ fontSize: 10, color: adaptModal.level === "danger" ? "#FF4444" : adaptModal.level === "alerte" ? "#FF8C00" : "#FFD600", fontFamily: "monospace", fontWeight: 900, letterSpacing: 2, marginBottom: 8, textAlign: "center" }}>
-              SYSTÈME NERVEUX {adaptModal.level === "danger" ? "— DANGER" : adaptModal.level === "alerte" ? "— ALERTE" : "— SURVEILLANCE"}
+          <div style={{ background: "#0d0d0d", border: "1px solid " + adaptModal.fatigue.couleur + "44", borderRadius: 20, padding: "24px 20px", width: "100%", maxWidth: 400 }}>
+            <div style={{ fontSize: 28, marginBottom: 8, textAlign: "center" }}>{adaptModal.fatigue.emoji}</div>
+            <div style={{ fontSize: 10, color: adaptModal.fatigue.couleur, fontFamily: "monospace", fontWeight: 900, letterSpacing: 2, marginBottom: 8, textAlign: "center" }}>
+              FATIGUE RESSENTIE — {adaptModal.fatigue.titre}
             </div>
-            <div style={{ fontSize: 14, fontWeight: 900, color: "#fff", marginBottom: 4, textAlign: "center" }}>Score SNS : {adaptModal.score}/18</div>
+            <div style={{ fontSize: 14, fontWeight: 900, color: "#fff", marginBottom: 4, textAlign: "center" }}>Score fatigue : {adaptModal.fatigue.scoreTexte}{adaptModal.fatigue.statut === "partiel" ? " (" + adaptModal.fatigue.detail + ")" : ""}</div>
             {adaptModal.recovScore && (
               <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "center", marginBottom: 8 }}>
                 <span style={{ fontSize: 11, color: "#666" }}>Récupération :</span>
@@ -1822,35 +1845,11 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
                 </span>
               </div>
             )}
-            <div style={{ fontSize: 11, color: "#666", textAlign: "center", marginBottom: 20, lineHeight: 1.6 }}>
-              {adaptModal.level === "danger"
-                ? "Fatigue nerveuse critique. Risque de blessure élevé."
-                : adaptModal.level === "alerte"
-                ? "Fatigue notable. Performance réduite probable."
-                : "Légère fatigue. Reste attentif à tes sensations."}
-            </div>
+            <div style={{ fontSize: 11, color: "#888", textAlign: "center", marginBottom: 20, lineHeight: 1.6 }}>{adaptModal.fatigue.texte}</div>
 
             <div style={{ background: "#111", borderRadius: 12, padding: "14px 16px", marginBottom: 16 }}>
-              <div style={{ fontSize: 10, color: "#ff6600", fontFamily: "monospace", fontWeight: 900, marginBottom: 10 }}>COACHING — ADAPTATIONS RECOMMANDÉES</div>
-              {adaptModal.level === "danger" ? (
-                <div>
-                  <div style={{ fontSize: 11, color: "#ccc", marginBottom: 6, lineHeight: 1.6 }}>• Réduis à <strong style={{color:"#FF4444"}}>2 séries</strong> par exercice</div>
-                  <div style={{ fontSize: 11, color: "#ccc", marginBottom: 6, lineHeight: 1.6 }}>• Charges <strong style={{color:"#FF4444"}}>-20%</strong> par rapport à d'habitude</div>
-                  <div style={{ fontSize: 11, color: "#ccc", marginBottom: 6, lineHeight: 1.6 }}>• RIR minimum <strong style={{color:"#FF4444"}}>3-4</strong> sur toutes les séries</div>
-                  <div style={{ fontSize: 11, color: "#ccc", lineHeight: 1.6 }}>• Repos <strong style={{color:"#FF4444"}}>+30 secondes</strong> entre les séries</div>
-                </div>
-              ) : adaptModal.level === "alerte" ? (
-                <div>
-                  <div style={{ fontSize: 11, color: "#ccc", marginBottom: 6, lineHeight: 1.6 }}>• Reste sur <strong style={{color:"#FF8C00"}}>3 séries</strong> mais réduis les charges de <strong style={{color:"#FF8C00"}}>-10%</strong></div>
-                  <div style={{ fontSize: 11, color: "#ccc", marginBottom: 6, lineHeight: 1.6 }}>• RIR minimum <strong style={{color:"#FF8C00"}}>2-3</strong> sur toutes les séries</div>
-                  <div style={{ fontSize: 11, color: "#ccc", lineHeight: 1.6 }}>• Écoute ton corps — arrête si douleur inhabituelle</div>
-                </div>
-              ) : (
-                <div>
-                  <div style={{ fontSize: 11, color: "#ccc", marginBottom: 6, lineHeight: 1.6 }}>• Programme normal mais <strong style={{color:"#FFD600"}}>RIR minimum 2</strong></div>
-                  <div style={{ fontSize: 11, color: "#ccc", lineHeight: 1.6 }}>• Si les charges semblent lourdes, réduis de <strong style={{color:"#FFD600"}}>-5%</strong></div>
-                </div>
-              )}
+              <div style={{ fontSize: 10, color: "#ff6600", fontFamily: "monospace", fontWeight: 900, marginBottom: 10 }}>AUCUNE ADAPTATION AUTOMATIQUE</div>
+              <div style={{ fontSize: 11, color: "#ccc", lineHeight: 1.6 }}>{adaptModal.fatigue.note} Fais ta séance normalement et ajuste seulement si tes sensations ou tes performances du jour le demandent.</div>
             </div>
 
             <button onClick={() => setAdaptModal(null)} style={{ width: "100%", background: "#ff6600", border: "none", color: "#000", borderRadius: 12, padding: "14px", fontSize: 14, fontWeight: 900, cursor: "pointer", marginBottom: 8 }}>
@@ -2613,8 +2612,7 @@ const TATANKA_HERO = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAQ
 function HomeTab({ sessions, currentSets, setTab, fatigue }) {
   const weekSessions = sessions.filter(function(s){ return (new Date() - new Date(s.date)) / 86400000 <= 7; });
   const weekTonnage = Math.round(weekSessions.reduce(function(a,s){ return a+(s.exercises||[]).reduce(function(b,ex){ return (ex.sets||[]).filter(function(st){ return st.weight&&st.reps; }).reduce(function(c,st){ return c+parseFloat(st.weight)*parseInt(st.reps); },b); },a); },0));
-  const snsScore = Object.values(fatigue||{}).reduce(function(a,b){ return a+(parseInt(b)||0); },0);
-  const snsColor = snsScore<=3?"#00C853":snsScore<=7?"#FFD600":snsScore<=12?"#FF8C00":"#FF4444";
+  const fat = fatigueAffichage(fatigue);
   const streak = (function(){
     var dates=sessions.map(function(x){ return x.date.slice(0,10); });
     var s=0;
@@ -2632,7 +2630,6 @@ function HomeTab({ sessions, currentSets, setTab, fatigue }) {
   var MOTIV=["Regularite bat perfection","Chaque seance tracee est une victoire","Le bison avance toujours","Ton corps se souvient de chaque effort","Les champions se construisent dans les details","La discipline, la force demain","Pas d excuses. Des resultats.","Force et endurance, une question d habitudes."];
   var motiv=MOTIV[now.getDate()%MOTIV.length];
   var weekPct = Math.min(weekSessions.length/7, 1);
-  var snsPct = Math.min(snsScore/18, 1);
   var tiles = [
     {label:"HISTORIQUE", sub:"Consulte tes seances", tab:"session", icon:"📅"},
     {label:"PROGRESSION", sub:"Tes records", tab:"progress", icon:"📈"},
@@ -2694,11 +2691,11 @@ function HomeTab({ sessions, currentSets, setTab, fatigue }) {
               </svg>
             </div>
             <div>
-              <div style={{fontSize:18,fontWeight:900,color:snsColor}}>{snsScore<=3?"😊":snsScore<=7?"😐":snsScore<=12?"😓":"🥵"}</div>
-              <div style={{fontSize:8,color:"#5a2a2a"}}>FATIGUE</div>
+              <div style={{fontSize:18,fontWeight:900,color:fat.couleur}} title={"Fatigue " + fat.titre.toLowerCase() + " · " + fat.scoreCourt}>{fat.emoji}</div>
+              <div style={{fontSize:8,color:"#5a2a2a"}}>FATIGUE {fat.scoreCourt}</div>
               <svg width="38" height="38" style={{marginTop:3}}>
                 <circle cx="19" cy="19" r="15" fill="none" stroke="#2a1010" strokeWidth="3"/>
-                <circle cx="19" cy="19" r="15" fill="none" stroke={snsColor} strokeWidth="3" strokeDasharray={String(Math.round(snsPct*94))+" 94"} transform="rotate(-90 19 19)"/>
+                <circle cx="19" cy="19" r="15" fill="none" stroke={fat.couleur} strokeWidth="3" strokeDasharray={String(Math.round(fat.pct*94))+" 94"} transform="rotate(-90 19 19)"/>
               </svg>
             </div>
           </div>
@@ -2881,7 +2878,12 @@ function BilanTab({ fatigue, setFatigue, sessions }) {
   const cycleWarn  = weeksElapsed >= 14;
   const dechargeAlert = weeksElapsed > 0 && weeksElapsed % 5 === 0 && weeksElapsed < 16;
   const cycleSessions = sessions.filter(s => s.date >= cycleData.startDate).length;
-  function update(key, val) { const u = { ...fatigue, [key]: val }; setFatigue(u); save(KEYS.fatigue, u); }
+  // Une reponse = valeur + marque datee (fiche._repondu), pour ne plus confondre un 0 par defaut avec un vrai 0.
+  function update(key, val) {
+    const CE = window.CoachEngine;
+    const u = CE && typeof CE.repondreFatigue === "function" ? CE.repondreFatigue(fatigue, key, val, today()) : { ...fatigue, [key]: val };
+    setFatigue(u); save(KEYS.fatigue, u);
+  }
   function startNewCycle() { const nc = { startDate: today(), num: (cycleData.num || 1) + 1 }; save(KEYS.cycle, nc); setShowCycleBilan(false); alert("Cycle " + nc.num + " demarre !"); }
 
   // Alertes groupes musculaires non entraînés depuis > 7 jours
@@ -2918,22 +2920,11 @@ function BilanTab({ fatigue, setFatigue, sessions }) {
   const avgRIRRecent = recentSets.length > 0
     ? Math.round(recentSets.reduce((a, s) => a + parseRir(s.rir), 0) / recentSets.length * 10) / 10
     : null;
-  // Score RIR auto : RIR moy <= 1 → +3, <= 1.5 → +2, <= 2 → +1, > 2 → 0
+  // Niveau du RIR moyen (couleurs de la carte RIR seulement). Il n'est PLUS ajoute au score fatigue : RIR non verifies.
   const rirAutoScore = avgRIRRecent === null ? 0 : avgRIRRecent <= 1 ? 3 : avgRIRRecent <= 1.5 ? 2 : avgRIRRecent <= 2 ? 1 : 0;
 
-  const score = Object.values(fatigue).reduce((a, b) => a + (parseInt(b) || 0), 0) + rirAutoScore;
-  const status = score <= 3  ? { level: "OPTIMAL",   color: "#00C853", msg: "Systeme nerveux en forme. Continue sur ta lancee." }
-              : score <= 7  ? { level: "SURVEILLE", color: "#FFD600", msg: "Quelques signes. Respecte strictement le RIR." }
-              : score <= 12 ? { level: "ALERTE",    color: "#FF8C00", msg: "Fatigue nerveuse notable. Charges -10%, RIR min 3." }
-              :                { level: "DANGER",    color: "#FF4444", msg: "URGENCE : charges -20-30%, RIR min 4, volume -40%." };
-  const items = [
-    { key: "sleep",        label: "Qualite du sommeil",        desc: "0=Excellent  3=Tres mauvais" },
-    { key: "appetite",     label: "Appetit",                   desc: "0=Normal  3=Tres diminue" },
-    { key: "motivation",   label: "Motivation entrainement",   desc: "0=Top  3=Aucune envie" },
-    { key: "repLoss",      label: "Perte de reps inexpliquee", desc: "0=Non  3=Oui, beaucoup" },
-    { key: "techDegrades", label: "Technique qui se degrade",  desc: "0=Stable  3=Beaucoup" },
-    { key: "heavyFeel",    label: "Sensation de lourdeur",     desc: "0=Normal  3=Tres lourd" },
-  ];
+  const fat = fatigueAffichage(fatigue);
+  const items = (fat.criteres && fat.criteres.length ? fat.criteres : []).map(c => ({ key: c.cle, label: c.libelle, desc: c.aide }));
   const phases = [
     { label: "FACILE",     weeks: "S1-5",   active: weeksElapsed <= 5,                       color: "#00C853" },
     { label: "INTERM.",    weeks: "S6-11",  active: weeksElapsed > 5 && weeksElapsed <= 11,  color: "#FFD600" },
@@ -2942,7 +2933,7 @@ function BilanTab({ fatigue, setFatigue, sessions }) {
   const rules = [
     "RIR jamais <2 sur mouvements lourds (bras longs + 50 ans)",
     "+1 rep a la fois. Derniere serie d'abord.",
-    "Score SNS 6+ = recuperation active immediate",
+    "Fatigue elevee = verifier les performances avant de reduire quoi que ce soit",
     "Jamais sacrifier la technique pour une repetition",
     "Pecs : halteres et cables prioritaires (bras longs)",
     "Face pull : 3x par semaine minimum (epaules larges)",
@@ -3017,11 +3008,13 @@ function BilanTab({ fatigue, setFatigue, sessions }) {
           {cycleAlert ? "VOIR LE BILAN COMPLET" : "BILAN DU CYCLE EN COURS"}
         </button>
       </Card>
-      <Card style={{ background: status.color + "10", border: "1px solid " + status.color + "30", textAlign: "center", padding: "20px 16px", marginBottom: 16 }}>
-        <div style={{ fontSize: 9, color: "#555", fontFamily: "monospace", marginBottom: 4 }}>SCORE SNS CETTE SEMAINE</div>
-        <div style={{ fontSize: 36, fontWeight: 900, color: status.color }}>{score} <span style={{ fontSize: 14, color: "#444", fontWeight: 400 }}>/ 18</span></div>
-        <div style={{ fontSize: 12, fontWeight: 900, color: status.color, letterSpacing: "0.1em", fontFamily: "monospace", marginTop: 4 }}>{status.level}</div>
-        <div style={{ fontSize: 11, color: "#888", marginTop: 10, lineHeight: 1.6 }}>{status.msg}</div>
+      <Card style={{ background: fat.couleur + "10", border: "1px solid " + fat.couleur + "30", textAlign: "center", padding: "20px 16px", marginBottom: 16 }}>
+        <div style={{ fontSize: 9, color: "#555", fontFamily: "monospace", marginBottom: 4 }}>FATIGUE RESSENTIE · CETTE SEMAINE</div>
+        <div style={{ fontSize: 36, fontWeight: 900, color: fat.couleur }}>{fat.score === null ? "—" : fat.score} <span style={{ fontSize: 14, color: "#444", fontWeight: 400 }}>/ {fat.max}</span></div>
+        <div style={{ fontSize: 12, fontWeight: 900, color: fat.couleur, letterSpacing: "0.1em", fontFamily: "monospace", marginTop: 4 }}>{fat.titre}</div>
+        <div style={{ fontSize: 9, color: "#555", fontFamily: "monospace", marginTop: 4 }}>{fat.detail}</div>
+        <div style={{ fontSize: 11, color: "#888", marginTop: 10, lineHeight: 1.6 }}>{fat.texte}</div>
+        <div style={{ fontSize: 9, color: "#555", marginTop: 6, lineHeight: 1.5 }}>{fat.note}</div>
       </Card>
       {avgRIRRecent !== null && (
         <Card style={{ padding: "12px 14px", marginBottom: 8, background: rirAutoScore >= 2 ? "#1a0000" : rirAutoScore === 1 ? "#1a0a00" : "#0a1a0a", border: "1px solid " + (rirAutoScore >= 2 ? "#FF444444" : rirAutoScore === 1 ? "#FF880044" : "#00C85344") }}>
@@ -3031,15 +3024,15 @@ function BilanTab({ fatigue, setFatigue, sessions }) {
               <div style={{ fontSize: 9, color: "#555", marginTop: 3, fontFamily: "monospace" }}>
                 {avgRIRRecent <= 1 ? "Trop près de l'échec — récupération compromise" : avgRIRRecent <= 1.5 ? "Légère fatigue accumulée" : avgRIRRecent <= 2 ? "Dans la norme, surveille" : "Bonne marge — énergie disponible"}
               </div>
-              <div style={{ fontSize: 8, color: "#444", marginTop: 2, fontFamily: "monospace" }}>Calculé automatiquement · +{rirAutoScore} pts SNS</div>
+              <div style={{ fontSize: 8, color: "#444", marginTop: 2, fontFamily: "monospace" }}>Indicatif · non compté dans le score fatigue (RIR non vérifiés)</div>
             </div>
             <div style={{ fontSize: 28, fontWeight: 900, color: rirAutoScore >= 2 ? "#FF4444" : rirAutoScore === 1 ? "#FF8800" : "#00C853", fontFamily: "monospace" }}>{avgRIRRecent}</div>
           </div>
         </Card>
       )}
       {items.map(item => {
-        const v = parseInt(fatigue[item.key] || 0);
-        const c = v === 0 ? "#00C853" : v === 1 ? "#FFD600" : v === 2 ? "#FF8C00" : "#FF4444";
+        const v = fat.reponses ? fat.reponses[item.key] : null; // null = pas de reponse (jamais affiche comme 0)
+        const c = v === null || v === undefined ? "#444" : v === 0 ? "#00C853" : v === 1 ? "#FFD600" : v === 2 ? "#FF8C00" : "#FF4444";
         return (
           <Card key={item.key} style={{ padding: "12px 14px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
@@ -3047,7 +3040,7 @@ function BilanTab({ fatigue, setFatigue, sessions }) {
                 <div style={{ fontSize: 12, fontWeight: 700, color: "#ccc" }}>{item.label}</div>
                 <div style={{ fontSize: 9, color: "#444", fontFamily: "monospace", marginTop: 1 }}>{item.desc}</div>
               </div>
-              <div style={{ fontSize: 22, fontWeight: 900, color: c }}>{v}</div>
+              <div style={{ fontSize: 22, fontWeight: 900, color: c }}>{v === null || v === undefined ? "—" : v}</div>
             </div>
             <div style={{ display: "flex", gap: 6 }}>
               {[0,1,2,3].map(n => (
@@ -3562,8 +3555,7 @@ function exportData() {
     reader.readAsText(file); e.target.value = "";
   }
 
-  const score = Object.values(fatigue).reduce((a, b) => a + (parseInt(b) || 0), 0);
-  const snsColor = score <= 2 ? "#00C853" : score <= 5 ? "#FFD600" : score <= 9 ? "#FF8C00" : "#FF4444";
+  const fat = fatigueAffichage(fatigue);
   const cycleData = load(KEYS.cycle) || { startDate: (sessions[0] && sessions[0].date) || today(), num: 1 };
   const weeksElapsed = Math.max(0, Math.round((new Date(today()) - new Date(cycleData.startDate)) / 604800000));
   const cycleAlert = weeksElapsed >= 16;
@@ -3648,7 +3640,7 @@ function exportData() {
             <span style={{ fontSize: 16, fontWeight: 900, letterSpacing: "-0.5px" }}>TRAINING</span>
           </div>
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <span style={{ fontSize: 10, fontFamily: "monospace", color: snsColor }}>SNS {score}/18</span>
+            <span style={{ fontSize: 10, fontFamily: "monospace", color: fat.couleur }} title={"Fatigue " + fat.titre.toLowerCase()}>FATIGUE {fat.scoreCourt}</span>
             {cycleAlert && <span style={{ fontSize: 9, color: "#FF6600", fontFamily: "monospace", fontWeight: 900 }}>S{weeksElapsed}!</span>}
             <span style={{ fontSize: 10, fontFamily: "monospace", color: "#333" }}>{sessions.length} seances</span>
             <button onClick={() => {

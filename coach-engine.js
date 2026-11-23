@@ -33,7 +33,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var VERSION = "0.7.0";
+  var VERSION = "0.8.0";
 
   // Reglages centralises (une seule valeur par regle).
   var REGLES = Object.freeze({
@@ -63,7 +63,8 @@
     RIR_HAUT: 4,                   // V1 : RIR moyen >= 4 -> « pousse plus fort »
     RIR_BAS: 1,                    // V1 : RIR moyen <= 1 -> « sois prudent »
     JOURS_SANS_MUSCLE: 7,          // V1 : alerte muscle non travaille depuis plus de 7 jours
-    FATIGUE_ECHELLE: [3, 7, 12],   // une seule echelle (celle de l'onglet fatigue V1) : <=3 optimal, <=7 correct, <=12 eleve, au-dela critique
+    FATIGUE_VALEUR_MAX: 3,         // questionnaire fatigue : chaque critere note de 0 a 3
+    FATIGUE_SEUILS: [2, 5, 9],     // une seule echelle, sur 15 (5 criteres) : 0-2 bas, 3-5 modere, 6-9 eleve, 10-15 tres eleve
     VOLUME_SECONDAIRE: 0.5         // une serie compte 1 pour le muscle principal, 0,5 pour chaque muscle secondaire
   });
 
@@ -649,11 +650,71 @@
 
   // ═══════════════════════ 5. DOMAINES (fatigue, recuperation, volume, priorites, morphologie) ═══════════════════════
 
-  // Fatigue : un seul score (somme des reponses du questionnaire) et une seule echelle.
-  function scoreFatigue(reponses) {
-    var vals = reponses && typeof reponses === "object" ? Object.keys(reponses).map(function (k) { return parseInt(reponses[k], 10) || 0; }) : [];
-    var score = vals.reduce(function (a, b) { return a + b; }, 0), e = REGLES.FATIGUE_ECHELLE;
-    return { score: score, niveau: vals.length === 0 ? "inconnu" : score <= e[0] ? "optimal" : score <= e[1] ? "correct" : score <= e[2] ? "eleve" : "critique", reponses: vals.length };
+  // Fatigue ressentie : UN seul calcul, utilise par tous les ecrans.
+  // Stockage (inchange) : la fiche hebdomadaire it3_fatigue = { sleep: 0-3, appetite: 0-3, ... }. La fiche par defaut et la
+  // remise a zero du lundi ecrivent des 0 : un 0 stocke ne prouve donc PAS une reponse. Depuis la version 0.8.0, chaque reponse
+  // donnee est marquee dans fiche._repondu[cle] = date. Lecture d'un critere :
+  //   - marque + valeur 0-3            -> repondu (source « saisie ») ;
+  //   - sans marque, valeur 1-3        -> repondu (ancienne fiche : seul un clic pouvait produire une valeur non nulle) ;
+  //   - sans marque, 0 / vide / autre  -> NON repondu (0 par defaut, impossible a distinguer d'un vrai 0).
+  // « repLoss » (perte de reps) n'est plus compte : la performance est mesuree par l'analyse objective des seances.
+  // Le bonus RIR de l'onglet Bilan est supprime (RIR non verifies). Aucun niveau ne declenche de baisse de charge ou de volume.
+  var FATIGUE_CRITERES = Object.freeze([
+    { cle: "sleep", libelle: "Qualité du sommeil", aide: "0 = Excellent · 3 = Très mauvais" },
+    { cle: "appetite", libelle: "Appétit", aide: "0 = Normal · 3 = Très diminué" },
+    { cle: "motivation", libelle: "Motivation à l'entraînement", aide: "0 = Top · 3 = Aucune envie" },
+    { cle: "techDegrades", libelle: "Technique qui se dégrade", aide: "0 = Stable · 3 = Beaucoup" },
+    { cle: "heavyFeel", libelle: "Sensation de lourdeur", aide: "0 = Normal · 3 = Très lourd" }
+  ].map(function (c) { return Object.freeze(c); }));
+  var FATIGUE_NON_COMPTES = Object.freeze(["repLoss"]);
+  var NIVEAUX_FATIGUE = Object.freeze(["bas", "modere", "eleve", "tres_eleve"]);
+  function niveauFatigue(score) {
+    var e = REGLES.FATIGUE_SEUILS;
+    return score <= e[0] ? "bas" : score <= e[1] ? "modere" : score <= e[2] ? "eleve" : "tres_eleve";
+  }
+  function lireReponseFatigue(fiche, cle) {
+    if (!fiche || typeof fiche !== "object") return null;
+    var marques = fiche._repondu && typeof fiche._repondu === "object" ? fiche._repondu : null;
+    var marque = !!(marques && Object.prototype.hasOwnProperty.call(marques, cle));
+    var brut = fiche[cle];
+    if (brut === null || brut === undefined || String(brut).trim() === "" || !/^\s*\d+\s*$/.test(String(brut))) return null;
+    var v = parseInt(brut, 10);
+    if (v < 0 || v > REGLES.FATIGUE_VALEUR_MAX) return null;
+    if (marque) return { valeur: v, source: "saisie" };
+    if (v > 0) return { valeur: v, source: "ancienne_fiche" };
+    return null;
+  }
+  function scoreFatigue(fiche) {
+    var reponses = {}, sources = {}, manquants = [], somme = 0, n = 0;
+    FATIGUE_CRITERES.forEach(function (c) {
+      var r = lireReponseFatigue(fiche, c.cle);
+      reponses[c.cle] = r ? r.valeur : null; sources[c.cle] = r ? r.source : null;
+      if (r) { somme += r.valeur; n++; } else manquants.push(c.cle);
+    });
+    var total = FATIGUE_CRITERES.length, statut = n === 0 ? "non_renseigne" : n < total ? "partiel" : "complet";
+    var niveau = statut === "complet" ? niveauFatigue(somme) : null;
+    // Questionnaire partiel : les reponses manquantes ne peuvent qu'augmenter le score -> le niveau atteint est un minimum certain.
+    var niveauMinimum = statut === "non_renseigne" ? null : niveauFatigue(somme);
+    return {
+      statut: statut, score: n === 0 ? null : somme, max: total * REGLES.FATIGUE_VALEUR_MAX,
+      repondus: n, total: total, manquants: manquants, niveau: niveau, niveauMinimum: niveauMinimum,
+      fatigueElevee: niveauMinimum === "eleve" || niveauMinimum === "tres_eleve",
+      reponses: reponses, sources: sources, nonComptes: FATIGUE_NON_COMPTES.slice(),
+      bonusRir: 0, adaptationAutomatique: false
+    };
+  }
+  // Nouvelle fiche apres une reponse (la fiche recue n'est jamais modifiee) : valeur + marque datee. Les autres champs
+  // (dont l'ancien repLoss) sont conserves tels quels.
+  function repondreFatigue(fiche, cle, valeur, date) {
+    var v = parseInt(valeur, 10);
+    if (!FATIGUE_CRITERES.some(function (c) { return c.cle === cle; })) throw new Error("critere fatigue inconnu : " + cle);
+    if (isNaN(v) || v < 0 || v > REGLES.FATIGUE_VALEUR_MAX) throw new Error("valeur fatigue invalide : " + valeur);
+    var src = fiche && typeof fiche === "object" ? fiche : {}, out = {};
+    Object.keys(src).forEach(function (k) { out[k] = src[k]; });
+    var marques = {}, ancien = src._repondu && typeof src._repondu === "object" ? src._repondu : {};
+    Object.keys(ancien).forEach(function (k) { marques[k] = ancien[k]; });
+    marques[cle] = date || null; out[cle] = v; out._repondu = marques;
+    return out;
   }
 
   // RIR moyen des series valides sur les N derniers jours, avec sa fiabilite (combien de RIR ont vraiment ete saisis).
@@ -778,7 +839,7 @@
     volumeEntre: volumeEntre, meilleureSerieEntre: meilleureSerieEntre, tendanceGenerale: tendanceGenerale, TENDANCES: TENDANCES,
     syntheseExercice: syntheseExercice, pistesAdaptation: pistesAdaptation, comparabilite: comparabilite, blocComparable: blocComparable, analyseExercice: analyseExercice, filtrerSuspectes: filtrerSuspectes,
     // 5. domaines
-    scoreFatigue: scoreFatigue, rirRecent: rirRecent, recuperation: recuperation, volume: volume, priorites: priorites, morphologie: morphologie,
+    FATIGUE_CRITERES: FATIGUE_CRITERES, NIVEAUX_FATIGUE: NIVEAUX_FATIGUE, scoreFatigue: scoreFatigue, repondreFatigue: repondreFatigue, rirRecent: rirRecent, recuperation: recuperation, volume: volume, priorites: priorites, morphologie: morphologie,
     // 6. analyse complete
     analyser: analyser
   });

@@ -129,8 +129,9 @@ known('Deux tables muscle <-> exercice qui ne concordent pas (ex. Adducteurs : �
   getMuscle('Adducteurs machine') !== groupOf('Adducteurs machine'));
 known('Exercices de la base classes « Autre » ou sans groupe (squat, soulevé de terre, hip thrust, développé incliné...)', 'chaque exercice de la base a un muscle principal ; les exercices perso sont « non classes » jusqu\'au choix de l\'utilisateur', () => {
   const autres = C.ALL_EXERCISES.filter(n => getMuscle(n) === 'Autre'); return autres.length > 0 && autres.includes('Squat barre') && autres.includes('Développé incliné haltères'); });
-known('Score SNS : 3 calculs (avec ou sans RIR automatique) et des seuils de couleur differents (2/5/9 contre 3/7/12)', 'un seul calcul et une seule echelle du score de fatigue', () =>
-  /score <= 2 \? "#00C853" : score <= 5/.test(SRC) && /score <= 3  \? \{ level: "OPTIMAL"/.test(SRC) && /\+ rirAutoScore/.test(SRC));
+keep('Score fatigue : un seul calcul (moteur) et une seule echelle /15 sur les 4 ecrans, sans bonus RIR (corrige a l\'etape 1 fatigue)', () => {
+  assert.ok(!/score <= 2 \? "#00C853" : score <= 5/.test(SRC) && !/score <= 3  \? \{ level: "OPTIMAL"/.test(SRC) && !/\+ rirAutoScore/.test(SRC));
+  assert.ok((SRC.match(/fatigueAffichage\(/g) || []).length >= 5); });
 known('Paliers definis mais jamais attribues a un exercice (palierId seulement lu, ou mis a null)', 'les paliers sont proposes par le moteur et appliques seulement apres validation de l\'utilisateur', () =>
   !/palierId: (?!null)[^,}\s]/.test(SRC));
 known('Date du jour calculee en heure UTC (une seance apres minuit heure francaise peut etre datee de la veille)', 'date locale de l\'utilisateur', () =>

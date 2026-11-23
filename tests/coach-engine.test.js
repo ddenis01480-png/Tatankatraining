@@ -244,10 +244,14 @@ t('E', 'Fin de seance : bilanExercice (meme definition que comparer) et recordsE
   const fz = deepFreeze({ h: [{ date: day(0), series: [S(60, 10)] }], s: [S(70, 10)] }); E.bilanExercice(fz.h, fz.s); E.recordsExercice(fz.h, fz.s); });
 
 // ═════════ F. DOMAINES PREPARES ═════════
-t('F', 'Fatigue : un seul score (somme des reponses) et une seule echelle 3 / 7 / 12', () => {
-  assert.deepStrictEqual(E.scoreFatigue({ a: 1, b: 2 }), { score: 3, niveau: 'optimal', reponses: 2 }); assert.strictEqual(E.scoreFatigue({ a: 4, b: 3 }).niveau, 'correct');
-  assert.strictEqual(E.scoreFatigue({ a: 6, b: 6 }).niveau, 'eleve'); assert.strictEqual(E.scoreFatigue({ a: 9, b: 9 }).niveau, 'critique');
-  assert.strictEqual(E.scoreFatigue({}).niveau, 'inconnu'); assert.strictEqual(E.scoreFatigue(null).score, 0); assert.strictEqual(E.scoreFatigue({ a: 'x', b: '2' }).score, 2); });
+t('F', 'Fatigue : un seul score sur 15 (5 criteres, sans perte de reps ni bonus RIR), statuts non renseigne / partiel / complet', () => {
+  const C5 = (v) => ({ sleep: v, appetite: v, motivation: v, techDegrades: v, heavyFeel: v, _repondu: { sleep: 'd', appetite: 'd', motivation: 'd', techDegrades: 'd', heavyFeel: 'd' } });
+  assert.strictEqual(E.scoreFatigue(null).statut, 'non_renseigne'); assert.strictEqual(E.scoreFatigue(null).score, null);
+  assert.strictEqual(E.scoreFatigue({ sleep: 0, appetite: 0, motivation: 0, repLoss: 0, techDegrades: 0, heavyFeel: 0 }).statut, 'non_renseigne');
+  assert.strictEqual(E.scoreFatigue(C5(0)).niveau, 'bas'); assert.strictEqual(E.scoreFatigue(C5(1)).niveau, 'modere');
+  assert.strictEqual(E.scoreFatigue(C5(2)).niveau, 'tres_eleve'); assert.strictEqual(E.scoreFatigue(C5(3)).score, 15);
+  assert.strictEqual(E.scoreFatigue(Object.assign(C5(1), { repLoss: 3 })).score, 5);
+  assert.strictEqual(E.scoreFatigue({ sleep: 'x', appetite: '2' }).score, 2); });
 t('F', 'Recuperation et priorites : jours depuis le dernier travail par muscle ; muscles suivis > 7 jours ou jamais travailles', () => {
   const ss = [sess(1, '2026-01-01', [ex('Curl haltères', [S(14, 10)])]), sess(2, '2026-01-10', [ex('Squat barre', [S(100, 8)]), ex('Tirage poulie haute prise large', [S(60, 10)])]), sess(3, '2026-01-12', [ex('Développé couché barre', [S(80, 8)])])];
   const r = E.analyser({ sessions: ss }, { maintenant: '2026-01-13' });
@@ -335,7 +339,7 @@ t('H', 'Jeu representatif (40 seances, 6 exercices) : chaque exercice analyse, d
   assert.strictEqual(x['Gainage planche'].diagnostic.code, 'non_applicable'); assert.strictEqual(x['Gainage planche'].conseil, null);
   assert.strictEqual(x['Élévations latérales haltères'].mode, 'reps'); assert.strictEqual(x['Tirage poulie haute prise large'].tendance.sens, 'baisse');
   assert.strictEqual(x['Curl haltères'].conseil.rir.fiable, true, 'dernieres seances avec RIR saisi'); assert.strictEqual(r.donnees.rir.saisi, 27);
-  assert.deepStrictEqual(r.donnees.exercicesNonClasses, []); assert.strictEqual(r.fatigue.questionnaire.niveau, 'optimal'); });
+  assert.deepStrictEqual(r.donnees.exercicesNonClasses, []); assert.strictEqual(r.fatigue.questionnaire.statut, 'non_renseigne'); });
 t('H', 'Jeu representatif : le diagnostic du moteur = celui du V1 pour les exercices en mode force (8-12)', () => {
   const ss = representative(); ['Développé couché haltères', 'Leg curl assis machine', 'Tirage poulie haute prise large'].forEach(n => {
     const h = ss.filter(s => s.exercises.some(e => e.name === n)).map(s => ({ date: s.date, sets: s.exercises.find(e => e.name === n).sets }));
