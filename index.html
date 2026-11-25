@@ -1687,24 +1687,107 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
     setRestSec(0);
     setTimerOn(false);
 
-    if (alerts.length > 0) {
-      setStagAlert({ ...alerts[0], allAlerts: alerts, alertIndex: 0 });
-    } else {
-      setPostSeanceModal({
-        routineName: currentSets.routineName,
-        tonnage: Math.round(tonnageSession),
-        tonnageDiff,
-        progressed, stagnated, regressed,
-        sessionPRs,
-        details: finV2 ? finV2.details : null, prDetails: finV2 ? finV2.prDetails : null, nonComparables: finV2 ? finV2.nonComparables : [],
-        totalSets: validExs.reduce((a,ex)=>a+ex.sets.length,0),
-        nbEx: validExs.length
-      });
-    }
+    // Alertes de fin de seance d'abord (s'il y en a), puis TOUJOURS l'analyse post-seance (affichee quand les alertes sont fermees).
+    if (alerts.length > 0) setStagAlert({ ...alerts[0], allAlerts: alerts, alertIndex: 0 });
+    setPostSeanceModal({
+      routineName: currentSets.routineName,
+      tonnage: Math.round(tonnageSession),
+      tonnageDiff,
+      progressed, stagnated, regressed,
+      sessionPRs,
+      details: finV2 ? finV2.details : null, prDetails: finV2 ? finV2.prDetails : null, nonComparables: finV2 ? finV2.nonComparables : [],
+      totalSets: validExs.reduce((a,ex)=>a+ex.sets.length,0),
+      nbEx: validExs.length
+    });
   }
+
+  // Fin de seance : saveSession remet currentSets a null, c'est donc l'ecran SANS seance en cours qui affiche les alertes de fin
+  // de seance puis l'analyse post-seance (avant cette correction, elles n'etaient rendues que pendant une seance : jamais visibles).
+  const alertesFinView = stagAlert && <StagnationAlert diag={stagAlert} onClose={() => setStagAlert(null)}
+    onNext={() => {
+      const all = stagAlert.allAlerts || []; const next = (stagAlert.alertIndex || 0) + 1;
+      if (next < all.length) setStagAlert({ ...all[next], allAlerts: all, alertIndex: next }); else setStagAlert(null);
+    }} />;
+  const postSeanceView = !stagAlert && postSeanceModal && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(0,0,0,0.92)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+          <div style={{ background: "#0d0d0d", border: "1px solid #222", borderRadius: 20, padding: "24px 20px", width: "100%", maxWidth: 400 }}>
+            <div style={{ fontSize: 10, color: "#ff6600", fontFamily: "monospace", fontWeight: 900, letterSpacing: 2, marginBottom: 4 }}>ANALYSE POST-SÉANCE</div>
+            <div style={{ fontSize: 18, fontWeight: 900, color: "#fff", marginBottom: 16 }}>{postSeanceModal.routineName}</div>
+
+            {/* Tonnage */}
+            <div style={{ background: "#111", borderRadius: 12, padding: "12px 16px", marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <div style={{ fontSize: 10, color: "#555", fontFamily: "monospace" }}>TONNAGE TOTAL</div>
+                <div style={{ fontSize: 24, fontWeight: 900, color: "#fff" }}>{postSeanceModal.tonnage}kg</div>
+              </div>
+              {postSeanceModal.tonnageDiff !== 0 && (
+                <div style={{ fontSize: 20, fontWeight: 900, color: postSeanceModal.tonnageDiff > 0 ? "#00C853" : "#FF4444" }}>
+                  {postSeanceModal.tonnageDiff > 0 ? "+" : ""}{postSeanceModal.tonnageDiff}%
+                </div>
+              )}
+            </div>
+
+            {/* PRs */}
+            {postSeanceModal.sessionPRs.length > 0 && (
+              <div style={{ background: "#1a1000", border: "1px solid #FFD60044", borderRadius: 12, padding: "10px 14px", marginBottom: 10 }}>
+                <div style={{ fontSize: 10, color: "#FFD600", fontFamily: "monospace", fontWeight: 900, marginBottom: 6 }}>🏆 NOUVEAUX RECORDS</div>
+                {postSeanceModal.sessionPRs.map((n,i) => <div key={i} style={{ fontSize: 11, color: "#FFD600", marginBottom: 2 }}>· {n}{postSeanceModal.prDetails && postSeanceModal.prDetails[n] ? <span style={{ opacity: 0.7 }}> — {postSeanceModal.prDetails[n]}</span> : null}</div>)}
+              </div>
+            )}
+
+            {/* Progression */}
+            {postSeanceModal.progressed.length > 0 && (
+              <div style={{ background: "#001a00", border: "1px solid #00C85344", borderRadius: 12, padding: "10px 14px", marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: "#00C853", fontFamily: "monospace", fontWeight: 900, marginBottom: 6 }}>↑ EN PROGRESSION ({postSeanceModal.progressed.length})</div>
+                {postSeanceModal.progressed.map((n,i) => <div key={i} style={{ fontSize: 11, color: "#00C853", marginBottom: 2 }}>· {n}{postSeanceModal.details && postSeanceModal.details[n] ? <span style={{ opacity: 0.7 }}> — {postSeanceModal.details[n]}</span> : null}</div>)}
+              </div>
+            )}
+
+            {/* Régression */}
+            {postSeanceModal.regressed.length > 0 && (
+              <div style={{ background: "#1a0000", border: "1px solid #FF444444", borderRadius: 12, padding: "10px 14px", marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: "#FF4444", fontFamily: "monospace", fontWeight: 900, marginBottom: 6 }}>↓ EN BAISSE ({postSeanceModal.regressed.length})</div>
+                {postSeanceModal.regressed.map((n,i) => <div key={i} style={{ fontSize: 11, color: "#FF4444", marginBottom: 2 }}>· {n}{postSeanceModal.details && postSeanceModal.details[n] ? <span style={{ opacity: 0.7 }}> — {postSeanceModal.details[n]}</span> : null}</div>)}
+              </div>
+            )}
+
+            {/* Comparaison non fiable (Coach V2) : ni progression ni baisse, la raison est affichee */}
+            {postSeanceModal.nonComparables && postSeanceModal.nonComparables.length > 0 && (
+              <div style={{ background: "#141200", border: "1px solid #FFD60033", borderRadius: 12, padding: "10px 14px", marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: "#FFD600", fontFamily: "monospace", fontWeight: 900, marginBottom: 6 }}>≠ NON COMPARABLE ({postSeanceModal.nonComparables.length})</div>
+                {postSeanceModal.nonComparables.map((n,i) => <div key={i} style={{ fontSize: 11, color: "#FFD600", marginBottom: 2 }}>· {n}{postSeanceModal.details && postSeanceModal.details[n] ? <span style={{ opacity: 0.7 }}> — {postSeanceModal.details[n]}</span> : null}</div>)}
+              </div>
+            )}
+
+            {/* Stats */}
+            <div style={{ display: "flex", gap: 8, marginBottom: 16, marginTop: 4 }}>
+              <div style={{ flex: 1, background: "#111", borderRadius: 8, padding: "8px", textAlign: "center" }}>
+                <div style={{ fontSize: 18, fontWeight: 900, color: "#ff6600" }}>{postSeanceModal.nbEx}</div>
+                <div style={{ fontSize: 9, color: "#444", fontFamily: "monospace" }}>EXERCICES</div>
+              </div>
+              <div style={{ flex: 1, background: "#111", borderRadius: 8, padding: "8px", textAlign: "center" }}>
+                <div style={{ fontSize: 18, fontWeight: 900, color: "#ff6600" }}>{postSeanceModal.totalSets}</div>
+                <div style={{ fontSize: 9, color: "#444", fontFamily: "monospace" }}>SÉRIES</div>
+              </div>
+              <div style={{ flex: 1, background: "#111", borderRadius: 8, padding: "8px", textAlign: "center" }}>
+                <div style={{ fontSize: 18, fontWeight: 900, color: postSeanceModal.progressed.length > postSeanceModal.regressed.length ? "#00C853" : "#FF4444" }}>{postSeanceModal.progressed.length}/{postSeanceModal.progressed.length + postSeanceModal.stagnated.length + postSeanceModal.regressed.length}</div>
+                <div style={{ fontSize: 9, color: "#444", fontFamily: "monospace" }}>PROG.</div>
+              </div>
+            </div>
+
+            <button onClick={() => { setPostSeanceModal(null); setTab("bilan"); }} style={{ width: "100%", background: "#ff6600", border: "none", color: "#000", borderRadius: 12, padding: "14px", fontSize: 14, fontWeight: 900, cursor: "pointer" }}>
+              VOIR LE BILAN COMPLET →
+            </button>
+            <button onClick={() => setPostSeanceModal(null)} style={{ width: "100%", background: "none", border: "none", color: "#444", padding: "10px", fontSize: 12, cursor: "pointer", marginTop: 4 }}>
+              Fermer
+            </button>
+          </div>
+        </div>);
 
   if (!currentSets) return (
     <div style={{ padding: "16px 16px 80px" }}>
+      {alertesFinView}
+      {postSeanceView}
       <div style={{ marginBottom: 18 }}>
         <div style={{ fontSize: 9, color: "#555", fontFamily: "monospace", letterSpacing: "0.12em" }}>{today()}</div>
         <h2 style={{ margin: "3px 0 0", fontSize: 22, fontWeight: 900, color: "#ff6600" }}>SEANCE DU JOUR</h2>
@@ -1912,82 +1995,6 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
       {toast && (
         <div style={{ position: "fixed", top: 70, left: "50%", transform: "translateX(-50%)", zIndex: 500, background: toast.color, color: "#000", borderRadius: 10, padding: "10px 20px", fontSize: 13, fontWeight: 900, boxShadow: "0 4px 20px rgba(0,0,0,0.5)", whiteSpace: "nowrap" }}>
           {toast.msg}
-        </div>
-      )}
-      {postSeanceModal && (
-        <div style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(0,0,0,0.92)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
-          <div style={{ background: "#0d0d0d", border: "1px solid #222", borderRadius: 20, padding: "24px 20px", width: "100%", maxWidth: 400 }}>
-            <div style={{ fontSize: 10, color: "#ff6600", fontFamily: "monospace", fontWeight: 900, letterSpacing: 2, marginBottom: 4 }}>ANALYSE POST-SÉANCE</div>
-            <div style={{ fontSize: 18, fontWeight: 900, color: "#fff", marginBottom: 16 }}>{postSeanceModal.routineName}</div>
-
-            {/* Tonnage */}
-            <div style={{ background: "#111", borderRadius: 12, padding: "12px 16px", marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div>
-                <div style={{ fontSize: 10, color: "#555", fontFamily: "monospace" }}>TONNAGE TOTAL</div>
-                <div style={{ fontSize: 24, fontWeight: 900, color: "#fff" }}>{postSeanceModal.tonnage}kg</div>
-              </div>
-              {postSeanceModal.tonnageDiff !== 0 && (
-                <div style={{ fontSize: 20, fontWeight: 900, color: postSeanceModal.tonnageDiff > 0 ? "#00C853" : "#FF4444" }}>
-                  {postSeanceModal.tonnageDiff > 0 ? "+" : ""}{postSeanceModal.tonnageDiff}%
-                </div>
-              )}
-            </div>
-
-            {/* PRs */}
-            {postSeanceModal.sessionPRs.length > 0 && (
-              <div style={{ background: "#1a1000", border: "1px solid #FFD60044", borderRadius: 12, padding: "10px 14px", marginBottom: 10 }}>
-                <div style={{ fontSize: 10, color: "#FFD600", fontFamily: "monospace", fontWeight: 900, marginBottom: 6 }}>🏆 NOUVEAUX RECORDS</div>
-                {postSeanceModal.sessionPRs.map((n,i) => <div key={i} style={{ fontSize: 11, color: "#FFD600", marginBottom: 2 }}>· {n}{postSeanceModal.prDetails && postSeanceModal.prDetails[n] ? <span style={{ opacity: 0.7 }}> — {postSeanceModal.prDetails[n]}</span> : null}</div>)}
-              </div>
-            )}
-
-            {/* Progression */}
-            {postSeanceModal.progressed.length > 0 && (
-              <div style={{ background: "#001a00", border: "1px solid #00C85344", borderRadius: 12, padding: "10px 14px", marginBottom: 8 }}>
-                <div style={{ fontSize: 10, color: "#00C853", fontFamily: "monospace", fontWeight: 900, marginBottom: 6 }}>↑ EN PROGRESSION ({postSeanceModal.progressed.length})</div>
-                {postSeanceModal.progressed.map((n,i) => <div key={i} style={{ fontSize: 11, color: "#00C853", marginBottom: 2 }}>· {n}{postSeanceModal.details && postSeanceModal.details[n] ? <span style={{ opacity: 0.7 }}> — {postSeanceModal.details[n]}</span> : null}</div>)}
-              </div>
-            )}
-
-            {/* Régression */}
-            {postSeanceModal.regressed.length > 0 && (
-              <div style={{ background: "#1a0000", border: "1px solid #FF444444", borderRadius: 12, padding: "10px 14px", marginBottom: 8 }}>
-                <div style={{ fontSize: 10, color: "#FF4444", fontFamily: "monospace", fontWeight: 900, marginBottom: 6 }}>↓ EN BAISSE ({postSeanceModal.regressed.length})</div>
-                {postSeanceModal.regressed.map((n,i) => <div key={i} style={{ fontSize: 11, color: "#FF4444", marginBottom: 2 }}>· {n}{postSeanceModal.details && postSeanceModal.details[n] ? <span style={{ opacity: 0.7 }}> — {postSeanceModal.details[n]}</span> : null}</div>)}
-              </div>
-            )}
-
-            {/* Comparaison non fiable (Coach V2) : ni progression ni baisse, la raison est affichee */}
-            {postSeanceModal.nonComparables && postSeanceModal.nonComparables.length > 0 && (
-              <div style={{ background: "#141200", border: "1px solid #FFD60033", borderRadius: 12, padding: "10px 14px", marginBottom: 8 }}>
-                <div style={{ fontSize: 10, color: "#FFD600", fontFamily: "monospace", fontWeight: 900, marginBottom: 6 }}>≠ NON COMPARABLE ({postSeanceModal.nonComparables.length})</div>
-                {postSeanceModal.nonComparables.map((n,i) => <div key={i} style={{ fontSize: 11, color: "#FFD600", marginBottom: 2 }}>· {n}{postSeanceModal.details && postSeanceModal.details[n] ? <span style={{ opacity: 0.7 }}> — {postSeanceModal.details[n]}</span> : null}</div>)}
-              </div>
-            )}
-
-            {/* Stats */}
-            <div style={{ display: "flex", gap: 8, marginBottom: 16, marginTop: 4 }}>
-              <div style={{ flex: 1, background: "#111", borderRadius: 8, padding: "8px", textAlign: "center" }}>
-                <div style={{ fontSize: 18, fontWeight: 900, color: "#ff6600" }}>{postSeanceModal.nbEx}</div>
-                <div style={{ fontSize: 9, color: "#444", fontFamily: "monospace" }}>EXERCICES</div>
-              </div>
-              <div style={{ flex: 1, background: "#111", borderRadius: 8, padding: "8px", textAlign: "center" }}>
-                <div style={{ fontSize: 18, fontWeight: 900, color: "#ff6600" }}>{postSeanceModal.totalSets}</div>
-                <div style={{ fontSize: 9, color: "#444", fontFamily: "monospace" }}>SÉRIES</div>
-              </div>
-              <div style={{ flex: 1, background: "#111", borderRadius: 8, padding: "8px", textAlign: "center" }}>
-                <div style={{ fontSize: 18, fontWeight: 900, color: postSeanceModal.progressed.length > postSeanceModal.regressed.length ? "#00C853" : "#FF4444" }}>{postSeanceModal.progressed.length}/{postSeanceModal.progressed.length + postSeanceModal.stagnated.length + postSeanceModal.regressed.length}</div>
-                <div style={{ fontSize: 9, color: "#444", fontFamily: "monospace" }}>PROG.</div>
-              </div>
-            </div>
-
-            <button onClick={() => { setPostSeanceModal(null); setTab("bilan"); }} style={{ width: "100%", background: "#ff6600", border: "none", color: "#000", borderRadius: 12, padding: "14px", fontSize: 14, fontWeight: 900, cursor: "pointer" }}>
-              VOIR LE BILAN COMPLET →
-            </button>
-            <button onClick={() => setPostSeanceModal(null)} style={{ width: "100%", background: "none", border: "none", color: "#444", padding: "10px", fontSize: 12, cursor: "pointer", marginTop: 4 }}>
-              Fermer
-            </button>
-          </div>
         </div>
       )}
       {validationToast && (

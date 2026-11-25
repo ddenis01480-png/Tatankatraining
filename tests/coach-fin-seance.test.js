@@ -146,6 +146,22 @@ t('Mollets debout machine « 1 » = poids du corps (0.11.0) : progression en rep
   r = plain(V2.coachFinSeance(E, sessions, [ex([S(21, 12), S(21, 12)])], day(3), 4));
   assert.deepStrictEqual([r.nonComparables, r.prDetails[M]], [[M], 'charge max 21kg · force 29kg']); });
 
+t('Ecran Fin de seance AFFICHE son analyse : rendue dans l\'ecran sans seance en cours (saveSession remet currentSets a null) ; alertes d\'abord, puis TOUJOURS l\'analyse', () => {
+  const tab = SRC.slice(SRC.indexOf('function SessionTab('));
+  const iSans = tab.indexOf('  if (!currentSets) return ('), iAvec = tab.indexOf('\n  return (', iSans), fin = tab.indexOf('\nfunction ', iAvec);
+  const brancheSans = tab.slice(iSans, iAvec), brancheAvec = tab.slice(iAvec, fin), avant = tab.slice(0, iSans);
+  assert.ok(iSans > 0 && iAvec > iSans && fin > iAvec);
+  assert.ok(avant.includes('const postSeanceView = !stagAlert && postSeanceModal && (') && avant.includes('ANALYSE POST-SÉANCE'), 'fenetre definie avant les deux branches');
+  assert.ok(brancheSans.includes('{alertesFinView}') && brancheSans.includes('{postSeanceView}'), 'rendue dans l\'ecran sans seance en cours');
+  assert.ok(!brancheAvec.includes('postSeanceModal &&') && !brancheAvec.includes('ANALYSE POST-SÉANCE'), 'plus dans la branche « seance en cours » (jamais visible)');
+  assert.ok(brancheAvec.includes('{stagAlert && <StagnationAlert'), 'alertes PENDANT la seance inchangees');
+  // saveSession : analyse posee meme quand il y a des alertes (vraie fonction, avec moteur).
+  const sessions = ['83x7,83x12,83x9,83x7', '85.5x11,85.5x9'].map((x, k) => sess(k + 1, day(k), [{ name: 'Exo test', repsTarget: '8-12', sets: x.split(',').map(y => S(...y.split('x').map(Number))) }]));
+  const b = finish(V2, sessions, cur([{ name: 'Exo test', repsTarget: '8-12', sets: [{ weight: 83, reps: 10, rir: 2 }, { weight: 83, reps: 12, rir: 2 }, { weight: 83, reps: 12, rir: 2 }, { weight: 83, reps: 10, rir: 2 }] }]), day(2));
+  assert.strictEqual(b.alert && b.alert.title, 'STAGNATION — PLAFOND'); assert.ok(b.modal && b.modal.routineName === 'R' && b.modal.nbEx === 1, 'analyse aussi posee');
+  const c = finish(V2, sessions.slice(0, 1), cur([{ name: 'Exo test', repsTarget: '8-12', sets: [{ weight: 83, reps: 10, rir: 2 }] }]), day(2));
+  assert.deepStrictEqual([c.alert, !!c.modal], [null, true]); });
+
 // ── 6. Donnees reelles (lecture seule) ──
 const REAL = process.env.EXPORT_FILE; const EXP = REAL && fs.existsSync(REAL) ? JSON.parse(fs.readFileSync(REAL, 'utf8')) : null;
 if (EXP) t('Donnees reelles : tes 141 seances rejouees une par une (« Terminer la seance »), V1 contre moteur ; enregistrement identique, ecarts d\'affichage listes', () => {
