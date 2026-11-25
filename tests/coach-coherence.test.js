@@ -12,8 +12,8 @@ function fnSrc(sig) { const i = SRC.indexOf(sig); if (i < 0) throw new Error('in
 function literal(start, open, close) { const i = SRC.indexOf(start); let d = 0;
   for (let p = SRC.indexOf(open, i); p < SRC.length; p++) { if (SRC[p] === open) d++; if (SRC[p] === close && --d === 0) return SRC.slice(SRC.indexOf(open, i), p + 1); } }
 
-const LIB = [fnSrc('function coachEngine('), fnSrc('function coachHistorique('), fnSrc('function coachConseilAffichage('), fnSrc('function coachDiagAffichage('), fnSrc('function coachEcartTexte('),
-  fnSrc('function coachFinSeance('), fnSrc('function coachBilanTexte('), fnSrc('function coachRecordTexte('), fnSrc('function coachRaisonsTexte('), fnSrc('function coachIncompleteTexte('), 'const COACH_RAISONS = ' + literal('const COACH_RAISONS = {', '{', '}') + ';', 
+const LIB = [fnSrc('function coachEngine('), fnSrc('function coachA('), fnSrc('function coachHistorique('), fnSrc('function coachConseilAffichage('), fnSrc('function coachDiagAffichage('), fnSrc('function coachEcartTexte('),
+  fnSrc('function coachFinSeance('), fnSrc('function coachBilanTexte('), fnSrc('function coachRecordTexte('), fnSrc('function coachRaisonsTexte('), fnSrc('function coachIncompleteTexte('), 'const COACH_RAISONS = ' + literal('const COACH_RAISONS = {', '{', '}') + ';', 'const COACH_UNITES = ' + literal('const COACH_UNITES = {', '{', '}') + ';', 
   fnSrc('function coachProgres('), fnSrc('function coachPlafondProgression('),
   fnSrc('function e1RM('), fnSrc('function fmtDate('), fnSrc('function parseRir('), fnSrc('function analyzeEx('),
   'const EXERCISE_NAME_FIXES = ' + literal('const EXERCISE_NAME_FIXES = {', '{', '}') + ';', fnSrc('function normalizeExName('),

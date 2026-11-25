@@ -12,8 +12,8 @@ function fnSrc(sig) { const i = SRC.indexOf(sig); if (i < 0) throw new Error('in
 function literal(start, open, close) { const i = SRC.indexOf(start); let d = 0;
   for (let p = SRC.indexOf(open, i); p < SRC.length; p++) { if (SRC[p] === open) d++; if (SRC[p] === close && --d === 0) return SRC.slice(SRC.indexOf(open, i), p + 1); } }
 
-const LIB = [fnSrc('function coachEngine('), fnSrc('function coachHistorique('), fnSrc('function coachConseilAffichage('), fnSrc('function coachDiagAffichage('), fnSrc('function coachEcartTexte('),
-  fnSrc('function coachFinSeance('), fnSrc('function coachBilanTexte('), fnSrc('function coachRaisonsTexte('), fnSrc('function coachIncompleteTexte('), 'const COACH_RAISONS = ' + literal('const COACH_RAISONS = {', '{', '}') + ';',  fnSrc('function coachRecordTexte('),
+const LIB = [fnSrc('function coachEngine('), fnSrc('function coachA('), fnSrc('function coachHistorique('), fnSrc('function coachConseilAffichage('), fnSrc('function coachDiagAffichage('), fnSrc('function coachEcartTexte('),
+  fnSrc('function coachFinSeance('), fnSrc('function coachBilanTexte('), fnSrc('function coachRaisonsTexte('), fnSrc('function coachIncompleteTexte('), 'const COACH_RAISONS = ' + literal('const COACH_RAISONS = {', '{', '}') + ';', 'const COACH_UNITES = ' + literal('const COACH_UNITES = {', '{', '}') + ';',  fnSrc('function coachRecordTexte('),
   fnSrc('function e1RM('), fnSrc('function parseRir('), fnSrc('function analyzeEx('),
   'const EXERCISE_NAME_FIXES = ' + literal('const EXERCISE_NAME_FIXES = {', '{', '}') + ';', fnSrc('function normalizeExName('),
   // saveSession reel, dans une fabrique qui recoit l'etat et les fonctions de l'ecran
@@ -129,6 +129,22 @@ t('Sans moteur charge : la fin de seance garde exactement le calcul V1 (repli)',
   const sessions = [sess(1, day(0), [{ name: 'Exo test', repsTarget: '8-12', sets: [S(60, 10), S(60, 10)] }])];
   const a = finish(V1, sessions, cur([{ name: 'Exo test', repsTarget: '8-12', sets: [{ weight: 60, reps: 10, rir: 2 }, { weight: 60, reps: 9, rir: 2 }] }]), day(1));
   assert.deepStrictEqual([a.modal.progressed, a.modal.stagnated, a.modal.regressed, a.modal.details], [[], [], ['Exo test'], null], 'V1 : tonnage -5 % = en baisse'); });
+
+t('Mollets debout machine « 1 » = poids du corps (0.11.0) : progression en reps « au poids du corps », record en reps seulement, jamais compare aux kg', () => {
+  const M = 'Mollets debout machine', ex = (sets) => ({ name: M, repsTarget: '10-15', sets });
+  const sessions = [sess(1, day(0), [ex([S(20, 12), S(20, 12)])]), sess(2, day(1), [ex([S(1, 15), S(1, 15), S(1, 14)])]), sess(3, day(2), [ex([S(1, 15), S(1, 15), S(1, 15)])])];
+  // Seance du jour au poids du corps : +1 rep -> progression, texte sans « kg », record de reps (16 > 15) sans force estimee.
+  let r = plain(V2.coachFinSeance(E, sessions, [ex([S(1, 16), S(1, 15), S(1, 15)])], day(3), 4));
+  assert.deepStrictEqual([r.progressed, r.details[M], r.sessionPRs, r.prDetails[M], r.alerts.length], [[M], '+1 rep au poids du corps · haut de fourchette : ajouter une charge possible', [M], '16 reps au poids du corps (avant 15)', 0]);
+  // Meme nombre de reps : stable, pas de record.
+  r = plain(V2.coachFinSeance(E, sessions, [ex([S(1, 15), S(1, 15), S(1, 15)])], day(3), 4));
+  assert.deepStrictEqual([r.stagnated, r.sessionPRs], [[M], []]);
+  // Premiere seance au poids du corps apres des kg : non comparable avec la raison en clair, jamais « -19kg ».
+  r = plain(V2.coachFinSeance(E, sessions.slice(0, 1), [ex([S(1, 15), S(1, 15)])], day(3), 4));
+  assert.deepStrictEqual([r.nonComparables, r.regressed, r.details[M]], [[M], [], 'Unité de charge différente (charge en kg → poids du corps (valeur 1)) : pas de comparaison directe']);
+  // Retour aux kg : compare aux seuls kg (record de charge 21 > 20 kg), pas au 1.
+  r = plain(V2.coachFinSeance(E, sessions, [ex([S(21, 12), S(21, 12)])], day(3), 4));
+  assert.deepStrictEqual([r.nonComparables, r.prDetails[M]], [[M], 'charge max 21kg · force 29kg']); });
 
 // ── 6. Donnees reelles (lecture seule) ──
 const REAL = process.env.EXPORT_FILE; const EXP = REAL && fs.existsSync(REAL) ? JSON.parse(fs.readFileSync(REAL, 'utf8')) : null;

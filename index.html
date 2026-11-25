@@ -719,7 +719,7 @@ function getProgressionTip(lastSets, sessions, exName, repsTarget, seriesPrevues
   if (!lastSets || lastSets.length === 0) return null;
   // Coach V2 : conseil calcule par le moteur (series prevues = celles de la seance en cours, plus le programme code en dur).
   const CE = coachEngine();
-  if (CE) return coachConseilAffichage(CE.conseilProgression(coachHistorique(CE, sessions, exName), { fourchette: repsTarget || "", dernieresSeries: lastSets, seriesPrevues: seriesPrevues }));
+  if (CE) return coachConseilAffichage(CE.conseilProgression(coachHistorique(CE, sessions, exName), { fourchette: repsTarget || "", dernieresSeries: lastSets, seriesPrevues: seriesPrevues, exercice: exName }));
   const validLast = lastSets.filter(s => s.weight && s.reps);
   if (validLast.length === 0) return null;
   // RIR moyen — affine le conseil
@@ -892,6 +892,8 @@ function coachHistorique(CE, sessions, exName, seanceEnCours) {
   const list = seanceEnCours ? (sessions || []).concat([seanceEnCours]) : (sessions || []);
   return CE.historiqueExercice(CE.normaliserSeances(list, { normaliserNom: typeof normalizeExName === "function" ? normalizeExName : undefined }), exName);
 }
+// Charge en clair : « a 22.5kg », ou « au poids du corps » pour une charge conventionnelle (ex. Mollets debout machine : 1 = poids du corps).
+function coachA(kg, unite) { return unite === "conventionnelle" || unite === "poids_du_corps" || unite === true ? "au poids du corps" : "à " + kg + "kg"; }
 // Affichage d'un conseil du moteur : memes textes, couleurs et icones que le V1.
 function coachConseilAffichage(c) {
   if (!c) return null;
@@ -900,10 +902,11 @@ function coachConseilAffichage(c) {
     case "serie100": return { color: "#9C27B0", icon: "★", msg: "SERIE DE 100 — charge légère, rest-pause 1-5 sec autorisé. Vise les 100 reps en continu à terme." };
     case "reduire_charge": return { color: "#FF4444", icon: "!", msg: "Régression — réduis de 5-10% et repars à RIR 4 minimum" };
     case "consolider": return { color: "#FFD600", icon: "!", msg: "Progression rapide — maintiens " + c.charge + "kg, consolide les reps avant d'augmenter" };
-    case "augmenter_charge": return { color: "#00C853", icon: "+", msg: "✓ AUGMENTE → " + c.charge + "kg +" + c.increment + " = " + c.nouvelleCharge + "kg · Repars à " + c.repsCible + " reps" + note };
+    case "augmenter_charge": if (c.chargeConventionnelle) return { color: "#00C853", icon: "+", msg: "✓ HAUT DE FOURCHETTE atteint au poids du corps · si tu ajoutes une charge, repars à " + c.repsCible + " reps" + note };
+      return { color: "#00C853", icon: "+", msg: "✓ AUGMENTE → " + c.charge + "kg +" + c.increment + " = " + c.nouvelleCharge + "kg · Repars à " + c.repsCible + " reps" + note };
     case "ajouter_rep": return { color: c.serieNonFaite ? "#FF8C00" : "#4FC3F7", icon: c.serieNonFaite ? "!" : ">",
-      msg: "S" + c.serie + " : vise " + c.reps + " rep · " + c.charge + "kg" + (c.serieNonFaite ? " · série non faite la dernière fois" : "") + (c.ensuiteCharge ? " · Puis +poids" : "") + note };
-    case "maintenir": return { color: "#888", icon: "=", msg: "Maintiens " + c.charge + "kg · Vise " + c.repsMin + " reps minimum sur toutes les séries" };
+      msg: "S" + c.serie + " : vise " + c.reps + " rep · " + (c.chargeConventionnelle ? "poids du corps" : c.charge + "kg") + (c.serieNonFaite ? " · série non faite la dernière fois" : "") + (c.ensuiteCharge ? " · Puis +poids" : "") + note };
+    case "maintenir": return { color: "#888", icon: "=", msg: "Maintiens " + (c.chargeConventionnelle ? "le poids du corps" : c.charge + "kg") + " · Vise " + c.repsMin + " reps minimum sur toutes les séries" };
   }
   return null;
 }
@@ -917,7 +920,7 @@ function coachDiagAffichage(d) {
     actions: ["+1 rep max par serie, jamais +2 d'un coup", "Prochaine seance : maintiens la meme charge", "Progression : derniere serie d'abord"] };
   if (d.typeV1 === 2) return reps
     ? { type: 2, color: "#FF8C00", icon: "!", urgency: "ACTION REQUISE", title: "STAGNATION — PLAFOND",
-      msg: "Haut de fourchette atteint a " + D.chargeMax + "kg depuis " + d.seancesAuPlafond + " seances (" + D.repsMoy + " reps en moyenne).",
+      msg: "Haut de fourchette atteint " + (D.unite === "conventionnelle" ? "au poids du corps" : "a " + D.chargeMax + "kg") + " depuis " + d.seancesAuPlafond + " seances (" + D.repsMoy + " reps en moyenne).",
       actions: ["Monte la charge a la prochaine seance", "Repars au bas de la fourchette", "Puis +1 rep sur la derniere serie d'abord"] }
     : { type: 2, color: "#FF8C00", icon: "!", urgency: "ACTION REQUISE", title: "STAGNATION — PLAFOND",
       msg: "Bloque a " + d.mesure.derniere + "kg 1RM depuis " + d.seancesAuPlafond + " seances. Reps elevees = fin de cycle.",
@@ -927,7 +930,7 @@ function coachDiagAffichage(d) {
     actions: ["Reduis la charge de 5-10% maintenant", "Reprends a 3x8 (RIR 4-5)", "Verifie ton score SNS", "Controle sommeil, alimentation, stress"] };
   if (d.typeV1 === 0) return { type: 0, color: "#00C853", icon: "V", urgency: "EN PROGRESSION", title: "PROGRESSION OPTIMALE",
     msg: reps
-      ? (d.nature === "charge" ? "+" + d.axes.charge + "kg de charge, repetitions dans la fourchette." : "+" + (d.axes.reps !== null ? d.axes.reps : d.axes.repsTotal) + " rep(s) a " + D.chargeMax + "kg depuis la derniere seance.")
+      ? (d.nature === "charge" ? "+" + d.axes.charge + "kg de charge, repetitions dans la fourchette." : "+" + (d.axes.reps !== null ? d.axes.reps : d.axes.repsTotal) + " rep(s) " + (D.unite === "conventionnelle" ? "au poids du corps" : "a " + D.chargeMax + "kg") + " depuis la derniere seance.")
       : (d.mesure.derniere > d.mesure.precedente ? "+" + (d.mesure.derniere - d.mesure.precedente) + "kg 1RM depuis la derniere seance." : "+" + d.repsGagnees + " rep(s) au total depuis la derniere seance."),
     actions: ["+1 rep sur la derniere serie si tu atteins le haut de la fourchette"] };
   // Pas de diagnostic V1 : la carte suit la performance de la derniere seance (meme definition que la ligne Performance).
@@ -942,9 +945,9 @@ function coachDiagAffichage(d) {
 }
 // Ecart de la derniere seance, en clair : charge, reps a charge egale, ou force estimee (« ≈ » au-dela de 12 reps).
 function coachEcartTexte(d) {
-  const a = d.axes || {}, kg = (d.derniere || {}).chargeMax, sg = x => (x > 0 ? "+" : x < 0 ? "−" : "") + Math.abs(x);
+  const a = d.axes || {}, kg = (d.derniere || {}).chargeMax, u = (d.derniere || {}).unite, sg = x => (x > 0 ? "+" : x < 0 ? "−" : "") + Math.abs(x);
   if (a.charge) return "Charge " + sg(a.charge) + "kg";
-  if (a.reps !== null && a.reps !== undefined && a.reps !== 0) return sg(a.reps) + " rep" + (Math.abs(a.reps) > 1 ? "s" : "") + " a " + kg + "kg";
+  if (a.reps !== null && a.reps !== undefined && a.reps !== 0) return sg(a.reps) + " rep" + (Math.abs(a.reps) > 1 ? "s" : "") + " " + (u === "conventionnelle" ? "au poids du corps" : "a " + kg + "kg");
   if (a.repsTotal) return sg(a.repsTotal) + " rep" + (Math.abs(a.repsTotal) > 1 ? "s" : "") + " au total";
   return "Force estimee " + (a.forceFiable ? "" : "≈") + sg(a.forcePrecise) + "kg";
 }
@@ -964,28 +967,29 @@ function coachFinSeance(CE, sessions, validExs, todayStr, nowId) {
     const a = CE.analyseExercice(coachHistorique(CE, sessions, ex.name, jour), { fourchette: f });
     if (a.alerte && avant.length) res.alerts.push({ ...coachDiagAffichage(a.alerte), exName: ex.name });
     const b = a.bilan;
-    if (a.performance === "progression") { res.progressed.push(ex.name); res.details[ex.name] = coachBilanTexte(b) + (a.diagnostic && a.diagnostic.enProgression ? " · haut de fourchette : augmenter la charge possible" : ""); }
+    if (a.performance === "progression") { res.progressed.push(ex.name); res.details[ex.name] = coachBilanTexte(b) + (a.diagnostic && a.diagnostic.enProgression ? " · haut de fourchette : " + (b.jour && b.jour.unite === "conventionnelle" ? "ajouter une charge possible" : "augmenter la charge possible") : ""); }
     else if (a.performance === "regression") { res.regressed.push(ex.name); res.details[ex.name] = coachBilanTexte(b); }
     else if (a.performance === "stable") res.stagnated.push(ex.name);
     else if (a.performance === "non_comparable") { res.nonComparables.push(ex.name); res.details[ex.name] = coachRaisonsTexte(b.comparaison.raisons); }
     // Seance incomplete (R-P3 : moins de series que la precedente, sans baisse sur les meilleures series) : ni progression ni baisse,
     // rangee dans la rubrique existante « non comparable », avec la raison.
     else if (a.performance === "seance_incomplete") { res.nonComparables.push(ex.name); res.incompletes.push(ex.name); res.details[ex.name] = coachIncompleteTexte(b.incomplete); }
-    const r = CE.recordsExercice(avant, ex.sets, f);
+    const r = CE.recordsExercice(avant, ex.sets, f, { exercice: ex.name });
     if (r && r.record) { res.sessionPRs.push(ex.name); res.prDetails[ex.name] = coachRecordTexte(r); }
   });
   return res;
 }
 // Texte court du bilan : precise s'il s'agit de charge, de repetitions ou de force estimee (« ≈ » = estimation au-dela de 12 reps).
 function coachBilanTexte(b) {
-  const a = b.axes || {}, kg = b.jour ? b.jour.chargeMax : "", sg = x => (x > 0 ? "+" : "") + x;
+  const a = b.axes || {}, kg = b.jour ? b.jour.chargeMax : "", u = b.jour ? b.jour.unite : null, sg = x => (x > 0 ? "+" : "") + x;
   const reps = a.reps !== null && a.reps !== undefined ? a.reps : a.repsTotal;
   const force = "force estimée " + (a.forceFiable ? "" : "≈") + sg(a.forcePrecise) + "kg";
-  if (b.verdict === "progression") return b.nature === "charge" ? "charge " + sg(a.charge) + "kg (" + kg + "kg)" : b.nature === "reps" ? sg(reps) + " rep" + (Math.abs(reps) > 1 ? "s" : "") + " à " + kg + "kg" : force;
-  if (b.verdict === "regression") return a.charge < 0 ? "charge " + sg(a.charge) + "kg" : (a.reps !== null && a.reps < 0) ? sg(a.reps) + " rep" + (Math.abs(a.reps) > 1 ? "s" : "") + " à " + kg + "kg" : force;
+  if (b.verdict === "progression") return b.nature === "charge" ? "charge " + sg(a.charge) + "kg (" + kg + "kg)" : b.nature === "reps" ? sg(reps) + " rep" + (Math.abs(reps) > 1 ? "s" : "") + " " + coachA(kg, u) : force;
+  if (b.verdict === "regression") return a.charge < 0 ? "charge " + sg(a.charge) + "kg" : (a.reps !== null && a.reps < 0) ? sg(a.reps) + " rep" + (Math.abs(a.reps) > 1 ? "s" : "") + " " + coachA(kg, u) : force;
   return "";
 }
 function coachRecordTexte(r) {
+  if (r.conventionnelle) return r.reps ? r.reps.reps + " reps au poids du corps (avant " + r.reps.avant + ")" : "";
   const parts = [];
   if (r.chargeMax) parts.push("charge max " + r.chargeMax.charge + "kg");
   if (r.reps) parts.push(r.reps.reps + " reps à " + r.reps.charge + "kg");
@@ -1001,7 +1005,7 @@ function coachProgres(CE, sessions, exName) {
   const brut = coachHistorique(CE, sessions, exName), tout = brut.filter(e => e.series.some(st => st.valide || st.suspecte));
   const h = tout.filter(e => e.series.some(st => st.valide));
   const f = h.length ? h[h.length - 1].fourchette : CE.lireFourchette("");
-  const history = tout.map(e => { const m = CE.mesuresSeance(e.series); return { date: e.date, analysee: m.seriesValides > 0, sets: e.series.filter(st => st.valide || st.suspecte).map(st => ({ weight: st.charge, reps: st.reps, rir: st.rir, suspecte: st.suspecte || null })), best: m.force, fiable: m.forceFiable, m }; });
+  const history = tout.map(e => { const m = CE.mesuresSeance(e.series); return { date: e.date, analysee: m.seriesValides > 0, sets: e.series.filter(st => st.valide || st.suspecte).map(st => ({ weight: st.charge, reps: st.reps, rir: st.rir, suspecte: st.suspecte || null, conventionnelle: st.conventionnelle || null })), best: m.force, fiable: m.forceFiable, m, unite: CE.uniteEntree(e) }; });
   // Analyse UNIQUE du moteur (la meme que l'ecran Fin de seance).
   // Historique complet (`brut`, pas seulement `h`) : une derniere seance sans serie analysable (ex. charges « 1 » probablement
   // erronees) est signalee « non comparable », jamais remplacee par la comparaison d'une seance plus ancienne (meme regle que la Fin de seance).
@@ -1011,14 +1015,15 @@ function coachProgres(CE, sessions, exName) {
   if (!diag && a && a.statut === "non_comparable" && a.bloc.rupture) diag = { type: -2, color: "#FFD600", icon: "?", urgency: "COMPARAISON NON FIABLE", title: "PAS DE DIAGNOSTIC POUR L'INSTANT",
     msg: coachRaisonsTexte(a.bloc.rupture.raisons).replace(/([^?])$/, "$1.") + " Le diagnostic reprendra après 2 séances comparables.", actions: [] };
   return { history, fourchette: f, diag, analyse: a, synthese,
-    chartData: history.filter(x => x.analysee).map(x => ({ date: fmtDate(x.date), rm: x.m.force, charge: x.m.chargeMax, tonnage: x.m.tonnage, fiable: x.m.forceFiable })) };
+    // Graphiques en kg : les seances a charge conventionnelle (ex. 1 = poids du corps) n'y figurent pas (jamais melangees a des kg).
+    chartData: history.filter(x => x.analysee && x.unite !== "conventionnelle" && x.unite !== "mixte").map(x => ({ date: fmtDate(x.date), rm: x.m.force, charge: x.m.chargeMax, tonnage: x.m.tonnage, fiable: x.m.forceFiable })) };
 }
 // Haut de fourchette atteint ALORS que la performance progresse : diagnostic positif, avec l'indication de la prochaine etape possible.
 function coachPlafondProgression(d, b, f) {
-  const D = d.derniere || {}, moy = Math.round((D.repsMoy || 0) * 10) / 10, kg = D.chargeMax !== undefined ? D.chargeMax : (b && b.jour ? b.jour.chargeMax : "");
+  const D = d.derniere || {}, moy = Math.round((D.repsMoy || 0) * 10) / 10, kg = D.chargeMax !== undefined ? D.chargeMax : (b && b.jour ? b.jour.chargeMax : ""), conv = D.unite === "conventionnelle";
   const perf = b && b.verdict === "progression" ? coachBilanTexte(b) : "";
   return { type: 0, color: "#00C853", icon: "V", urgency: "EN PROGRESSION · HAUT DE FOURCHETTE", title: "PROGRESSION — HAUT DE FOURCHETTE " + (moy >= f.max ? "ATTEINT" : "PRESQUE ATTEINT"),
-    msg: (perf ? perf.charAt(0).toUpperCase() + perf.slice(1) + ". " : "") + "Haut de fourchette " + (moy >= f.max ? "atteint" : "presque atteint") + " à " + kg + "kg (" + moy + " reps en moyenne, fourchette " + f.min + "-" + f.max + ") : prochaine étape possible, augmenter la charge.",
+    msg: (perf ? perf.charAt(0).toUpperCase() + perf.slice(1) + ". " : "") + "Haut de fourchette " + (moy >= f.max ? "atteint" : "presque atteint") + " " + coachA(kg, D.unite) + " (" + moy + " reps en moyenne, fourchette " + f.min + "-" + f.max + ") : prochaine étape possible, " + (conv ? "ajouter une charge." : "augmenter la charge."),
     actions: ["Augmente la charge quand toutes les séries atteignent le haut de fourchette", "Repars au bas de la fourchette avec la nouvelle charge"] };
 }
 // Raisons d'une comparaison non fiable, en clair.
@@ -1028,8 +1033,10 @@ const COACH_RAISONS = {
   reps_aberrantes: "Série inhabituelle ignorée par l'analyse",
   aucune_serie_analysable: "Aucune série analysable dans cette séance"
 };
+const COACH_UNITES = { kg: "charge en kg", conventionnelle: "poids du corps (valeur 1)", mixte: "poids du corps et kg mélangés" };
 function coachRaisonsTexte(raisons) {
   return (raisons || []).map(r => r.code === "fourchette" ? "Fourchette changée (" + r.avant + " → " + r.apres + ")"
+    : r.code === "unite_charge" ? "Unité de charge différente (" + (COACH_UNITES[r.avant] || r.avant) + " → " + (COACH_UNITES[r.apres] || r.apres) + ") : pas de comparaison directe"
     : r.code === "rupture_charge" ? "Charge " + r.avant + " → " + r.apres + "kg (" + (r.pct > 0 ? "+" : "−") + Math.abs(r.pct) + "%) avec les mêmes reps : changement de machine ou de réglage ?" : COACH_RAISONS[r.code] || r.code).join(" · ");
 }
 // Seance incomplete (regle R-P3 du moteur), en clair.
@@ -1063,7 +1070,7 @@ function coachLectureDerniere(b) {
   if (b.comparaison && !b.comparaison.fiable) return [["PERFORMANCE", "Comparaison non fiable", "#FFD600", coachRaisonsTexte(b.comparaison.raisons)], volLigne, ["TENDANCE", "Non interprétée", "#888", "séances pas comparables" + (p.date ? " (vs " + fmtDate(p.date) + ")" : "")]];
   // Seance incomplete (R-P3) : ni progression ni baisse.
   if (b.verdict === "seance_incomplete") return [["PERFORMANCE", "Séance incomplète", "#888", coachIncompleteTexte(b.incomplete)], volLigne, ["TENDANCE", "Non interprétée", "#888", "moins de séries que la séance précédente" + (p.date ? " (vs " + fmtDate(p.date) + ")" : "")]];
-  const perfDetail = coachBilanTexte(b) || ("force estimée " + (a.forceFiable ? "" : "≈") + j.force + "kg, " + j.chargeMax + "kg max");
+  const perfDetail = coachBilanTexte(b) || (j.unite === "conventionnelle" ? j.repsAChargeMax + " reps au poids du corps" : "force estimée " + (a.forceFiable ? "" : "≈") + j.force + "kg, " + j.chargeMax + "kg max");
   const volDetail = (v.seriesAvant === v.seriesApres ? v.seriesApres + " séries" : v.seriesAvant + " → " + v.seriesApres + " séries") + " · tonnage " + coachPct(v.tonnagePct);
   return [["PERFORMANCE", perf.t, perf.c, perfDetail], ["VOLUME", vs.t, vs.c, volDetail], ["TENDANCE", t.t, t.c, b.gainParSeriesSeules ? "le gain vient des séries en plus, pas d'une meilleure série" : (p.date ? "vs " + fmtDate(p.date) : "")]];
 }
@@ -2389,10 +2396,11 @@ function ProgressTab({ sessions }) {
                     <div style={{ fontSize: 10, color: "#555", fontFamily: "monospace" }}>{fmtDate(s.date)}</div>
                     <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>{s.sets.map((st, j) => <span key={j} style={{ marginRight: 8, ...(st.suspecte ? { textDecoration: "line-through", color: "#555" } : {}) }}>{st.weight}x{st.reps}{st.suspecte ? " ⚠" : ""}</span>)}</div>
                     {s.sets.some(st => st.suspecte === "inversion_probable") && <div style={{ fontSize: 8, color: "#FFD600", fontFamily: "monospace", marginTop: 2 }}>⚠ saisie probablement inversée (charge ↔ reps) · ignorée par l'analyse, non modifiée</div>}
+                    {s.sets.some(st => st.conventionnelle) && <div style={{ fontSize: 8, color: "#666", fontFamily: "monospace", marginTop: 2 }}>1 = poids du corps (valeur conventionnelle) · progression lue en répétitions</div>}
                     {s.sets.some(st => st.suspecte === "charge_suspecte") && <div style={{ fontSize: 8, color: "#FFD600", fontFamily: "monospace", marginTop: 2 }}>⚠ charge probablement erronée (1 kg ou moins) · ignorée par l'analyse, non modifiée</div>}
                     {s.sets.some(st => st.suspecte && st.suspecte !== "inversion_probable" && st.suspecte !== "charge_suspecte") && <div style={{ fontSize: 8, color: "#666", fontFamily: "monospace", marginTop: 2 }}>⚠ série inhabituelle ignorée par l'analyse (non modifiée)</div>}
                   </div>
-                  <div style={{ fontSize: 15, fontWeight: 900, color: s.analysee === false ? "#555" : "#ff6600" }}>{s.analysee === false ? "—" : (s.fiable === false ? "≈" : "") + best + "kg 1RM"}</div>
+                  <div style={{ fontSize: 15, fontWeight: 900, color: s.analysee === false ? "#555" : "#ff6600" }}>{s.analysee === false ? "—" : s.unite === "conventionnelle" ? Math.max(...s.sets.filter(st => !st.suspecte).map(st => st.reps)) + " reps" : (s.fiable === false ? "≈" : "") + best + "kg 1RM"}</div>
                 </div>
               </Card>
             );

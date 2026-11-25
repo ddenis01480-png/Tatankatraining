@@ -33,7 +33,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var VERSION = "0.10.0";
+  var VERSION = "0.11.0";
 
   // Reglages centralises (une seule valeur par regle).
   var REGLES = Object.freeze({
@@ -187,11 +187,34 @@
   // R-P2 (0.10.0) : « charge probablement erronee » (code charge_suspecte) = charge <= 1 kg alors que l'exercice a deja ete enregistre
   // avec au moins 10 kg (contexte.chargeMaxAvant = plus lourde charge analysable des seances PRECEDENTES). Ex. Mollets debout machine « 1 ».
   // Toute comparaison qui touche une seance portant cette marque est non fiable (voir comparabiliteEntre).
+  // CHARGES CONVENTIONNELLES (0.11.0) : valeur saisie volontairement comme « unite » propre a un exercice, PAS des kilogrammes.
+  //   Mollets debout machine : 1 = travail au poids du corps (valeur constante pour suivre la progression en repetitions).
+  //   - une serie a cette valeur n'est jamais « charge probablement erronee » (R-P2 ne s'applique pas a elle) ;
+  //   - entre deux seances a charge conventionnelle : progression lue en REPETITIONS a charge constante ;
+  //   - jamais comparee directement a une charge en kg (raison « unite_charge ») ; elle n'entre pas dans la charge max en kg.
+  //   Regle personnelle de l'utilisateur, a deplacer plus tard dans son profil (etape 8). Les donnees enregistrees ne changent pas :
+  //   seule la copie analysee porte la marque « conventionnelle ».
+  var CHARGES_CONVENTIONNELLES = Object.freeze({ "mollets debout machine": Object.freeze({ valeur: 1, nature: "poids_du_corps" }) });
+  function chargeConventionnelle(nom) { return nom ? CHARGES_CONVENTIONNELLES[sansAccents(String(nom).trim())] || null : null; }
+  function marquerConventionnelles(series, nom) {
+    var cc = chargeConventionnelle(nom); if (!cc) return series;
+    return (series || []).map(function (st) {
+      if (!st || !st.valide || st.conventionnelle || st.charge !== cc.valeur) return st;
+      var c = {}; Object.keys(st).forEach(function (k) { c[k] = st[k]; }); c.conventionnelle = cc.nature; return c;
+    });
+  }
+  // Unite d'une entree d'historique (series valides) : "kg" | "conventionnelle" | "mixte" | null (aucune serie valide).
+  function uniteEntree(h) {
+    var v = seriesNorm(h && h.series).filter(function (st) { return st.valide; }); if (!v.length) return null;
+    var c = v.filter(function (st) { return st.conventionnelle; }).length;
+    return c === 0 ? "kg" : c === v.length ? "conventionnelle" : "mixte";
+  }
   function mediane(a) { a = a.slice().sort(function (x, y) { return x - y; }); var m = a.length >> 1; return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2; }
   function filtrerSuspectes(series, fourchette, contexte) {
     var f = fourchette || {}, nb = 0, ref = contexte && contexte.chargeMaxAvant;
+    series = marquerConventionnelles(series, contexte && contexte.exercice);
     var marquer = function (st, code) { nb++; var c = {}; Object.keys(st).forEach(function (k) { c[k] = st[k]; }); c.valide = false; c.suspecte = code; return c; };
-    var chargeSuspecte = function (st) { return st && st.valide && ref >= REGLES.CHARGE_SUSPECTE_REFERENCE && st.charge <= REGLES.CHARGE_SUSPECTE_MAX; };
+    var chargeSuspecte = function (st) { return st && st.valide && !st.conventionnelle && ref >= REGLES.CHARGE_SUSPECTE_REFERENCE && st.charge <= REGLES.CHARGE_SUSPECTE_MAX; };
     series = (series || []).map(function (st) { return chargeSuspecte(st) ? marquer(st, "charge_suspecte") : st; });
     if (f.type === "serie100" || f.type === "duree") return { series: series.slice(), nb: nb };
     var v = series.filter(function (st) { return st && st.valide; });
@@ -220,16 +243,16 @@
       var entree = null;
       s.exercices.forEach(function (e) {
         if (e.nom !== nom) return;
-        if (!entree) { var fs = filtrerSuspectes(e.series, e.fourchette, { chargeMaxAvant: chargeMaxAvant }); entree = { date: s.date, id: s.id, fourchette: e.fourchette, series: fs.series, seriesSuspectes: fs.nb, occurrences: 1 }; out.push(entree); }
+        if (!entree) { var fs = filtrerSuspectes(e.series, e.fourchette, { chargeMaxAvant: chargeMaxAvant, exercice: nom }); entree = { date: s.date, id: s.id, fourchette: e.fourchette, series: fs.series, seriesSuspectes: fs.nb, occurrences: 1 }; out.push(entree); }
         else entree.occurrences++;
       });
       if (entree) chargeMaxAvant = Math.max(chargeMaxAvant, chargeMaxValide([entree]));
     });
     return out;
   }
-  // Plus lourde charge ANALYSABLE (serie valide, non suspecte) d'une liste d'entrees d'historique.
+  // Plus lourde charge ANALYSABLE en kg (serie valide, non suspecte, non conventionnelle) d'une liste d'entrees d'historique.
   function chargeMaxValide(entrees) {
-    var m = 0; (entrees || []).forEach(function (h) { ((h && h.series) || []).forEach(function (st) { st = st && st.statutRir ? st : normaliserSerie(st); if (st.valide && st.charge > m) m = st.charge; }); });
+    var m = 0; (entrees || []).forEach(function (h) { ((h && h.series) || []).forEach(function (st) { st = st && st.statutRir ? st : normaliserSerie(st); if (st.valide && !st.conventionnelle && st.charge > m) m = st.charge; }); });
     return m;
   }
 
@@ -456,24 +479,28 @@
       : function (a, b) { return b.charge - a.charge || b.reps - a.reps; });
     return v.slice(0, k);
   }
-  function bilanExercice(historiqueAvant, seriesDuJour, fourchette) {
+  // options.exercice (0.11.0) : nom de l'exercice, pour reconnaitre une charge conventionnelle dans des series du jour brutes.
+  function bilanExercice(historiqueAvant, seriesDuJour, fourchette, options) {
     var hist = trierHist(historiqueAvant), f = fourchette || lireFourchette("");
-    var jourSeries = filtrerSuspectes(seriesNorm(seriesDuJour), f, { chargeMaxAvant: chargeMaxValide(hist) }).series;
+    var jourSeries = filtrerSuspectes(seriesNorm(seriesDuJour), f, { chargeMaxAvant: chargeMaxValide(hist), exercice: options && options.exercice }).series;
     var cur = mesuresSeance(jourSeries), mode = modeMesure(f), modeCmp = mode === "aucun" ? "reps" : mode;
-    var resume = function (m, date) { return { date: date || null, chargeMax: m.chargeMax, repsAChargeMax: m.repsAChargeMax, repsTotal: m.repsTotal, force: m.force, forceFiable: m.forceFiable, series: m.seriesValides }; };
+    var uJour = uniteEntree({ series: jourSeries });
+    var resume = function (m, date, u) { return { date: date || null, chargeMax: m.chargeMax, repsAChargeMax: m.repsAChargeMax, repsTotal: m.repsTotal, force: m.force, forceFiable: m.forceFiable, series: m.seriesValides, unite: u || null }; };
     var iPrev = -1; for (var i = hist.length - 1; i >= 0; i--) { if (mesuresSeance(seriesNorm(hist[i].series)).seriesValides > 0) { iPrev = i; break; } }
     var prevEntry = iPrev >= 0 ? hist[iPrev] : null;
-    if (!prevEntry || cur.seriesValides === 0) return { verdict: "premiere", mode: mode, jour: resume(cur) };
-    var prev = mesuresSeance(seriesNorm(prevEntry.series)), fCmp = mode === "aucun" ? null : f;
+    if (!prevEntry || cur.seriesValides === 0) return { verdict: "premiere", mode: mode, jour: resume(cur, null, uJour) };
+    var prev = mesuresSeance(seriesNorm(prevEntry.series)), fCmp = mode === "aucun" ? null : f, uPrev = uniteEntree(prevEntry);
+    // Deux seances a charge conventionnelle (ex. poids du corps) : progression en repetitions a charge constante, jamais en force estimee.
+    if (uJour === "conventionnelle" && uPrev === "conventionnelle") modeCmp = "reps";
     var verdict = comparer(prev, cur, modeCmp, fCmp), axes = axesProgression(prev, cur), incomplete = null;
     if (cur.seriesValides < prev.seriesValides) {
       var k = cur.seriesValides, prevK = mesuresSeance(meilleuresSeries(seriesNorm(prevEntry.series), k, modeCmp));
       var resK = comparer(prevK, cur, modeCmp, fCmp);
-      incomplete = { seriesPrecedente: prev.seriesValides, seriesJour: k, seriesComparees: k, resultatMeilleuresSeries: resK, precedenteMeilleures: resume(prevK, prevEntry.date) };
+      incomplete = { seriesPrecedente: prev.seriesValides, seriesJour: k, seriesComparees: k, resultatMeilleuresSeries: resK, precedenteMeilleures: resume(prevK, prevEntry.date, uPrev) };
       verdict = resK === "regression" ? "regression" : "seance_incomplete";
       axes = axesProgression(prevK, cur);
     }
-    var out = { verdict: verdict, mode: mode, axes: axes, precedente: resume(prev, prevEntry.date), jour: resume(cur) };
+    var out = { verdict: verdict, mode: mode, axes: axes, precedente: resume(prev, prevEntry.date, uPrev), jour: resume(cur, null, uJour) };
     if (incomplete) out.incomplete = incomplete;
     if (verdict === "progression") out.nature = natureProgression(axes);
     lectureTravail(out, prev, cur);
@@ -485,10 +512,22 @@
   // > meilleure force passee + 1 %), mais le moteur dit de quel record il s'agit :
   //   chargeMax : charge jamais soulevee ; reps : plus de reps que jamais a cette charge (ou plus lourde) ;
   //   force : force estimee, avec forceFiable (meilleure serie <= 12 reps) — au-dela, c'est une estimation peu fiable.
-  function recordsExercice(historiqueAvant, seriesDuJour, fourchette) {
-    var passe = []; (historiqueAvant || []).forEach(function (h) { seriesNorm(h.series).forEach(function (st) { if (st.valide) passe.push(st); }); });
-    var jour = (fourchette ? filtrerSuspectes(seriesNorm(seriesDuJour), fourchette, { chargeMaxAvant: chargeMaxValide(historiqueAvant) }).series : seriesNorm(seriesDuJour)).filter(function (st) { return st.valide; });
-    if (!passe.length || !jour.length) return null;
+  // Charge conventionnelle (0.11.0, options.exercice) : les series du jour ne sont comparees qu'aux series passees de la MEME unite.
+  //   Series en kg : regles ci-dessus, contre les seules series passees en kg. Seance uniquement a charge conventionnelle : seul le
+  //   record de repetitions compte (reps, conventionnelle: true) ; ni charge max, ni force estimee (record = record de repetitions).
+  function recordsExercice(historiqueAvant, seriesDuJour, fourchette, options) {
+    var nom = options && options.exercice, tousPasse = [];
+    (historiqueAvant || []).forEach(function (h) { marquerConventionnelles(seriesNorm(h.series), nom).forEach(function (st) { if (st.valide) tousPasse.push(st); }); });
+    var jourTous = (fourchette ? filtrerSuspectes(seriesNorm(seriesDuJour), fourchette, { chargeMaxAvant: chargeMaxValide(historiqueAvant), exercice: nom }).series : marquerConventionnelles(seriesNorm(seriesDuJour), nom)).filter(function (st) { return st.valide; });
+    var jour = jourTous.filter(function (st) { return !st.conventionnelle; }), passe = tousPasse.filter(function (st) { return !st.conventionnelle; });
+    if (!jour.length) {
+      var jc = jourTous.filter(function (st) { return st.conventionnelle; }), pc = tousPasse.filter(function (st) { return st.conventionnelle; });
+      if (!jc.length || !pc.length) return null;
+      var maxP = Math.max.apply(null, pc.map(function (p) { return p.reps; })), bestJ = jc.reduce(function (m, st) { return !m || st.reps > m.reps ? st : m; }, null);
+      var rc = bestJ.reps > maxP ? { reps: bestJ.reps, charge: bestJ.charge, avant: maxP, conventionnelle: bestJ.conventionnelle } : null;
+      return { record: !!rc, conventionnelle: bestJ.conventionnelle, chargeMax: null, reps: rc, force: null };
+    }
+    if (!passe.length) return null;
     var fp = function (st) { return st.charge * (1 + st.reps / 30); };
     var forcePasse = Math.max.apply(null, passe.map(fp)), chargePasse = Math.max.apply(null, passe.map(function (st) { return st.charge; }));
     var meilleure = jour.reduce(function (m, st) { return !m || fp(st) > fp(m) ? st : m; }, null);
@@ -549,6 +588,7 @@
 
   // COMPARABILITE de deux seances (entrees d'historique). Une comparaison est signalee « non fiable » si :
   //   fourchette : la fourchette a change (ex. 8-12 -> 15-20 : la charge baisse volontairement, ce n'est pas une regression) ;
+  //   unite_charge : l'une des seances est a charge conventionnelle (ex. poids du corps), l'autre en kg (ou melange les deux) ;
   //   rupture_charge : la charge change de >= 20 % avec les memes reps (+-1,5) — progression ou baisse invraisemblable
   //                    d'une seance a l'autre : changement de machine, de reglage ou de facon de noter la charge probable.
   // Rien n'est fusionne, renomme ni corrige : la comparaison est seulement marquee.
@@ -559,7 +599,10 @@
     var fa = precEntree.fourchette, fb = courEntree.fourchette;
     if (fa && fb && !(fa.type === fb.type && fa.min === fb.min && fa.max === fb.max)) raisons.push({ code: "fourchette", avant: texteFourchette(fa), apres: texteFourchette(fb) });
     var a = mesuresSeance(seriesNorm(precEntree.series)), b = mesuresSeance(seriesNorm(courEntree.series));
-    if (a.chargeMax > 0 && b.chargeMax > 0) {
+    // 0.11.0 : une charge conventionnelle (ex. 1 = poids du corps) n'est jamais comparee a une charge en kg.
+    var ua = uniteEntree(precEntree), ub = uniteEntree(courEntree);
+    if (ua && ub && (ua !== ub || ua === "mixte")) raisons.push({ code: "unite_charge", avant: ua, apres: ub });
+    else if (a.chargeMax > 0 && b.chargeMax > 0) {
       var pct = (b.chargeMax - a.chargeMax) / a.chargeMax;
       if (Math.abs(pct) >= REGLES.RUPTURE_CHARGE_PCT && Math.abs(b.repsMoy - a.repsMoy) <= REGLES.RUPTURE_REPS_MARGE)
         raisons.push({ code: "rupture_charge", avant: a.chargeMax, apres: b.chargeMax, pct: Math.round(pct * 100) });
@@ -640,6 +683,7 @@
         if (diag.code === "regression") diag = null;
         else if (diag.code === "progression" || diag.code === "stable") { diag.code = "stable"; diag.typeV1 = -1; diag.performance = "seance_incomplete"; diag.incomplete = bilan.incomplete; delete diag.nature; delete diag.repsGagnees; }
       }
+      if (diag && diag.derniere) diag.derniere.unite = uniteEntree(bloc[bloc.length - 1]);
       // La carte « stable » suit la ligne Performance (une seule definition, R-P3 comprise).
       if (diag && diag.typeV1 === -1 && bilan.comparaison && bilan.comparaison.fiable && performance !== "premiere") diag.performance = performance;
     }
@@ -736,6 +780,8 @@
     var reps = valides.map(function (s) { return s.reps; });
     for (var k = 0; k < manquantes; k++) reps.push(valides[valides.length - 1].reps);
     var charge = valides[0].charge, nb = reps.length;
+    // 0.11.0 : charge conventionnelle (ex. 1 = poids du corps) : jamais d'increment en kg calcule a partir de cette valeur.
+    var conv = marquerConventionnelles(valides, options.exercice).every(function (s) { return !!s.conventionnelle; });
     if (maxR <= 15) { // perimetre V1 du diagnostic dans le conseil (fourchette haute <= 15)
       var diag = (hist.length >= 2) ? diagnostiquer(hist, f) : null;
       if (diag && diag.code === "regression") return avec({ action: "reduire_charge", pctMin: 5, pctMax: 10, rirMin: 4, diagnostic: diag.code });
@@ -743,6 +789,7 @@
     }
     if (reps.every(function (r) { return r >= maxR; })) {
       var inc = charge >= REGLES.SEUIL_CHARGE_LOURDE ? REGLES.INCREMENT_LOURD : REGLES.INCREMENT_LEGER;
+      if (conv) return avec({ action: "augmenter_charge", charge: charge, chargeConventionnelle: true, increment: null, nouvelleCharge: null, repsCible: minR });
       return avec({ action: "augmenter_charge", charge: charge, increment: inc, nouvelleCharge: Math.round((charge + inc) / inc) * inc, repsCible: minR });
     }
     var cible = -1;
@@ -753,10 +800,10 @@
     }
     if (cible !== -1) {
       var suivant = reps[cible] + 1;
-      return avec({ action: "ajouter_rep", serie: cible + 1, reps: suivant, charge: charge, serieNonFaite: manquantes > 0 && cible >= premierFantome,
+      return avec({ action: "ajouter_rep", serie: cible + 1, reps: suivant, charge: charge, chargeConventionnelle: conv || undefined, serieNonFaite: manquantes > 0 && cible >= premierFantome,
         ensuiteCharge: suivant >= maxR && reps.filter(function (r, j) { return j !== cible; }).every(function (r) { return r >= maxR; }) });
     }
-    return avec({ action: "maintenir", charge: charge, repsMin: minR });
+    return avec({ action: "maintenir", charge: charge, chargeConventionnelle: conv || undefined, repsMin: minR });
   }
 
   // ═══════════════════════ 5. DOMAINES (fatigue, recuperation, volume, priorites, morphologie) ═══════════════════════
@@ -1080,6 +1127,7 @@
     var montees = []; for (var i = 1; i < ms.length; i++) if (ms[i].chargeMax > ms[i - 1].chargeMax) montees.push({ date: bloc[i].date, avant: ms[i - 1].chargeMax, apres: ms[i].chargeMax });
     var k = 0; while (k < ms.length - 1 && ms[k].chargeMax !== d.chargeMax) k++;
     o.chargeDebut = p.chargeMax; o.chargeFin = d.chargeMax; o.monteesDeCharge = montees;
+    if (uniteEntree(bloc[bloc.length - 1]) === "conventionnelle") o.chargeConventionnelle = true; // charge = valeur conventionnelle, pas des kg
     o.repsAChargeEgale = k < ms.length - 1 ? { charge: d.chargeMax, depuis: bloc[k].date, avant: ms[k].repsAChargeMax, apres: d.repsAChargeMax, ecart: d.repsAChargeMax - ms[k].repsAChargeMax } : null;
     return o;
   }
@@ -1249,6 +1297,7 @@
     VERSION: VERSION, REGLES: REGLES, GROUPES: GROUPES, GROUPES_SUIVIS_V1: GROUPES_SUIVIS_V1,
     CATALOGUE: Object.freeze(CATALOGUE.slice()), CHAMPS_MORPHO: CHAMPS_MORPHO,
     // 1. normalisation
+    CHARGES_CONVENTIONNELLES: CHARGES_CONVENTIONNELLES, chargeConventionnelle: chargeConventionnelle, uniteEntree: uniteEntree,
     lireRir: lireRir, statutRir: statutRir, lireFourchette: lireFourchette, dateSeance: dateSeance, dateLocale: dateLocale, joursEntre: joursEntre,
     trierSeances: trierSeances, normaliserSerie: normaliserSerie, normaliserSeances: normaliserSeances, historiqueExercice: historiqueExercice,
     // 2. mesures

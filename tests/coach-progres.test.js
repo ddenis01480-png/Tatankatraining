@@ -11,8 +11,8 @@ function fnSrc(sig) { const i = SRC.indexOf(sig); if (i < 0) throw new Error('in
 function literal(start, open, close) { const i = SRC.indexOf(start); let d = 0;
   for (let p = SRC.indexOf(open, i); p < SRC.length; p++) { if (SRC[p] === open) d++; if (SRC[p] === close && --d === 0) return SRC.slice(SRC.indexOf(open, i), p + 1); } }
 
-const LIB = [fnSrc('function coachEngine('), fnSrc('function coachHistorique('), fnSrc('function coachDiagAffichage('), fnSrc('function coachEcartTexte('), fnSrc('function coachBilanTexte('),
-  fnSrc('function coachProgres('), fnSrc('function coachPlafondProgression('), fnSrc('function coachRaisonsTexte('), fnSrc('function coachIncompleteTexte('), 'const COACH_RAISONS = ' + literal('const COACH_RAISONS = {', '{', '}') + ';',  'const COACH_TENDANCES = ' + literal('const COACH_TENDANCES = {', '{', '}') + ';',
+const LIB = [fnSrc('function coachEngine('), fnSrc('function coachA('), fnSrc('function coachHistorique('), fnSrc('function coachDiagAffichage('), fnSrc('function coachEcartTexte('), fnSrc('function coachBilanTexte('),
+  fnSrc('function coachProgres('), fnSrc('function coachPlafondProgression('), fnSrc('function coachRaisonsTexte('), fnSrc('function coachIncompleteTexte('), 'const COACH_RAISONS = ' + literal('const COACH_RAISONS = {', '{', '}') + ';', 'const COACH_UNITES = ' + literal('const COACH_UNITES = {', '{', '}') + ';',  'const COACH_TENDANCES = ' + literal('const COACH_TENDANCES = {', '{', '}') + ';',
   fnSrc('function coachSens('), fnSrc('function coachPct('), fnSrc('function coachLectureDerniere('), fnSrc('function coachLecturePeriode('),
   fnSrc('function e1RM('), fnSrc('function fmtDate('), fnSrc('function parseRir('), fnSrc('function analyzeEx('),
   'const EXERCISE_NAME_FIXES = ' + literal('const EXERCISE_NAME_FIXES = {', '{', '}') + ';', fnSrc('function normalizeExName('),
@@ -38,6 +38,7 @@ const day = i => new Date(Date.UTC(2026, 0, 1 + i * 2)).toISOString().slice(0, 1
 const hist = (rows, rt, name) => rows.map((x, k) => sess(k + 1, day(k), [{ name: name || 'Exo test', repsTarget: rt || '8-12', sets: x.split(',').map(y => S(...y.split('x').map(Number))) }]));
 const lect = l => l && plain(l).map(r => r[0] + ': ' + r[1]);
 
+const deepFreezeLocal = o => { if (o && typeof o === 'object' && !Object.isFrozen(o)) { Object.freeze(o); Object.values(o).forEach(deepFreezeLocal); } return o; };
 const tests = []; const t = (n, f) => tests.push([n, f]); let infos = []; const info = s => infos.push(s);
 
 // ── 1. Sans moteur : l'onglet garde le calcul V1 ──
@@ -188,6 +189,18 @@ t('Exercice sans seance valide ou inconnu : aucun plantage, ecran « Aucune sean
   assert.deepStrictEqual([progres(s, 'Exo vide').history.length, progres(s, 'Exo vide').synthese, progres(s, 'Inconnu').history.length], [0, null, 0]);
   assert.strictEqual(plain(V1.v1Progres(s, 'Exo vide')).history.length, 0); });
 
+t('Mollets debout machine « 1 » = poids du corps (0.11.0) : seances gardees dans l\'historique (sans ⚠), lues en reps, hors du graphique en kg ; jamais comparees aux kg', () => {
+  const M = 'Mollets debout machine', sessions = deepFreezeLocal(hist(['20x12,20x12', '1x15,1x15,1x14', '1x15,1x15,1x15', '1x16,1x15,1x15'], '10-15', M)), avant = JSON.stringify(sessions);
+  const b = progres(sessions, M);
+  assert.deepStrictEqual(b.history.map(h => [h.analysee, h.unite, h.sets.every(st => !st.suspecte)]), [[true, 'kg', true], [true, 'conventionnelle', true], [true, 'conventionnelle', true], [true, 'conventionnelle', true]]);
+  assert.ok(b.history.slice(1).every(h => h.sets.every(st => st.conventionnelle === 'poids_du_corps')));
+  assert.deepStrictEqual(b.chartData.map(d => d.charge), [20], 'graphique en kg : seances au poids du corps exclues');
+  assert.deepStrictEqual(lect(V2.coachLectureDerniere(b.synthese.derniere)).slice(0, 1), ['PERFORMANCE: En hausse']);
+  assert.strictEqual(plain(V2.coachLectureDerniere(b.synthese.derniere))[0][3], '+1 rep au poids du corps');
+  assert.strictEqual(b.synthese.rupture.raisons.map(r => r.code).join(), 'unite_charge', 'le bloc comparable commence au passage kg -> poids du corps');
+  const src = progSrc(); assert.ok(src.includes('1 = poids du corps (valeur conventionnelle)') && src.includes('s.unite === "conventionnelle"'), 'ligne neutre et valeur en reps dans l\'historique');
+  assert.strictEqual(JSON.stringify(sessions), avant); });
+
 // ── 7. Donnees reelles (lecture seule) ──
 const REAL = process.env.EXPORT_FILE; const EXP = REAL && fs.existsSync(REAL) ? JSON.parse(fs.readFileSync(REAL, 'utf8')) : null;
 if (EXP) t('Donnees reelles : chaque exercice de tes seances dans l\'onglet Progres, V1 contre moteur ; export non modifie ; ecarts listes', () => {
@@ -208,8 +221,8 @@ if (EXP) t('Donnees reelles : chaque exercice de tes seances dans l\'onglet Prog
     if (b.synthese) b.synthese.pistes.forEach(p => { assert.strictEqual(p.statut, 'non_activee'); pistes[p.code] = (pistes[p.code] || 0) + 1; }); });
   assert.strictEqual(JSON.stringify(EXP), before, 'export non modifie');
   assert.strictEqual(same.hist, n, 'meme historique (dates, series) que le V1 : ' + ordre.join(', '));
-  // Etape 3 (R-P2) : les charges « 1 » probablement erronees des Mollets debout machine sont aussi exclues du graphique (affichees ⚠ dans l'historique).
-  assert.deepStrictEqual(chartDiff.map(x => x.split(' : ')[0]).sort(), ['Extension triceps overhead câble', 'Mollets debout machine', 'Tractions lestées prise large', 'Écarté poulie basse (Fly câble bas)'].sort(), 'graphique = V1 sauf la serie aberrante, les saisies probablement inversees et les charges probablement erronees');
+  // 0.11.0 : les seances Mollets debout machine au poids du corps (« 1 », convention) restent hors du graphique en kg (jamais melangees aux kg) ; lues en reps.
+  assert.deepStrictEqual(chartDiff.map(x => x.split(' : ')[0]).sort(), ['Extension triceps overhead câble', 'Mollets debout machine', 'Tractions lestées prise large', 'Écarté poulie basse (Fly câble bas)'].sort(), 'graphique = V1 sauf la serie aberrante, les saisies probablement inversees et les seances au poids du corps (pas des kg)');
   chartDiff.forEach(x => info('graphique different : ' + x));
   info('derniere seance signalee « comparaison non fiable » : ' + nonFiables + ' exercice(s)');
   info(n + ' exercices ; historique identique au V1 : ' + same.hist + '/' + n + ' ; graphique identique : ' + same.chart + '/' + n + ' ; seances marquees « ≈ » : ' + approx);
