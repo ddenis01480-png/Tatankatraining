@@ -21,7 +21,7 @@ function fnSrc(sig) {
 }
 const COACH_BLOCK = (() => { const a = SRC.indexOf('var _PLAN_RANKS'); if (a < 0) return ''; return SRC.slice(a, SRC.indexOf('window._coach = resolveCoach(null, null);', a)) + 'window._coach = resolveCoach(null, null);\n' + ['async function _loadFlags()', 'function _renderCoachBadge()', 'async function _refreshCoach()'].map(fnSrc).join('\n'); })();
 const GLOBALS = cut('var supabase = null;', 'function initSupabase()') + '\n' + 'var _betaLast = null;\n' + COACH_BLOCK + '\n' +
-  ['function initSupabase()', 'async function _loadProfile(', 'async function _fetchBeta(', 'function _isPremium()', 'function _showAuthScreen()', 'function _hideAuthScreen()', 'async function autoBackup(', 'function _syncFromCloud()', 'function normalizeSessions('].map(fnSrc).join('\n') + '\n' +
+  ['function initSupabase()', 'async function _loadProfile(', 'async function _fetchBeta(', 'function _isPremium()', 'function _betaGateApply()', 'function _showAuthScreen()', 'function _hideAuthScreen()', 'async function autoBackup(', 'function _syncFromCloud()', 'function normalizeSessions('].map(fnSrc).join('\n') + '\n' +
   cut('const EXERCISE_NAME_FIXES', 'function save(k, v) {') + fnSrc('function save(k, v) {');
 const COMP_HEAD = cut('function IronTraining() {', 'useEffect(() => { save(KEYS.routines, routines); }, [routines]);', true);
 const STATE_NAMES = [...COMP_HEAD.matchAll(/const \[(\w+), (\w+)\] = useState/g)].map(m => m[1]);
@@ -48,7 +48,8 @@ function openApp(ls) {
     useRef: v => ({ current: v === undefined ? null : v }), useEffect: (f, d) => effects.push({ f, d }), useCallback: f => f, useMemo: f => f(), useLayoutEffect: () => {} };
   ctx.addEventListener = () => {}; ctx.window = ctx; ctx.window.location = { search: '', reload: () => { nav.reloads++; } }; 
   vm.createContext(ctx);
-  vm.runInContext(GLOBALS + '\nthis.__KEYS=KEYS; this.__setUser=u=>{currentUser=u};', ctx);
+  // Ces tests portent sur les donnees et l'hydratation, pas sur l'acces : verrou bêta coupé ici (il est teste dans beta-gate.test.js).
+  vm.runInContext(GLOBALS + '\nBETA_GATE=false; this.__KEYS=KEYS; this.__setUser=u=>{currentUser=u};', ctx);
   const app = { ctx, ls, backups, nav, backend, get writes() { return writes; }, resetWrites() { writes = 0; },
     state: name => cells[STATE_NAMES.indexOf(name)].v, setState: (name, v) => cells[STATE_NAMES.indexOf(name)].set(v),
     mount(user) { // rendu initial du VRAI composant ; `user` = identite deja connue au demarrage (ou null)
