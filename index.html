@@ -412,6 +412,7 @@ function initSupabase() {
           if (window.location.search.includes('payment=success')) { await _activateTrainingPremium(); }
           _hideAuthScreen();
           _syncFromCloud();
+          (typeof syncClassements === "function" && syncClassements("connexion"));
 
           // Recharge la page uniquement si l'identite connectee change reellement
           // (jamais sur INITIAL_SESSION ni TOKEN_REFRESHED).
@@ -754,7 +755,7 @@ function applyImport(data, current, opts) {
 // rirCible : RIR vise par le programme (3/2/1...), simple indication affichee dans la liste ; jamais recopie dans le RIR reel.
 // Les series plus anciennes n'ont pas rirSaisi : leur RIR est « non verifie ».
 function parseRir(v) { if (v === null || v === undefined || v === "") return null; const n = parseInt(v, 10); return (isNaN(n) || n < 0 || n > 10) ? null : n; }
-const KEYS = { routines: "it3_routines", sessions: "it3_sessions", fatigue: "it3_fatigue", cycle: "it3_cycle", supps: "it3_supps", customEx: "it3_customEx", classements: "it3_classements" };
+const KEYS = { routines: "it3_routines", sessions: "it3_sessions", fatigue: "it3_fatigue", cycle: "it3_cycle", supps: "it3_supps", customEx: "it3_customEx", classements: "it3_classements", classementsJournal: "it3_classements_journal" };
 function load(k) { try { const v = lsGetNs(k); return v ? JSON.parse(v) : null; } catch(e) { return null; } }
 function save(k, v) {
   try {
@@ -968,6 +969,63 @@ function optionsMuscles(CE) {
   if (!CE || typeof CE.classementsMoteur !== "function") return {};
   return { classements: CE.classementsMoteur(classementsStock(), typeof EXERCISE_NAME_FIXES !== "undefined" ? EXERCISE_NAME_FIXES : null) };
 }
+// SYNCHRONISATION CLOUD DES CHOIX DE MUSCLES (Coach 0.17.0, etape 2b-2). Toute la logique et l'ordre de securite sont dans le moteur
+// (CE.synchroniserClassements) ; ici seulement les entrees/sorties : stockage local du compte et table exercise_classements (tatanka-test).
+// Rien n'est affiche a l'utilisateur. Seances, routines et sauvegarde training-backup ne sont ni lues ni ecrites ici.
+var _syncMusclesEnCours = false, _syncMusclesARelancer = false;
+function _cleJournal() {
+  try { if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID(); } catch(e) {}
+  try { var b = new Uint8Array(16); window.crypto.getRandomValues(b); b[6] = (b[6] & 15) | 64; b[8] = (b[8] & 63) | 128;
+    var h = Array.prototype.map.call(b, function(x) { return (x < 16 ? "0" : "") + x.toString(16); }).join("");
+    return h.slice(0, 8) + "-" + h.slice(8, 12) + "-" + h.slice(12, 16) + "-" + h.slice(16, 20) + "-" + h.slice(20); } catch(e) { return null; }
+}
+function _avecDelai(p, ms) { return Promise.race([p, new Promise(function(_, rej) { setTimeout(function() { rej(new Error("delai depasse")); }, ms || 10000); })]); }
+function _ecrireVerifie(k, v) { save(k, v); return JSON.stringify(load(k)) === JSON.stringify(v); }
+var COLONNES_CHOIX = "nom,catalogue,principal,secondaires,modifie_le";
+function syncClassements(raison) {
+  try {
+    var CE = coachEngine();
+    if (!CE || typeof CE.synchroniserClassements !== "function" || !supabase || !currentUser || !currentUser.id || !_canWriteUserData()) return Promise.resolve(null);
+    if (_syncMusclesEnCours) { _syncMusclesARelancer = true; return Promise.resolve(null); }
+    _syncMusclesEnCours = true;
+    var uid = currentUser.id, table = function() { return supabase.from("exercise_classements"); };
+    var lire = function(r) { if (!r || r.error) throw (r && r.error) || new Error("reponse vide"); return r.data; };
+    var io = {
+      compte: function() { return (currentUser && currentUser.id && _canWriteUserData()) ? currentUser.id : null; },
+      lireStock: function() { return load(KEYS.classements); },
+      ecrireStock: function(s) { return _ecrireVerifie(KEYS.classements, s); },
+      lireJournal: function() { return load(KEYS.classementsJournal); },
+      ecrireJournal: function(j) { return _ecrireVerifie(KEYS.classementsJournal, j); },
+      lireCloud: function() { return _avecDelai(table().select(COLONNES_CHOIX).eq("user_id", uid)).then(lire); },
+      envoyer: function(lignes) {
+        var avecCompte = lignes.map(function(l) { return Object.assign({}, l, { user_id: uid }); });
+        var un = function(l) { return _avecDelai(table().upsert([l], { onConflict: "user_id,nom" }).select(COLONNES_CHOIX)).then(lire); };
+        return _avecDelai(table().upsert(avecCompte, { onConflict: "user_id,nom" }).select(COLONNES_CHOIX)).then(function(r) {
+          if (r && r.error && avecCompte.length > 1) {
+            // Lot refuse par un controle : nouvel essai ligne par ligne ; une ligne refusee reste en attente sur l'appareil.
+            console.warn("[muscles] lot refuse, essai ligne par ligne", r.error.message || r.error);
+            return avecCompte.reduce(function(p, l) { return p.then(function(acc) { return un(l).then(function(d) { return acc.concat(d || []); }, function(e) { console.warn("[muscles] ligne refusee", l.nom, e && e.message); return acc; }); }); }, Promise.resolve([]));
+          }
+          return lire(r);
+        });
+      },
+      archiver: function(lignes) { return _avecDelai(supabase.rpc("archiver_versions_ecartees", { p_lignes: lignes })).then(lire); }
+    };
+    var appareil = null; try { appareil = localStorage.getItem("tt_device_id"); } catch(e) {}
+    return CE.synchroniserClassements(io, { nouvelleCle: _cleJournal, appareil: appareil })
+      .then(function(rapport) { if (rapport && rapport.erreurs.length) console.warn("[muscles] synchro (" + raison + ")", rapport.erreurs.join(", ")); return rapport; },
+            function(e) { console.warn("[muscles] synchro (" + raison + ")", e && e.message); return null; })
+      .then(function(rapport) {
+        _syncMusclesEnCours = false;
+        if (_syncMusclesARelancer) { _syncMusclesARelancer = false; setTimeout(function() { syncClassements("relance"); }, 0); }
+        return rapport;
+      });
+  } catch(e) { _syncMusclesEnCours = false; console.warn("[muscles] synchro", e && e.message); return Promise.resolve(null); }
+}
+try {
+  window.addEventListener("online", function() { syncClassements("reseau"); });
+  document.addEventListener("visibilitychange", function() { if (document.visibilityState === "visible") syncClassements("premier_plan"); });
+} catch(e) {}
 function recupSollicitations(sessions, exercices, maintenant) {
   const CE = coachEngine(); if (!CE || typeof CE.dernieresSollicitations !== "function") return null;
   const seances = CE.normaliserSeances(sessions || [], { normaliserNom: typeof normalizeExName === "function" ? normalizeExName : undefined });
@@ -1385,7 +1443,7 @@ function MusclesPanel({ nom, onClose, onSaved }) {
     // Verification : on relit ce qui est reellement enregistre avant d'afficher « Enregistré ».
     const relu = classementsStock(); const ok = !!(relu && relu.exercices && JSON.stringify(relu.exercices[cle]) === JSON.stringify(nouveau.exercices[cle]));
     setEtat(ok ? "ok" : "erreur");
-    if (ok) { onSaved && onSaved(); setTimeout(onClose, 900); }
+    if (ok) { onSaved && onSaved(); setTimeout(onClose, 900); (typeof syncClassements === "function" && syncClassements("choix")); } // envoi en arriere-plan, rien d'affiche
   }
   const bouton = (actif, couleur) => ({ background: actif ? couleur + "22" : "#141414", border: "1px solid " + (actif ? couleur : "#2a2a2a"), color: actif ? couleur : "#999",
     borderRadius: 8, padding: "9px 6px", fontSize: 12, fontWeight: actif ? 800 : 500, cursor: "pointer", textAlign: "center" });
@@ -3539,6 +3597,7 @@ function IronTraining() {
     const cs = readCurrentSets();
     setCurrentSets(prev => (switched ? cs : (prev || cs)));
     setSessionRecovered(!!cs);
+    setTimeout(function() { (typeof syncClassements === "function" && syncClassements("connexion")); }, 0); // choix de muscles : reception puis envoi, en arriere-plan
   }
   useEffect(() => {
     window._hydrateUserState = hydrateUserState;
@@ -3670,6 +3729,7 @@ function exportData() {
       cycle: load(KEYS.cycle) || { startDate: ((load(KEYS.sessions)||[])[0] && (load(KEYS.sessions)||[])[0].date) || today(), num: 1 },
       customEx: CUSTOM_EXERCISES.slice(),
       classements: load(KEYS.classements) || { version: 1, exercices: {} },
+      classementsJournal: load(KEYS.classementsJournal) || { version: 1, entrees: [] },
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -3729,7 +3789,7 @@ function exportData() {
     const CEi = typeof coachEngine === "function" ? coachEngine() : null;
     if (data && data.classements && CEi && typeof CEi.fusionnerClassements === "function") {
       const f = CEi.fusionnerClassements(load(KEYS.classements), data.classements);
-      if (f.change) save(KEYS.classements, f.classements);
+      if (f.change) { save(KEYS.classements, f.classements); (typeof syncClassements === "function" && syncClassements("import")); }
       return { ...r.summary, classementsAjoutes: f.ajoutes, classementsConserves: f.conserves };
     }
     return r.summary;

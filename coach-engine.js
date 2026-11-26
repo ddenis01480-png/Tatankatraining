@@ -33,7 +33,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var VERSION = "0.16.0";
+  var VERSION = "0.17.0";
 
   // Reglages centralises (une seule valeur par regle).
   var REGLES = Object.freeze({
@@ -399,10 +399,13 @@
     var out = classementsVides(); var ex = brut && typeof brut === "object" && brut.exercices && typeof brut.exercices === "object" ? brut.exercices : null;
     if (!ex) return out;
     Object.keys(ex).forEach(function (nom) { var c = ex[nom]; if (!nom || !c || typeof c !== "object") return;
-      if (c.catalogue === true) { out.exercices[nom] = { catalogue: true, modifieLe: typeof c.modifieLe === "string" ? c.modifieLe : null }; return; }
+      // 0.17.0 : « confirmeLe » (synchronisation confirmee par Supabase) est conserve s'il existe ; son absence = en attente d'envoi.
+      var conf = typeof c.confirmeLe === "string" && c.confirmeLe ? c.confirmeLe : null;
+      if (c.catalogue === true) { out.exercices[nom] = { catalogue: true, modifieLe: typeof c.modifieLe === "string" ? c.modifieLe : null }; if (conf) out.exercices[nom].confirmeLe = conf; return; }
       if (typeof c.principal !== "string" || !c.principal) return;
       out.exercices[nom] = { principal: c.principal, secondaires: Array.isArray(c.secondaires) ? c.secondaires.filter(function (m) { return typeof m === "string" && m && m !== c.principal; }) : [],
-        modifieLe: typeof c.modifieLe === "string" ? c.modifieLe : null }; });
+        modifieLe: typeof c.modifieLe === "string" ? c.modifieLe : null };
+      if (conf) out.exercices[nom].confirmeLe = conf; });
     return out;
   }
   // Controle d'un choix saisi : principal parmi les groupes, secondaires parmi les groupes, sans doublon et sans le principal.
@@ -446,10 +449,242 @@
     Object.keys(imp).forEach(function (nom) { var l = res.exercices[nom], i = imp[nom];
       // Un choix importe illisible pour cette version (groupe inconnu) n'est pas ajoute ; un choix local, lui, n'est jamais retire.
       if (!i.catalogue) { var v = validerClassement(i.principal, i.secondaires); if (!v || v.secondaires.length !== i.secondaires.length) { invalides++; return; } }
-      if (!l) { res.exercices[nom] = i; ajoutes++; return; }
+      if (!l) { var ajout = etendre({}, i); delete ajout.confirmeLe; res.exercices[nom] = ajout; ajoutes++; return; } // un choix importe part en attente d'envoi
       var memes = !!l.catalogue === !!i.catalogue && (l.catalogue || (l.principal === i.principal && JSON.stringify(l.secondaires) === JSON.stringify(i.secondaires)));
       if (memes) identiques++; else conserves++; });
     return { classements: res, ajoutes: ajoutes, conserves: conserves, identiques: identiques, invalides: invalides, change: ajoutes > 0 };
+  }
+
+  // ═══════════════════════ 3 ter. SYNCHRONISATION CLOUD DES CHOIX (0.17.0, etape 2b-2) ═══════════════════════
+  // Fonctions PURES : elles ne lisent et n'ecrivent rien (ni stockage, ni reseau). L'appli leur passe ce qu'elle a lu et ecrit ce qu'elles rendent.
+  // Regles (architecture validee le 26/11) :
+  //   - le choix local reste la reference de l'appareil ; il n'est JAMAIS remplace sur un echec, une erreur ou une reponse vide ;
+  //   - seule une ligne renvoyee par Supabase, valide, plus recente (ou de meme date : la base garde la premiere enregistree) peut le remplacer,
+  //     et seulement APRES que la version remplacee a ete ecrite et relue dans le journal local ;
+  //   - un choix est « confirme » (confirmeLe) seulement si Supabase a renvoye exactement le meme contenu ; sinon il reste en attente ;
+  //   - le journal local garde tout ; une entree ne peut le quitter qu'apres archivage confirme en base, et seulement au-dela de 200 entrees.
+  var SYNCHRO = Object.freeze({ JOURNAL_MAX_ARCHIVEES: 200, LOT_MAX: 500, STATUTS_ARCHIVE_OK: Object.freeze(["archivee", "deja_archivee"]) });
+
+  function instantChoix(iso) { var t = typeof iso === "string" ? Date.parse(iso) : NaN; return isFinite(t) ? t : -Infinity; } // sans date = le plus ancien possible
+  function isoNormal(iso) { var t = instantChoix(iso); return isFinite(t) ? new Date(t).toISOString() : null; }
+  function ordreGroupes(sec) { return (sec || []).slice().sort(function (a, b) { return GROUPES.indexOf(a) - GROUPES.indexOf(b); }); }
+  // Contenu d'un choix, sans les dates : { catalogue: true } ou { principal, secondaires } (secondaires dans l'ordre des GROUPES).
+  function contenuChoix(c) { return !c ? null : c.catalogue ? { catalogue: true } : { principal: c.principal, secondaires: ordreGroupes(c.secondaires) }; }
+  function memeContenu(a, b) { return JSON.stringify(contenuChoix(a)) === JSON.stringify(contenuChoix(b)); }
+  // Un choix local est envoyable s'il est lisible par la base (memes controles que le SQL). Un choix « a revoir » reste local, jamais envoye.
+  function choixValide(c) {
+    if (!c || typeof c !== "object") return false;
+    if (c.catalogue === true) return true;
+    var v = validerClassement(c.principal, c.secondaires);
+    return !!v && Array.isArray(c.secondaires) && v.secondaires.length === c.secondaires.length;
+  }
+  // Conversion choix local -> ligne envoyee a la table exercise_classements (sans user_id : l'appli l'ajoute depuis la session).
+  function ligneCloud(nom, c, appareil) {
+    if (typeof nom !== "string" || !nom || nom.length > 200 || !choixValide(c)) return null;
+    var l = { nom: nom, catalogue: c.catalogue === true, principal: c.catalogue ? null : c.principal, secondaires: c.catalogue ? [] : ordreGroupes(c.secondaires),
+      modifie_le: isoNormal(c.modifieLe) || new Date(0).toISOString() };
+    if (typeof appareil === "string" && appareil) l.appareil = appareil.slice(0, 200);
+    return l;
+  }
+  // Conversion ligne cloud -> choix local. Ligne illisible (groupe inconnu, format abime, date absente) -> null : jamais appliquee.
+  function choixDepuisLigne(ligne) {
+    if (!ligne || typeof ligne !== "object" || typeof ligne.nom !== "string" || !ligne.nom) return null;
+    var quand = isoNormal(ligne.modifie_le); if (!quand) return null;
+    if (ligne.catalogue === true) return (ligne.principal === null || ligne.principal === undefined) && Array.isArray(ligne.secondaires) && ligne.secondaires.length === 0 ? { catalogue: true, modifieLe: quand } : null;
+    if (ligne.catalogue !== false || !Array.isArray(ligne.secondaires)) return null;
+    if (!ligne.secondaires.every(function (m) { return typeof m === "string"; })) return null;
+    var c = { principal: ligne.principal, secondaires: ligne.secondaires.slice(), modifieLe: quand };
+    return choixValide(c) ? { principal: c.principal, secondaires: ordreGroupes(c.secondaires), modifieLe: quand } : null;
+  }
+  function enAttenteEnvoi(c) { return !c.confirmeLe; }
+  // Choix a envoyer : valides et pas encore confirmes par Supabase, au plus LOT_MAX.
+  function aEnvoyer(stock, appareil) {
+    var ex = lireClassements(stock).exercices, out = [];
+    Object.keys(ex).sort().forEach(function (nom) { var c = ex[nom]; if (out.length >= SYNCHRO.LOT_MAX || !enAttenteEnvoi(c)) return; var l = ligneCloud(nom, c, appareil); if (l) out.push(l); });
+    return out;
+  }
+
+  // ── Journal local (it3_classements_journal) ──
+  function journalVide() { return { version: 1, entrees: [] }; }
+  // Lecture tolerante : une entree abimee est GARDEE telle quelle (elle ne sera simplement jamais archivee ni purgee).
+  function lireJournal(brut) { var j = journalVide(); if (brut && typeof brut === "object" && Array.isArray(brut.entrees)) j.entrees = brut.entrees.filter(function (e) { return e && typeof e === "object"; }).map(function (e) { return JSON.parse(JSON.stringify(e)); }); return j; }
+  // Cle d'entree de journal : tiree au hasard PAR L'APPLI (options.nouvelleCle, ex. crypto.randomUUID) ; le moteur n'a pas de hasard cache.
+  function cleUnique(journal, generer) { if (typeof generer !== "function") throw new Error("options.nouvelleCle manquante"); var prises = {}; journal.entrees.forEach(function (e) { if (e.cle) prises[e.cle] = true; (e.clesPrecedentes || []).forEach(function (k) { prises[k] = true; }); });
+    for (var essai = 0; essai < 20; essai++) { var k = generer(); if (typeof k === "string" && k && k.length <= 100 && !prises[k]) return k; }
+    throw new Error("cle de journal impossible a generer"); }
+  // Copie propre d'un choix pour le journal (sans l'etat de synchronisation).
+  function versionJournal(nom, c) { var v = { nom: nom }; if (c.catalogue) v.catalogue = true; else { v.principal = c.principal; v.secondaires = (c.secondaires || []).slice(); } v.modifieLe = c.modifieLe || null; return v; }
+  // Ajout d'entrees au journal (objet NEUF). Une entree deja presente au contenu identique (archivee ou non) n'est pas dupliquee.
+  function ajouterAuJournal(journal, entrees) {
+    var j = lireJournal(journal);
+    (entrees || []).forEach(function (e) {
+      var deja = j.entrees.some(function (x) { return x.nom === e.nom && JSON.stringify(x.ancienne) === JSON.stringify(e.ancienne) && JSON.stringify(x.nouvelle) === JSON.stringify(e.nouvelle); });
+      if (!deja) j.entrees.push(JSON.parse(JSON.stringify(e)));
+    });
+    return j;
+  }
+  // Le journal relu contient-il bien toutes ces entrees, a l'identique ? (condition pour remplacer un choix local)
+  function journalContient(relu, entrees) {
+    var j = lireJournal(relu);
+    return (entrees || []).every(function (e) { return j.entrees.some(function (x) { return x.nom === e.nom && JSON.stringify(x.ancienne) === JSON.stringify(e.ancienne) && JSON.stringify(x.nouvelle) === JSON.stringify(e.nouvelle); }); });
+  }
+
+  // ── Reception (cloud -> appareil) ──
+  // Retour : { classements (NEUF), journal: entrees a ecrire AVANT d'appliquer, remplaces: noms, ajoutes, confirmes, ignores (lignes illisibles), aEnvoyer: noms }
+  // options : { maintenant, nouvelleCle }. Le stockage recu n'est jamais modifie.
+  function fusionnerCloud(stockLocal, lignesCloud, options) {
+    options = options || {};
+    var maintenant = (options.maintenant instanceof Date ? options.maintenant : new Date(isFinite(options.maintenant) ? options.maintenant : Date.now())).toISOString();
+    var res = lireClassements(stockLocal), entrees = [], remplaces = [], ajoutes = [], confirmes = [], ignores = [], journalCles = { entrees: (options.journal && lireJournal(options.journal).entrees) || [] };
+    var vus = {};
+    (Array.isArray(lignesCloud) ? lignesCloud : []).forEach(function (ligne) {
+      var cloud = choixDepuisLigne(ligne); if (!cloud) { ignores.push(ligne && ligne.nom ? String(ligne.nom) : "?"); return; }
+      var nom = ligne.nom; if (vus[nom]) return; vus[nom] = true;
+      var local = res.exercices[nom];
+      if (!local) { cloud.confirmeLe = maintenant; res.exercices[nom] = cloud; ajoutes.push(nom); return; }
+      var tl = instantChoix(local.modifieLe), tc = instantChoix(cloud.modifieLe);
+      if (memeContenu(local, cloud)) {
+        if (tl === tc) { if (!local.confirmeLe) { local.confirmeLe = maintenant; confirmes.push(nom); } return; }
+        if (tc > tl) { cloud.confirmeLe = maintenant; res.exercices[nom] = cloud; confirmes.push(nom); } // meme contenu, date du cloud adoptee : rien d'ecarte
+        else delete local.confirmeLe;                                                                     // appareil plus recent : a renvoyer
+        return;
+      }
+      if (tl > tc) { delete local.confirmeLe; return; }                                                   // appareil plus recent : garde, renvoye
+      // Cloud plus recent, ou meme date (la base garde la premiere version enregistree) : le cloud gagne, la version locale va au journal.
+      var e = { cle: cleUnique({ entrees: journalCles.entrees.concat(entrees) }, options.nouvelleCle), clesPrecedentes: [], nom: nom,
+        ancienne: versionJournal(nom, local), nouvelle: versionJournal(nom, cloud), raison: tl === tc ? "meme_date_cloud_garde" : "cloud_plus_recent", survenuLe: maintenant };
+      entrees.push(e); cloud.confirmeLe = maintenant; res.exercices[nom] = cloud; remplaces.push(nom);
+    });
+    var envoi = aEnvoyer(res).map(function (l) { return l.nom; });
+    return { classements: res, journal: entrees, remplaces: remplaces, ajoutes: ajoutes, confirmes: confirmes, ignores: ignores, aEnvoyer: envoi,
+      change: entrees.length > 0 || ajoutes.length > 0 || confirmes.length > 0 };
+  }
+
+  // ── Envoi (appareil -> cloud) ──
+  // envoyees : lignes envoyees (aEnvoyer) ; renvoyees : lignes renvoyees par Supabase (telles qu'enregistrees). Une ligne absente, une erreur
+  // ou une reponse vide ne confirme rien. Une ligne renvoyee DIFFERENTE (un autre appareil avait deja ecrit) passe par fusionnerCloud.
+  function confirmerEnvoi(stockLocal, envoyees, renvoyees, options) {
+    options = options || {};
+    var maintenant = (options.maintenant instanceof Date ? options.maintenant : new Date(isFinite(options.maintenant) ? options.maintenant : Date.now())).toISOString();
+    var res = lireClassements(stockLocal), confirmes = [], aFusionner = [], parNom = {};
+    (Array.isArray(renvoyees) ? renvoyees : []).forEach(function (l) { if (l && typeof l.nom === "string") (parNom[l.nom] = parNom[l.nom] || []).push(l); });
+    (Array.isArray(envoyees) ? envoyees : []).forEach(function (env) {
+      var rets = parNom[env.nom]; if (!rets || rets.length !== 1) return;                       // absente ou ambigue : reste en attente
+      var ret = choixDepuisLigne(rets[0]), local = res.exercices[env.nom]; if (!ret || !local) return;
+      var envChoix = choixDepuisLigne(env); if (!envChoix) return;
+      // Le choix local doit etre encore celui qui a ete envoye (l'utilisateur a pu le changer pendant l'envoi).
+      if (!memeContenu(local, envChoix) || isoNormal(local.modifieLe || new Date(0).toISOString()) !== envChoix.modifieLe) return;
+      if (memeContenu(ret, envChoix)) {
+        // Meme contenu : confirme. Si la base a ramene une date future, l'appareil adopte la date de la base.
+        if (instantChoix(ret.modifieLe) !== instantChoix(envChoix.modifieLe)) local.modifieLe = ret.modifieLe;
+        local.confirmeLe = maintenant; confirmes.push(env.nom); return;
+      }
+      aFusionner.push(rets[0]);
+    });
+    var fus = fusionnerCloud(res, aFusionner, { maintenant: options.maintenant, nouvelleCle: options.nouvelleCle, journal: options.journal });
+    return { classements: fus.classements, journal: fus.journal, confirmes: confirmes, remplaces: fus.remplaces, ignores: fus.ignores,
+      change: confirmes.length > 0 || fus.change };
+  }
+
+  // ── Archivage du journal local en base (fonction archiver_versions_ecartees) ──
+  // Ligne d'archive construite UNIQUEMENT a partir de l'entree stockee : un renvoi est toujours identique au premier envoi.
+  function ligneArchive(e) { return { nom: e.nom, cle_locale: e.cle, survenu_le: e.survenuLe, gardee: e.nouvelle || null, ecartee: e.ancienne }; }
+  function archivable(e) { return !!e && !e.archiveeLe && typeof e.cle === "string" && e.cle && typeof e.nom === "string" && e.nom && e.ancienne && typeof e.ancienne === "object" && isoNormal(e.survenuLe); }
+  // Lot a envoyer : [{ position, cle, ligne }]. Les entrees abimees ne sont jamais envoyees (et donc jamais purgees).
+  function aArchiver(journal, max) {
+    var j = lireJournal(journal), lot = [];
+    j.entrees.forEach(function (e) { if (lot.length < (max || SYNCHRO.LOT_MAX) && archivable(e)) lot.push({ position: lot.length, cle: e.cle, ligne: ligneArchive(e) }); });
+    return lot;
+  }
+  // Confirmation ligne par ligne. Une entree n'est marquee archivee que si la reponse contient EXACTEMENT une ligne a sa position,
+  // avec sa cle exacte et le statut « archivee » ou « deja_archivee ». « cle_en_conflit » : entree gardee, nouvelle cle, ancienne conservee.
+  function confirmerArchivage(journal, lot, reponse, options) {
+    options = options || {};
+    var maintenant = (options.maintenant instanceof Date ? options.maintenant : new Date(isFinite(options.maintenant) ? options.maintenant : Date.now())).toISOString();
+    var j = lireJournal(journal), archivees = [], conflits = [], refusees = [], sansReponse = [];
+    var parPos = {}; (Array.isArray(reponse) ? reponse : []).forEach(function (r) { if (r && Number.isInteger(r.indice)) (parPos[r.indice] = parPos[r.indice] || []).push(r); });
+    (Array.isArray(lot) ? lot : []).forEach(function (item) {
+      var rs = parPos[item.position]; var e = j.entrees.filter(function (x) { return x.cle === item.cle && !x.archiveeLe; })[0];
+      if (!e || !rs || rs.length !== 1 || rs[0].cle !== item.cle) { sansReponse.push(item.cle); return; }
+      if (JSON.stringify(ligneArchive(e)) !== JSON.stringify(item.ligne)) { sansReponse.push(item.cle); return; } // l'entree a change depuis l'envoi
+      var st = rs[0].statut;
+      if (SYNCHRO.STATUTS_ARCHIVE_OK.indexOf(st) !== -1) { e.archiveeLe = maintenant; archivees.push(item.cle); return; }
+      if (st === "cle_en_conflit") { var nv = cleUnique(j, options.nouvelleCle); e.clesPrecedentes = (e.clesPrecedentes || []).concat([e.cle]); e.cle = nv; conflits.push(item.cle); return; }
+      if (st === "refusee") { refusees.push(item.cle); return; }
+      sansReponse.push(item.cle);
+    });
+    return { journal: j, archivees: archivees, conflits: conflits, refusees: refusees, sansReponse: sansReponse, change: archivees.length > 0 || conflits.length > 0 };
+  }
+  // ── Deroulement complet d'une synchronisation ──
+  // L'appli fournit les entrees/sorties (io) ; TOUTE la logique et l'ordre de securite sont ici, testes avec de faux io.
+  //   io.compte()              -> identifiant du compte actif (la synchro s'arrete s'il change pendant un appel reseau)
+  //   io.lireStock() / io.ecrireStock(s) -> lecture / ecriture du stockage local des choix (ecrire rend true si l'ecriture a reussi)
+  //   io.lireJournal() / io.ecrireJournal(j)
+  //   io.lireCloud()           -> Promise<lignes du compte>   ; io.envoyer(lignes) -> Promise<lignes enregistrees>
+  //   io.archiver(lignes)      -> Promise<[{ indice, cle, statut }]>
+  // Ordre : reception, envoi, archivage, purge. Apres CHAQUE attente reseau, le stockage est RELU (l'utilisateur a pu changer un choix entre-temps),
+  // puis tout est calcule et ecrit sans nouvelle attente. Toute erreur arrete l'etape en cours sans rien retirer de l'appareil.
+  function synchroniserClassements(io, options) {
+    options = options || {};
+    var rapport = { recus: 0, ajoutes: [], remplaces: [], confirmes: [], archivees: [], conflitsCle: [], refusees: [], retirees: 0, erreurs: [], interrompu: false };
+    var compte0 = io.compte();
+    function horloge() { return options.horloge ? options.horloge() : Date.now(); }
+    function memeCompte() { if (io.compte() !== compte0) { rapport.interrompu = true; return false; } return true; }
+    // Applique un resultat de fusion : journal d'abord (ecrit ET relu a l'identique), choix ensuite (ecrit ET relu).
+    function appliquer(res) {
+      if (res.journal.length) {
+        var j = ajouterAuJournal(io.lireJournal(), res.journal);
+        if (!io.ecrireJournal(j) || !journalContient(io.lireJournal(), res.journal)) { rapport.erreurs.push("journal_non_ecrit"); return false; }
+      }
+      if (!res.change) return true;
+      if (!io.ecrireStock(res.classements) || JSON.stringify(lireClassements(io.lireStock())) !== JSON.stringify(lireClassements(res.classements))) { rapport.erreurs.push("choix_non_ecrits"); return false; }
+      return true;
+    }
+    function etape(nom, attente, suite) {
+      var p; try { p = attente(); } catch (e) { rapport.erreurs.push(nom + ":" + (e && e.message || e)); return Promise.resolve(false); }
+      return Promise.resolve(p).then(function (r) { if (!memeCompte()) return false; return suite(r); }, function (e) { rapport.erreurs.push(nom + ":" + (e && e.message || e)); return false; });
+    }
+    var opts = function () { return { maintenant: horloge(), nouvelleCle: options.nouvelleCle, journal: io.lireJournal() }; };
+    return etape("reception", function () { return io.lireCloud(); }, function (lignes) {
+      if (!Array.isArray(lignes)) { rapport.erreurs.push("reception:reponse_invalide"); return false; }
+      rapport.recus = lignes.length;
+      var fus = fusionnerCloud(io.lireStock(), lignes, opts());
+      if (!appliquer(fus)) return false;
+      rapport.ajoutes = fus.ajoutes; rapport.remplaces = fus.remplaces; rapport.confirmes = fus.confirmes.slice();
+      return true;
+    }).then(function (ok) {
+      if (!ok || rapport.interrompu) return false;
+      var lot = aEnvoyer(io.lireStock(), options.appareil); if (!lot.length) return true;
+      return etape("envoi", function () { return io.envoyer(lot); }, function (ret) {
+        var conf = confirmerEnvoi(io.lireStock(), lot, Array.isArray(ret) ? ret : [], opts());
+        if (!appliquer(conf)) return false;
+        rapport.confirmes = rapport.confirmes.concat(conf.confirmes); rapport.remplaces = rapport.remplaces.concat(conf.remplaces);
+        return true;
+      });
+    }).then(function (ok) {
+      if (rapport.interrompu) return false;
+      // L'archivage tourne meme si l'envoi a echoue (il ne depend pas des choix).
+      var lot = aArchiver(io.lireJournal()); if (!lot.length) return ok;
+      return etape("archivage", function () { return io.archiver(lot.map(function (x) { return x.ligne; })); }, function (rep) {
+        var c = confirmerArchivage(io.lireJournal(), lot, rep, { maintenant: horloge(), nouvelleCle: options.nouvelleCle });
+        if (c.change && (!io.ecrireJournal(c.journal) || JSON.stringify(lireJournal(io.lireJournal())) !== JSON.stringify(c.journal))) { rapport.erreurs.push("journal_non_ecrit"); return false; }
+        rapport.archivees = c.archivees; rapport.conflitsCle = c.conflits; rapport.refusees = c.refusees;
+        return ok;
+      });
+    }).then(function (ok) {
+      if (rapport.interrompu) return rapport;
+      var p = purgerJournal(io.lireJournal());
+      if (p.retirees > 0) { if (io.ecrireJournal(p.journal)) rapport.retirees = p.retirees; else rapport.erreurs.push("purge_non_ecrite"); }
+      return rapport;
+    });
+  }
+
+  // Purge : ne retire QUE des entrees archivees (confirmees par la base), les plus anciennes d'abord, et seulement au-dela de max (200).
+  function purgerJournal(journal, max) {
+    var j = lireJournal(journal), limite = typeof max === "number" ? max : SYNCHRO.JOURNAL_MAX_ARCHIVEES, retirees = 0;
+    var enTrop = j.entrees.length - limite; if (enTrop <= 0) return { journal: j, retirees: 0 };
+    j.entrees = j.entrees.filter(function (e) { if (enTrop > 0 && e.archiveeLe) { enTrop--; retirees++; return false; } return true; });
+    return { journal: j, retirees: retirees };
   }
 
   // ═══════════════════════ 4. DIAGNOSTICS ═══════════════════════
@@ -1511,6 +1746,9 @@
     // 3 bis. choix de l'utilisateur (0.16.0)
     LIBELLES_GROUPES: LIBELLES_GROUPES, libelleGroupe: libelleGroupe, classementsVides: classementsVides, lireClassements: lireClassements, validerClassement: validerClassement,
     choisirClassement: choisirClassement, choixUtilisateur: choixUtilisateur, classementsMoteur: classementsMoteur, classementsARevoir: classementsARevoir, fusionnerClassements: fusionnerClassements,
+    // 3 ter. synchronisation cloud des choix (0.17.0, fonctions pures)
+    SYNCHRO: SYNCHRO, ligneCloud: ligneCloud, choixDepuisLigne: choixDepuisLigne, memeContenu: memeContenu, aEnvoyer: aEnvoyer, fusionnerCloud: fusionnerCloud, confirmerEnvoi: confirmerEnvoi,
+    journalVide: journalVide, lireJournal: lireJournal, ajouterAuJournal: ajouterAuJournal, journalContient: journalContient, aArchiver: aArchiver, confirmerArchivage: confirmerArchivage, purgerJournal: purgerJournal, synchroniserClassements: synchroniserClassements,
     // 0.12.0 comparaison dans la meme plage
     memePlage: memePlage, historiqueMemePlage: historiqueMemePlage, referenceConseil: referenceConseil,
     // 4. diagnostics

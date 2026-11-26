@@ -87,7 +87,7 @@ t('Appli : cle de stockage propre au compte (it3_classements) ; recuperation (Se
   stock = E.choisirClassement(stock, 'Bel', { catalogue: true }, T0); assert.strictEqual(ctx.recupSollicitations(ss, null, Date.UTC(2026, 10, 21, 17)).nonClasses.length, 1, 'retour au choix par defaut immediat'); });
 t('Appli : export avec les choix (sans action de l\'utilisateur) ; import qui ajoute via le moteur ; resume en francais simple', () => {
   assert.ok(/classements: load\(KEYS\.classements\) \|\| \{ version: 1, exercices: \{\} \}/.test(SRC), 'export');
-  assert.ok(/CEi\.fusionnerClassements\(load\(KEYS\.classements\), data\.classements\)/.test(SRC) && /if \(f\.change\) save\(KEYS\.classements, f\.classements\)/.test(SRC), 'import par ajout');
+  assert.ok(/CEi\.fusionnerClassements\(load\(KEYS\.classements\), data\.classements\)/.test(SRC) && /if \(f\.change\) \{? ?save\(KEYS\.classements, f\.classements\)/.test(SRC), 'import par ajout');
   assert.ok(SRC.includes("Muscles d'exercices ajoutés : ") && SRC.includes('Tes choix de muscles déjà faits sont conservés : '));
   assert.ok(!/autoBackup\([^)]*classements/.test(SRC), '2b-1 : aucun envoi cloud'); });
 t('Appli : vrai import JSON (importData) dans un faux navigateur : choix ajoutes, choix existants conserves, seances et routines inchangees', async () => {

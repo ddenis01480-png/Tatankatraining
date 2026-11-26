@@ -47,6 +47,10 @@ t('index.html n\'appelle que des fonctions de LECTURE du moteur (aucune ecriture
   const allowed = ['bilanExercice', 'syntheseExercice', 'blocComparable', 'analyseExercice', 'recordsExercice', 'trierSeances', 'comparer', 'conseilProgression', 'diagnostiquer', 'historiqueExercice', 'lireFourchette', 'mesuresSeance', 'referenceConseil', 'normaliserSeances', 'normaliserSerie', 'analyser', 'scoreFatigue', 'FATIGUE_CRITERES', 'repondreFatigue', 'dernieresSollicitations', 'uniteEntree'];  // uniteEntree (0.11.0) : lecture de l'unite d'une seance (kg ou poids du corps)  // repondreFatigue : pure, renvoie une NOUVELLE fiche (l'ecriture reste dans BilanTab.update)
   // 0.16.0 (choix de muscles) : fonctions PURES du moteur (elles renvoient un objet neuf) ; seule l'appli enregistre, par save().
   allowed.push('classementsMoteur', 'classerExercice', 'choisirClassement', 'choixUtilisateur', 'libelleGroupe', 'GROUPES');
+  // 0.17.0 (etape 2b-2) : synchronisation des choix de muscles. Le moteur n'ecrit rien lui-meme : il appelle seulement les entrees/sorties
+  // que l'appli lui passe (stockage des choix et du journal, table exercise_classements) ; seances et routines n'y sont pas.
+  allowed.push('synchroniserClassements');
+  assert.ok(!/localStorage|fetch\(|supabase|KEYS|it3_sessions|it3_routines/.test(E.synchroniserClassements.toString()), 'synchroniserClassements : aucun acces direct');
   ['choisirClassement', 'classementsMoteur', 'fusionnerClassements'].forEach(f => assert.ok(!/localStorage|save\(|fetch\(/.test(E[f].toString()), f + ' : aucune ecriture'));
   calls.forEach(c => assert.ok(allowed.includes(c), 'appel non prevu : CE.' + c)); info('fonctions du moteur utilisees : ' + calls.join(', ')); });
 
