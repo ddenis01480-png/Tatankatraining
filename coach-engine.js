@@ -33,7 +33,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var VERSION = "0.13.0";
+  var VERSION = "0.14.0";
 
   // Reglages centralises (une seule valeur par regle).
   var REGLES = Object.freeze({
@@ -1369,6 +1369,14 @@
   //   { id, domaine: "progression"|"fatigue"|"recuperation"|"volume"|"priorites"|"morphologie", cible: { exercice?, muscle?, routineId? },
   //     avant: {...}, apres: {...}, raison: "...", donneesUtilisees: {...}, statut: "proposee" }
   // Seule l'application, apres validation explicite de l'utilisateur, pourra en tenir compte.
+  // Instant de reference de la recuperation dans analyser() : l'instant exact si options.maintenant est une date-heure (Date, nombre) ;
+  // pour un jour seul (« AAAA-MM-JJ ») ou sans options.maintenant fixe, la fin de ce jour local (23:59:59.999), pour un resultat reproductible.
+  function instantAnalyse(maintenant, aujourdhui) {
+    if (maintenant instanceof Date && isFinite(maintenant.getTime())) return maintenant.getTime();
+    if (typeof maintenant === "number" && isFinite(maintenant)) return maintenant;
+    if (typeof maintenant === "string" && !/^\d{4}-\d{2}-\d{2}$/.test(maintenant) && isFinite(Date.parse(maintenant))) return Date.parse(maintenant);
+    var p = aujourdhui.split("-").map(Number); return new Date(p[0], p[1] - 1, p[2], 23, 59, 59, 999).getTime();
+  }
   function analyser(donnees, options) {
     donnees = donnees || {}; options = options || {};
     var aujourdhui = options.maintenant !== undefined ? dateLocale(options.maintenant) : jourParDefaut();
@@ -1396,7 +1404,10 @@
         conseil: conseilProgression(h, { seriesPrevues: seriesPrevues[n], fourchette: dern.fourchette, aujourdhui: aujourdhui })
       };
     });
-    var recup = recuperation(seances, aujourdhui, options);
+    // 0.14.0 : UNE seule source par sujet. Volume et frequence = volumeMuscles (28 jours, direct / indirect separes, valeurs reelles) ;
+    // recuperation = dernieresSollicitations (principal et secondaire, heure reelle si fiable). Les anciennes volume(), recuperation()
+    // et priorites() restent exportees, intactes, mais ne sont plus appelees ici. Les priorites seront un constat du diagnostic (etape 6).
+    var optsVolume = {}; Object.keys(options).forEach(function (k) { optsVolume[k] = options[k]; }); optsVolume.fin = aujourdhui; delete optsVolume.jours;
     return {
       version: VERSION, aujourdhui: aujourdhui,
       donnees: { seances: seances.length, series: nbSeries, seriesValides: nbValides, rir: rir, seancesHorsOrdre: horsOrdre, idsEnDouble: doublonsId,
@@ -1404,9 +1415,8 @@
         exercicesNonClasses: noms.filter(function (n) { return exercices[n].catalogue.source === "non_classe"; }) },
       exercices: exercices,
       fatigue: { questionnaire: scoreFatigue(donnees.fatigue), rir7j: rirRecent(seances, aujourdhui, 7) },
-      recuperation: recup,
-      volume: volume(seances, aujourdhui, 7, options),
-      priorites: priorites(recup, options),
+      recuperation: dernieresSollicitations(seances, instantAnalyse(options.maintenant, aujourdhui), options),
+      volume: volumeMuscles(seances, optsVolume),
       morphologie: morphologie(donnees.profil),
       propositions: []
     };

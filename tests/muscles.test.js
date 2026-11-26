@@ -116,12 +116,12 @@ t('1. Direct et indirect separes, jamais additionnes : un developpe militaire = 
   assert.deepStrictEqual([v.muscles['Épaules'].direct.series, v.muscles['Épaules'].indirect.series, v.muscles.Triceps.direct.series, v.muscles.Triceps.indirect.series], [1, 0, 0, 1]);
   assert.deepStrictEqual(v.muscles.Triceps.indirect.exercices, [{ nom: 'Développé militaire haltères', series: 1 }]); });
 
-t('2. Aucun coefficient : sollicitations indirectes en series entieres (0,5 supprime, aussi dans volume() de analyser)', () => {
+t('2. Aucun coefficient : sollicitations indirectes en series entieres (0,5 supprime, aussi dans l ancienne volume())', () => {
   const raw = [sess('2026-04-20', [ex('Développé couché haltères', '30x10,30x10,30x9')])];
   const v = E.volumeMuscles(N(raw), { fin: '2026-04-21' });
   assert.deepStrictEqual([v.muscles.Triceps.indirect.series, v.muscles['Épaules'].indirect.series], [3, 3]);
   assert.ok(!('VOLUME_SECONDAIRE' in E.REGLES));
-  const vol7 = E.analyser({ sessions: raw }, { maintenant: '2026-04-21' }).volume.parMuscle;
+  const vol7 = E.volume(N(raw), '2026-04-21', 7).parMuscle; // 0.14.0 : ancienne volume() testee en direct (analyser utilise volumeMuscles)
   assert.deepStrictEqual([vol7.Pectoraux.series, vol7.Triceps.series, vol7.Triceps.indirect.series], [3, 0, 3]);
   const src = fs.readFileSync(__dirname + '/../coach-engine.js', 'utf8').replace(/\/\/.*$/gm, ''); assert.ok(!/\* *0\.5|0\.5 *\*/.test(src), 'aucune multiplication par 0,5 dans le code'); });
 
