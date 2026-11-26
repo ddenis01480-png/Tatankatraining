@@ -33,7 +33,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var VERSION = "0.14.0";
+  var VERSION = "0.15.0";
 
   // Reglages centralises (une seule valeur par regle).
   var REGLES = Object.freeze({
@@ -312,23 +312,27 @@
     [["reverse", "pec"], "Deltoïde post.", ["Trapèzes"], I],
     [["oiseau"], "Deltoïde post.", ["Trapèzes"], I],
     [["face", "pull"], "Deltoïde post.", ["Trapèzes"], I],
-    [["elevation", "lateral"], "Épaules", [], I],
-    [["elevation", "frontal"], "Épaules", [], I],
-    [["developpe", "militaire"], "Épaules", ["Triceps"], P],
-    [["developpe", "epaule"], "Épaules", ["Triceps"], P],
+    // 0.15.0 : l'epaule est separee en trois faisceaux (Deltoide ant. / lat. / post.) ; le groupe « Epaules » n'existe plus.
+    [["elevation", "lateral"], "Deltoïde lat.", [], I],
+    [["elevation", "frontal"], "Deltoïde ant.", [], I],
+    [["rowing", "menton"], "Deltoïde lat.", ["Trapèzes"], P],   // avant « rowing » (sinon classe Dos)
+    [["tirage", "menton"], "Deltoïde lat.", ["Trapèzes"], P],   // avant « tirage » (sinon classe Dos)
+    [["developpe", "militaire"], "Deltoïde ant.", ["Triceps", "Deltoïde lat."], P],
+    [["developpe", "epaule"], "Deltoïde ant.", ["Triceps", "Deltoïde lat."], P],
+    [["arnold"], "Deltoïde ant.", ["Triceps", "Deltoïde lat."], P],
     [["pec", "deck"], "Pectoraux", [], I],
     [["butterfly"], "Pectoraux", [], I],
     [["ecarte"], "Pectoraux", [], I],
     [["fly"], "Pectoraux", [], I],
-    [["chest", "press"], "Pectoraux", ["Triceps", "Épaules"], P],
-    [["pompe"], "Pectoraux", ["Triceps", "Épaules"], P],
-    // « Developpe » seul ne suffit pas (ex. developpe Arnold = epaules) : seules les variantes pectoraux connues sont classees.
-    [["developpe", "couche"], "Pectoraux", ["Triceps", "Épaules"], P],
-    [["developpe", "incline"], "Pectoraux", ["Triceps", "Épaules"], P],
-    [["developpe", "decline"], "Pectoraux", ["Triceps", "Épaules"], P],
-    [["developpe", "convergent"], "Pectoraux", ["Triceps", "Épaules"], P],
+    [["chest", "press"], "Pectoraux", ["Triceps", "Deltoïde ant."], P],
+    [["pompe"], "Pectoraux", ["Triceps", "Deltoïde ant."], P],
+    // « Developpe » seul ne suffit pas (ex. developpe Arnold = deltoide ant., regle « arnold » plus haut) : seules les variantes pectoraux connues sont classees.
+    [["developpe", "couche"], "Pectoraux", ["Triceps", "Deltoïde ant."], P],
+    [["developpe", "incline"], "Pectoraux", ["Triceps", "Deltoïde ant."], P],
+    [["developpe", "decline"], "Pectoraux", ["Triceps", "Deltoïde ant."], P],
+    [["developpe", "convergent"], "Pectoraux", ["Triceps", "Deltoïde ant."], P],
     [["triceps"], "Triceps", [], I],
-    [["dips"], "Triceps", ["Pectoraux", "Épaules"], P],
+    [["dips"], "Triceps", ["Pectoraux", "Deltoïde ant."], P],
     [["pull-over"], "Dos", [], I],
     [["pullover"], "Dos", [], I],
     [["traction"], "Dos", ["Biceps"], P],
@@ -340,6 +344,7 @@
     [["curl"], "Biceps", [], I],
     [["leg", "extension"], "Quadriceps", [], I],
     [["hip", "thrust"], "Fessiers", ["Ischio-jambiers"], P],
+    [["hip", "trust"], "Fessiers", ["Ischio-jambiers"], P],      // nom saisi « Hip trust machine » : reconnu tel quel, nom et historique inchanges
     [["glute", "bridge"], "Fessiers", ["Ischio-jambiers"], P],
     [["abducteur"], "Fessiers", [], I],
     [["adducteur"], "Adducteurs", [], I],
@@ -360,9 +365,9 @@
     [["planche"], "Abdominaux", [], G],
     [["gainage"], "Abdominaux", [], G]
   ].map(function (r) { return Object.freeze({ mots: Object.freeze(r[0]), principal: r[1], secondaires: Object.freeze(r[2]), mouvement: r[3] }); });
-  var GROUPES = Object.freeze(["Pectoraux", "Épaules", "Deltoïde post.", "Triceps", "Dos", "Biceps", "Trapèzes", "Quadriceps", "Ischio-jambiers", "Fessiers", "Adducteurs", "Mollets", "Abdominaux", "Lombaires"]);
-  // Les 10 groupes suivis par l'alerte « muscle non travaille » du V1.
-  var GROUPES_SUIVIS_V1 = Object.freeze(["Épaules", "Pectoraux", "Triceps", "Deltoïde post.", "Dos", "Biceps", "Quadriceps", "Ischio-jambiers", "Mollets", "Adducteurs"]);
+  var GROUPES = Object.freeze(["Pectoraux", "Deltoïde ant.", "Deltoïde lat.", "Deltoïde post.", "Triceps", "Dos", "Biceps", "Trapèzes", "Quadriceps", "Ischio-jambiers", "Fessiers", "Adducteurs", "Mollets", "Abdominaux", "Lombaires"]);
+  // Groupes suivis par l'ancienne alerte « muscle non travaille » du V1 (0.15.0 : « Epaules » remplace par Deltoide ant. et lat.).
+  var GROUPES_SUIVIS_V1 = Object.freeze(["Deltoïde ant.", "Deltoïde lat.", "Pectoraux", "Triceps", "Deltoïde post.", "Dos", "Biceps", "Quadriceps", "Ischio-jambiers", "Mollets", "Adducteurs"]);
 
   // Classement d'un exercice. options.classements : { "Nom exact": { principal, secondaires, mouvement } } choisis par l'utilisateur (prioritaires).
   // Exercice inconnu (ex. exercice perso) -> principal null, source "non_classe" : jamais devine au hasard.

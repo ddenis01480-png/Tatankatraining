@@ -55,7 +55,7 @@ t('Inventaire : dans le moteur, volume(), recuperation() et priorites() ne sont 
   assert.strictEqual(typeof E.volume, 'function'); assert.strictEqual(typeof E.recuperation, 'function'); assert.strictEqual(typeof E.priorites, 'function'); });
 
 // ═════════ 2. Source unique ═════════
-t('Version 0.14.0', () => assert.strictEqual(E.VERSION, '0.14.0'));
+t('Version 0.15.0 ou plus (etape 2a)', () => assert.ok(/^0\.(1[5-9]|[2-9]\d)\./.test(E.VERSION), E.VERSION));
 t('analyser().volume = volumeMuscles (28 jours, direct et indirect separes, valeurs reelles), au caractere pres', () => {
   const an = E.analyser({ sessions: JEU() }, { maintenant: '2026-01-28' });
   assert.deepStrictEqual(plain(an.volume), plain(E.volumeMuscles(E.normaliserSeances(JEU()), { fin: '2026-01-28' })));

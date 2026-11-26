@@ -111,15 +111,16 @@ t('R-P3 dans analyseExercice : meme resultat pour Fin de seance, Progres et l\'a
   assert.strictEqual(c.resultat, 'seance_incomplete'); });
 
 // ───────────────────────── Volume (R-V) ─────────────────────────
-t('1. Direct et indirect separes, jamais additionnes : un developpe militaire = 1 serie directe Epaules + 1 serie indirecte Triceps', () => {
+t('1. Direct et indirect separes, jamais additionnes : un developpe militaire = 1 serie directe Deltoide ant. + 1 serie indirecte Triceps et Deltoide lat. (0.15.0)', () => {
   const v = E.volumeMuscles(N([sess('2026-04-20', [ex('Développé militaire haltères', '20x10')])]), { fin: '2026-04-21' });
-  assert.deepStrictEqual([v.muscles['Épaules'].direct.series, v.muscles['Épaules'].indirect.series, v.muscles.Triceps.direct.series, v.muscles.Triceps.indirect.series], [1, 0, 0, 1]);
+  assert.deepStrictEqual([v.muscles['Deltoïde ant.'].direct.series, v.muscles['Deltoïde ant.'].indirect.series, v.muscles.Triceps.direct.series, v.muscles.Triceps.indirect.series], [1, 0, 0, 1]);
+  assert.deepStrictEqual([v.muscles['Deltoïde lat.'].direct.series, v.muscles['Deltoïde lat.'].indirect.series], [0, 1]); assert.ok(!('Épaules' in v.muscles));
   assert.deepStrictEqual(v.muscles.Triceps.indirect.exercices, [{ nom: 'Développé militaire haltères', series: 1 }]); });
 
 t('2. Aucun coefficient : sollicitations indirectes en series entieres (0,5 supprime, aussi dans l ancienne volume())', () => {
   const raw = [sess('2026-04-20', [ex('Développé couché haltères', '30x10,30x10,30x9')])];
   const v = E.volumeMuscles(N(raw), { fin: '2026-04-21' });
-  assert.deepStrictEqual([v.muscles.Triceps.indirect.series, v.muscles['Épaules'].indirect.series], [3, 3]);
+  assert.deepStrictEqual([v.muscles.Triceps.indirect.series, v.muscles['Deltoïde ant.'].indirect.series], [3, 3]);
   assert.ok(!('VOLUME_SECONDAIRE' in E.REGLES));
   const vol7 = E.volume(N(raw), '2026-04-21', 7).parMuscle; // 0.14.0 : ancienne volume() testee en direct (analyser utilise volumeMuscles)
   assert.deepStrictEqual([vol7.Pectoraux.series, vol7.Triceps.series, vol7.Triceps.indirect.series], [3, 0, 3]);
@@ -286,7 +287,10 @@ if (EXPORT_FILE) t('18. Tes donnees : rejeu jour par jour (01/04 -> 21/11) sans 
   assert.ok(!types.baisse_generale && !types.baisse_localisee, JSON.stringify(types));
   info(jours.length + ' jours rejoues : ' + JSON.stringify(types));
   const p = E.performanceMuscles(sn, { fin: '2026-11-21' }).muscles, T = m => [p[m].statut, p[m].tendance, p[m].confiance];
-  ['Pectoraux', 'Épaules', 'Dos', 'Deltoïde post.', 'Quadriceps', 'Ischio-jambiers', 'Triceps', 'Biceps'].forEach(m => assert.deepStrictEqual(T(m), ['ok', 'hausse', 'haute'], m));
+  // 0.15.0 : « Épaules » separe ; les elevations laterales (Deltoide lat.) gardent « hausse / haute » ; le developpe militaire seul
+  // (Deltoide ant., moins de comparaisons) donne « hausse / moyenne ».
+  ['Pectoraux', 'Deltoïde lat.', 'Dos', 'Deltoïde post.', 'Quadriceps', 'Ischio-jambiers', 'Triceps', 'Biceps'].forEach(m => assert.deepStrictEqual(T(m), ['ok', 'hausse', 'haute'], m));
+  assert.deepStrictEqual(T('Deltoïde ant.'), ['ok', 'hausse', 'moyenne']);
   assert.deepStrictEqual(T('Adducteurs'), ['ok', 'hausse', 'moyenne']);
   // 0.11.0 : Mollets debout machine « 1 » = poids du corps -> 10 comparaisons fiables en repetitions sur 28 jours (8 hausses, 2 stables).
   assert.deepStrictEqual([T('Mollets'), p.Mollets.compte.fiables, p.Mollets.compte.progression, p.Mollets.compte.stable, p.Mollets.compte.regression], [['ok', 'hausse', 'moyenne'], 10, 8, 2, 0]);

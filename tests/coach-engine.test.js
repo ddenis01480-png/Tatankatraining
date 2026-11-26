@@ -134,11 +134,13 @@ t('C', 'Catalogue : CHAQUE exercice de la base (' + v1.ALL_EXERCISES.length + ')
   const sans = v1.ALL_EXERCISES.filter(n => !E.classerExercice(n).principal); assert.deepStrictEqual(sans, []);
   v1.ALL_EXERCISES.forEach(n => { const c = E.classerExercice(n); assert.ok(E.GROUPES.includes(c.principal), n + ' -> ' + c.principal); assert.ok(c.mouvement, n); c.secondaires.forEach(m => assert.ok(E.GROUPES.includes(m), n + ' / ' + m)); }); });
 t('C', 'Catalogue compatible V1 : quand le V1 classe un exercice (MUSCLE_GROUPS), le moteur donne le meme groupe', () => {
-  const names = v1.ALL_EXERCISES.concat(REAL_LIKE_NAMES); const diff = names.filter(n => groupOfV1(n) && E.classerExercice(n).principal !== groupOfV1(n));
+  // 0.15.0 : le groupe V1 « Épaules » correspond desormais a Deltoide ant. OU lat. (faisceaux separes) ; les autres groupes sont identiques.
+  const memeGroupe = (moteur, v1g) => v1g === 'Épaules' ? ['Deltoïde ant.', 'Deltoïde lat.'].includes(moteur) : moteur === v1g;
+  const names = v1.ALL_EXERCISES.concat(REAL_LIKE_NAMES); const diff = names.filter(n => groupOfV1(n) && !memeGroupe(E.classerExercice(n).principal, groupOfV1(n)));
   assert.deepStrictEqual(diff, []); });
 t('C', 'Catalogue : noms reels avec variantes (sans accents, singulier, « cuff », « unilateral »...) tous classes', () => {
   const sans = REAL_LIKE_NAMES.filter(n => !E.classerExercice(n).principal); assert.deepStrictEqual(sans, []);
-  assert.strictEqual(E.classerExercice('Elevation laterale avec cuff poulie au sol').principal, 'Épaules');
+  assert.strictEqual(E.classerExercice('Elevation laterale avec cuff poulie au sol').principal, 'Deltoïde lat.');
   assert.strictEqual(E.classerExercice('Butterfly inversé câble').principal, 'Deltoïde post.'); assert.strictEqual(E.classerExercice('Pec deck (Butterfly)').principal, 'Pectoraux');
   assert.strictEqual(E.classerExercice('Leg curl assis machine').principal, 'Ischio-jambiers'); assert.strictEqual(E.classerExercice('Curl marteau haltères').principal, 'Biceps'); });
 t('C', 'Catalogue : exercice perso inconnu = « non classe » (jamais devine) ; classement choisi par l\'utilisateur prioritaire', () => {

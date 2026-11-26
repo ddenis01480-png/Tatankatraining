@@ -29,7 +29,7 @@ const CATALOGUE_67 = [
   ["Belt squat", "Quadriceps", ["Fessiers","Adducteurs"]],
   ["Butterfly inversé câble", "Deltoïde post.", ["Trapèzes"]],
   ["Calf raises machine assise", "Mollets", []],
-  ["Chest press machine", "Pectoraux", ["Triceps","Épaules"]],
+  ["Chest press machine", "Pectoraux", ["Triceps","Deltoïde ant."]],
   ["Crunch machine", "Abdominaux", []],
   ["Crunchs câble + Relevé de jambes", "Abdominaux", []],
   ["Curl câble unilatéral", "Biceps", []],
@@ -38,26 +38,26 @@ const CATALOGUE_67 = [
   ["Curl marteau haltères", "Biceps", []],
   ["Curl poulie basse prise neutre", "Biceps", []],
   ["Curl poulie basse unilatérale", "Biceps", []],
-  ["Développé convergent machine", "Pectoraux", ["Triceps","Épaules"]],
-  ["Développé couché haltères", "Pectoraux", ["Triceps","Épaules"]],
-  ["Développé décliné haltères", "Pectoraux", ["Triceps","Épaules"]],
-  ["Développé épaules machine", "Épaules", ["Triceps"]],
-  ["Développé incliné haltères", "Pectoraux", ["Triceps","Épaules"]],
-  ["Développé incliné machine", "Pectoraux", ["Triceps","Épaules"]],
-  ["Développé militaire haltères", "Épaules", ["Triceps"]],
-  ["Développé militaire Smith Machine", "Épaules", ["Triceps"]],
-  ["Dips lestés", "Triceps", ["Pectoraux","Épaules"]],
-  ["Dips machine", "Triceps", ["Pectoraux","Épaules"]],
-  ["Dips poids de corps", "Triceps", ["Pectoraux","Épaules"]],
+  ["Développé convergent machine", "Pectoraux", ["Triceps","Deltoïde ant."]],
+  ["Développé couché haltères", "Pectoraux", ["Triceps","Deltoïde ant."]],
+  ["Développé décliné haltères", "Pectoraux", ["Triceps","Deltoïde ant."]],
+  ["Développé épaules machine", "Deltoïde ant.", ["Triceps","Deltoïde lat."]],
+  ["Développé incliné haltères", "Pectoraux", ["Triceps","Deltoïde ant."]],
+  ["Développé incliné machine", "Pectoraux", ["Triceps","Deltoïde ant."]],
+  ["Développé militaire haltères", "Deltoïde ant.", ["Triceps","Deltoïde lat."]],
+  ["Développé militaire Smith Machine", "Deltoïde ant.", ["Triceps","Deltoïde lat."]],
+  ["Dips lestés", "Triceps", ["Pectoraux","Deltoïde ant."]],
+  ["Dips machine", "Triceps", ["Pectoraux","Deltoïde ant."]],
+  ["Dips poids de corps", "Triceps", ["Pectoraux","Deltoïde ant."]],
   ["Écarté couché haltères", "Pectoraux", []],
   ["Écarté poulie basse (Fly câble bas)", "Pectoraux", []],
   ["Écarté poulie haute (Fly câble)", "Pectoraux", []],
-  ["Elevation laterale avec cuff poulie au sol", "Épaules", []],
-  ["Élévation latérale cuff 1 bras", "Épaules", []],
-  ["Élévations latérales câble (1 bras)", "Épaules", []],
-  ["Élévations latérales câble (2 bras)", "Épaules", []],
-  ["Élévations latérales câble unilatéral", "Épaules", []],
-  ["Élévations latérales haltères", "Épaules", []],
+  ["Elevation laterale avec cuff poulie au sol", "Deltoïde lat.", []],
+  ["Élévation latérale cuff 1 bras", "Deltoïde lat.", []],
+  ["Élévations latérales câble (1 bras)", "Deltoïde lat.", []],
+  ["Élévations latérales câble (2 bras)", "Deltoïde lat.", []],
+  ["Élévations latérales câble unilatéral", "Deltoïde lat.", []],
+  ["Élévations latérales haltères", "Deltoïde lat.", []],
   ["Extension triceps câble corde", "Triceps", []],
   ["Extension triceps overhead câble", "Triceps", []],
   ["Face pull câble corde", "Deltoïde post.", ["Trapèzes"]],
@@ -105,24 +105,25 @@ t('Les 67 exercices de l\'historique : muscle principal et secondaires = catalog
   CATALOGUE_67.forEach(([n, p, sec]) => { const c = E.classerExercice(n); assert.strictEqual(c.principal, p, n); assert.deepStrictEqual(plain(c.secondaires), sec, n); });
   const parGroupe = {}; CATALOGUE_67.forEach(([, p]) => { parGroupe[p] = (parGroupe[p] || 0) + 1; }); info('groupes principaux : ' + JSON.stringify(parGroupe)); });
 
-t('Aucun exercice connu dans « Autre » : les 67 exercices et les 133 de la base ont un groupe parmi les 14 ; « Autre » n\'existe pas', () => {
-  assert.ok(!E.GROUPES.includes('Autre')); assert.strictEqual(E.GROUPES.length, 14);
+t('Aucun exercice connu dans « Autre » : les 67 exercices et les 133 de la base ont un groupe parmi les 15 ; « Autre » n\'existe pas', () => {
+  assert.ok(!E.GROUPES.includes('Autre')); assert.strictEqual(E.GROUPES.length, 15); assert.ok(!E.GROUPES.includes('Épaules'));
   CATALOGUE_67.concat(ALL_EXERCISES.map(n => [n])).forEach(([n]) => { const c = E.classerExercice(n); assert.ok(c.principal && E.GROUPES.includes(c.principal), n);
     c.secondaires.forEach(m => assert.ok(E.GROUPES.includes(m), n + ' / ' + m)); }); });
 
 t('Exercice personnalise indeterminable -> « classification a definir » (aucun muscle invente)', () => {
-  ['Développé Arnold', 'Mon exercice perso', 'Machine 3', 'Circuit'].forEach(n => { const c = E.classerExercice(n); assert.strictEqual(c.principal, null, n); assert.strictEqual(c.source, 'non_classe'); });
-  assert.strictEqual(E.classerExercice('Développé Arnold', { classements: { 'Développé Arnold': { principal: 'Épaules', secondaires: ['Triceps'] } } }).principal, 'Épaules'); });
+  // 0.15.0 : « Développé Arnold » est desormais reconnu (Deltoide ant.), il ne sert plus d'exemple d'exercice inconnu.
+  ['Mon exercice perso', 'Machine 3', 'Circuit', 'Bel'].forEach(n => { const c = E.classerExercice(n); assert.strictEqual(c.principal, null, n); assert.strictEqual(c.source, 'non_classe'); });
+  assert.strictEqual(E.classerExercice('Machine 3', { classements: { 'Machine 3': { principal: 'Deltoïde lat.', secondaires: ['Trapèzes'] } } }).principal, 'Deltoïde lat.'); });
 
 t('Les deux anciennes tables (MUSCLE_MAP, MUSCLE_GROUPS) et getMuscle ne sont plus utilisees ; Seance et Bilan passent par le moteur', () => {
   assert.ok(!/MUSCLE_MAP|MUSCLE_GROUPS|getMuscle\(|muscleAlerts|recovScore|minHoursSince/.test(SRC));
   assert.ok(/setRecupInfo\(recupSollicitations\(sessions, exercises\.filter\(e => !estActivation\(e\)\)\.map\(e => e\.name\), Date\.now\(\)\)\)/.test(SRC), 'Seance : muscles de la seance, sans les exercices d\'activation (0.13.0)');
   assert.ok(/const recupBilan = recupSollicitations\(sessions, null, Date\.now\(\)\)/.test(SRC)); });
 
-t('Muscles secondaires pris en compte : un developpe couche sollicite Triceps et Epaules (role secondaire)', () => {
+t('Muscles secondaires pris en compte : un developpe couche sollicite Triceps et Deltoide ant. (role secondaire)', () => {
   const r = sol([sess('2026-11-20T12:00:00Z', '2026-11-20', ['Développé couché haltères'])], '2026-11-21T12:00:00Z');
   assert.strictEqual(r.groupes['Pectoraux'].derniere.role, 'principal'); assert.strictEqual(r.groupes['Triceps'].derniere.role, 'secondaire');
-  assert.strictEqual(r.groupes['Épaules'].ecoule.heures, 24); assert.strictEqual(r.groupes['Triceps'].dernierePrincipale, null);
+  assert.strictEqual(r.groupes['Deltoïde ant.'].ecoule.heures, 24); assert.ok(!('Épaules' in r.groupes)); assert.strictEqual(r.groupes['Triceps'].dernierePrincipale, null);
   assert.strictEqual(r.groupes['Dos'].derniere, null); assert.strictEqual(H.recupDelaiTexte(r.groupes['Dos'].ecoule), 'aucune séance'); });
 
 t('Heure reelle : id = horodatage de fin de seance ; plus de minuit fictif (seance hier 13:05 -> 24 h, pas ~35 h)', () => {
@@ -171,7 +172,7 @@ t('Aucune conclusion de recuperation sur le seul delai : moteur sans verdict, ec
 t('Seance qui demarre : seuls les groupes de ses exercices (principaux + secondaires) sont affiches', () => {
   const ss = [sess('2026-11-21T08:35:00Z', '2026-11-21', ['Tractions lestées prise large', 'Oiseau haltères buste penché']), sess('2026-11-20T13:46:00Z', '2026-11-20', ['Chest press machine'])];
   const r = H.recupSollicitations(ss, ['Chest press machine', 'Pec deck (Butterfly)'], ms('2026-11-23T17:40:00Z'));
-  assert.deepStrictEqual(Object.keys(r.groupes), ['Pectoraux', 'Épaules', 'Triceps']);
+  assert.deepStrictEqual(Object.keys(r.groupes), ['Pectoraux', 'Deltoïde ant.', 'Triceps']);
   assert.strictEqual(H.recupExercicesTexte(r.groupes['Triceps'].derniere), 'Chest press machine (secondaire)'); });
 
 if (EXPORT_FILE) t('Tes donnees : 141 heures fiables ; routines et ecrans Seance / Bilan calcules ; export et seances inchanges', () => {
@@ -182,7 +183,7 @@ if (EXPORT_FILE) t('Tes donnees : 141 heures fiables ; routines et ecrans Seance
   const N = E.normaliserSeances(exp.sessions); assert.strictEqual(N.filter(s => E.heureSeance(s, Date.now()).fiable).length, exp.sessions.length);
   const routines = exp.routines.flatMap(r => r.exercises.map(e => e.name)); assert.deepStrictEqual(routines.filter(n => !E.classerExercice(n).principal), []);
   const now = ms('2026-11-23T17:40:00Z'), bilan = H.recupSollicitations(exp.sessions, null, now);
-  assert.strictEqual(bilan.nonClasses.length, 0); assert.strictEqual(Object.keys(bilan.groupes).length, 14);
+  assert.strictEqual(bilan.nonClasses.length, 0); assert.strictEqual(Object.keys(bilan.groupes).length, 15); // 0.15.0 : 3 faisceaux d'epaule
   exp.routines.forEach(rt => { const r = H.recupSollicitations(exp.sessions, rt.exercises.map(e => e.name), now);
     rt.exercises.forEach(e => assert.ok(r.groupes[E.classerExercice(e.name).principal], rt.name + ' / ' + e.name)); });
   const d = bilan.groupes['Dos']; info('Bilan au 23/11 18:40 : Dos ' + H.recupDelaiTexte(d.ecoule) + ' (' + H.recupQuandTexte(d.derniere) + ') ; Quadriceps ' + H.recupDelaiTexte(bilan.groupes['Quadriceps'].ecoule) + ' ; Lombaires ' + H.recupDelaiTexte(bilan.groupes['Lombaires'].ecoule));
