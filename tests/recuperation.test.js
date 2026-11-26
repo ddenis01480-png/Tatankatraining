@@ -116,7 +116,7 @@ t('Exercice personnalise indeterminable -> « classification a definir » (aucun
 
 t('Les deux anciennes tables (MUSCLE_MAP, MUSCLE_GROUPS) et getMuscle ne sont plus utilisees ; Seance et Bilan passent par le moteur', () => {
   assert.ok(!/MUSCLE_MAP|MUSCLE_GROUPS|getMuscle\(|muscleAlerts|recovScore|minHoursSince/.test(SRC));
-  assert.ok(/setRecupInfo\(recupSollicitations\(sessions, exercises\.map\(e => e\.name\), Date\.now\(\)\)\)/.test(SRC));
+  assert.ok(/setRecupInfo\(recupSollicitations\(sessions, exercises\.filter\(e => !estActivation\(e\)\)\.map\(e => e\.name\), Date\.now\(\)\)\)/.test(SRC), 'Seance : muscles de la seance, sans les exercices d\'activation (0.13.0)');
   assert.ok(/const recupBilan = recupSollicitations\(sessions, null, Date\.now\(\)\)/.test(SRC)); });
 
 t('Muscles secondaires pris en compte : un developpe couche sollicite Triceps et Epaules (role secondaire)', () => {

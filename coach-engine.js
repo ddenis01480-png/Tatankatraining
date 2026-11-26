@@ -33,7 +33,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var VERSION = "0.12.0";
+  var VERSION = "0.13.0";
 
   // Reglages centralises (une seule valeur par regle).
   var REGLES = Object.freeze({
@@ -167,14 +167,24 @@
 
   function nomParDefaut(n) { return String(n || "").trim(); }
 
+  // EXERCICE D'ACTIVATION (0.13.0) : propriete « activation: true » posee dans la ROUTINE par l'utilisateur, recopiee dans la
+  // seance au demarrage et enregistree avec elle. Seule la valeur true compte (absente ou autre = exercice de travail, comme
+  // toutes les seances enregistrees avant 0.13.0). Jamais deduite du nom ni du catalogue.
+  function estActivation(e) { return !!e && e.activation === true; }
+
   // Seances normalisees, triees. options.normaliserNom : fonction de correction des noms (ex. normalizeExName de l'appli).
+  // Les exercices d'ACTIVATION sont exclus ici, donc de TOUTES les analyses du moteur (historique, progression, records,
+  // volume direct et indirect, frequence, recuperation). options.avecActivation : les garder (marques activation: true).
+  // Les donnees enregistrees ne sont jamais modifiees : seule la copie analysee est filtree.
   function normaliserSeances(sessions, options) {
     var fnNom = (options && typeof options.normaliserNom === "function") ? options.normaliserNom : nomParDefaut;
+    var garder = !!(options && options.avecActivation);
     return trierSeances(sessions).map(function (s) {
       return {
         id: s && s.id !== undefined ? s.id : null, date: dateSeance(s), routineId: s && s.routineId !== undefined ? s.routineId : null,
         routine: (s && s.routineName) || null,
-        exercices: ((s && s.exercises) || []).filter(Boolean).map(function (e) {
+        exercices: ((s && s.exercises) || []).filter(function (e) { return e && (garder || !estActivation(e)); }).map(function (e) {
+          if (estActivation(e)) return { nom: fnNom(e.name), fourchette: lireFourchette(e.repsTarget), series: (e.sets || []).map(normaliserSerie), activation: true };
           return { nom: fnNom(e.name), fourchette: lireFourchette(e.repsTarget), series: (e.sets || []).map(normaliserSerie) };
         })
       };
@@ -1375,6 +1385,7 @@
     var noms = []; seances.forEach(function (s) { s.exercices.forEach(function (e) { if (noms.indexOf(e.nom) === -1) noms.push(e.nom); }); });
     var seriesPrevues = {};
     (Array.isArray(donnees.routines) ? donnees.routines : []).forEach(function (r) { ((r && r.exercises) || []).forEach(function (e) {
+      if (estActivation(e)) return; // serie(s) d'activation : pas des series prevues de travail
       var n = (typeof options.normaliserNom === "function" ? options.normaliserNom : nomParDefaut)(e && e.name); var k = int(e && e.sets); if (n && k && !(n in seriesPrevues)) seriesPrevues[n] = k; }); });
     var exercices = {};
     noms.forEach(function (n) {
@@ -1407,7 +1418,7 @@
     // 1. normalisation
     CHARGES_CONVENTIONNELLES: CHARGES_CONVENTIONNELLES, chargeConventionnelle: chargeConventionnelle, uniteEntree: uniteEntree,
     lireRir: lireRir, statutRir: statutRir, lireFourchette: lireFourchette, dateSeance: dateSeance, dateLocale: dateLocale, joursEntre: joursEntre,
-    trierSeances: trierSeances, normaliserSerie: normaliserSerie, normaliserSeances: normaliserSeances, historiqueExercice: historiqueExercice,
+    trierSeances: trierSeances, normaliserSerie: normaliserSerie, estActivation: estActivation, normaliserSeances: normaliserSeances, historiqueExercice: historiqueExercice,
     // 2. mesures
     e1RM: e1RM, forceSerie: forceSerie, mesuresSeance: mesuresSeance,
     // 3. catalogue

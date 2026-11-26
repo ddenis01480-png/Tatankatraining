@@ -648,6 +648,15 @@ const EXERCISE_NAME_FIXES = {
   'Leg extension': 'Leg extension machine',
 };
 function normalizeExName(name) { return EXERCISE_NAME_FIXES[name] || name; }
+// EXERCICE D'ACTIVATION (Coach 0.13.0) : « activation: true » pose dans la ROUTINE par l'utilisateur (case ACTIVATION de l'editeur),
+// recopie dans la seance au demarrage et enregistre avec elle. Seule la valeur true compte : les anciennes seances (sans ce champ)
+// restent des exercices de travail. Jamais deduit du nom ni du catalogue. Exclu des analyses (progression, records, volume,
+// frequence, recuperation) ; la seance enregistree, elle, garde toutes ses series.
+function estActivation(e) { return !!e && e.activation === true; }
+// Copie des seances SANS les exercices d'activation, pour les calculs de progression V1 (les donnees ne sont jamais modifiees).
+function horsActivation(sessions) {
+  return (sessions || []).map(s => (s && Array.isArray(s.exercises) && s.exercises.some(estActivation)) ? { ...s, exercises: s.exercises.filter(e => !estActivation(e)) } : s);
+}
 function normalizeSessions(sessions) {
   return (sessions||[]).map(s => ({ ...s, exercises: (s.exercises||[]).map(e => ({ ...e, name: normalizeExName(e.name) })) }));
 }
@@ -658,13 +667,14 @@ function normalizeSessions(sessions) {
 function _jsonSig(x) { try { return JSON.stringify(x); } catch(e) { return "?" + Math.random(); } }
 function sessionSignature(s) {
   return [String(s.date), String(s.routineName || s.routineId || ""),
-    _jsonSig((s.exercises || []).map(function(e) { return [e && normalizeExName(e.name), ((e && e.sets) || []).map(function(x) { return [x && x.weight, x && x.reps, x && x.rir]; })]; }))].join("|");
+    _jsonSig((s.exercises || []).map(function(e) { var sig = [e && normalizeExName(e.name), ((e && e.sets) || []).map(function(x) { return [x && x.weight, x && x.reps, x && x.rir]; })]; if (e && e.activation === true) sig.push("activation"); return sig; }))].join("|");
 }
 // Le suffixe « (import) » / « (import N) » ajoute lors d'une fusion ne compte pas dans la comparaison :
 // reimporter le meme fichier retrouve la routine deja ajoutee et n'en cree pas une nouvelle copie.
 function _baseRoutineName(n) { return String(n).replace(/ \(import(?: \d+)?\)$/i, ""); }
 function routineSignature(r) {
-  return _jsonSig([_baseRoutineName(r.name), (r.exercises || []).map(function(e) { return [e && e.name, e && e.sets, e && e.repsTarget, e && e.rest, e && e.warmupSets, e && e.note]; })]);
+  // « activation » ajoute a la signature SEULEMENT quand il vaut true : les anciens exports (sans ce champ) gardent la meme signature.
+  return _jsonSig([_baseRoutineName(r.name), (r.exercises || []).map(function(e) { var sig = [e && e.name, e && e.sets, e && e.repsTarget, e && e.rest, e && e.warmupSets, e && e.note]; if (e && e.activation === true) sig.push("activation"); return sig; })]);
 }
 function _newId(used) { var n = Date.now(); while (used[String(n)]) n++; used[String(n)] = 1; return n; }
 function mergeSessionsNonDestructive(existing, incoming) {
@@ -1071,6 +1081,7 @@ function coachFinSeance(CE, sessions, validExs, todayStr, nowId) {
   const res = { alerts: [], progressed: [], stagnated: [], regressed: [], nonComparables: [], incompletes: [], sessionPRs: [], details: {}, prDetails: {}, references: {} }, vus = {};
   const jour = { id: nowId, date: todayStr, exercises: validExs };
   validExs.forEach(ex => {
+    if (ex.activation === true) return; // exercice d'activation : enregistre, jamais analyse (ni bilan, ni record, ni alerte)
     if (vus[ex.name]) return; vus[ex.name] = true; // exercice en double dans la seance : premiere occurrence, comme l'historique
     const f = CE.lireFourchette(ex.repsTarget || "");
     const avant = coachHistorique(CE, sessions, ex.name);
@@ -1449,7 +1460,15 @@ function RoutinesTab({ routines, setRoutines, onStartSession, view, setView, edi
                 {[0,1,2,3,4,5].map(n => <option key={n} value={n}>{n === 0 ? "-" : n + " serie" + (n > 1 ? "s" : "")}</option>)}
               </select>
             </div>
+            <div>
+              <div style={{ fontSize: 8, color: "#29B6F6", fontFamily: "monospace", marginBottom: 3 }}>ACTIVATION</div>
+              <button onClick={() => { const exs = [...editing.exercises]; const { activation, ...reste } = exs[i]; exs[i] = estActivation(ex) ? reste : { ...reste, activation: true }; setEditing(p => ({ ...p, exercises: exs })); }}
+                style={{ background: estActivation(ex) ? "#29B6F622" : "#1a1a1a", border: "1px solid " + (estActivation(ex) ? "#29B6F6" : "#29B6F633"), color: estActivation(ex) ? "#29B6F6" : "#555", borderRadius: 6, padding: "5px 4px", fontSize: 11, width: "100%", fontWeight: 700, cursor: "pointer" }}>
+                {estActivation(ex) ? "OUI" : "non"}
+              </button>
+            </div>
           </div>
+          {estActivation(ex) && <div style={{ fontSize: 9, color: "#29B6F6", fontFamily: "monospace", marginBottom: 6 }}>Exercice d'activation : enregistré, mais hors progression, records, volume et récupération.</div>}
           <input value={ex.note || ""} onChange={e => { const exs = [...editing.exercises]; exs[i] = { ...exs[i], note: e.target.value }; setEditing(p => ({ ...p, exercises: exs })); }}
             placeholder="Note technique..."
             style={{ width: "100%", background: "#0d0d0d", border: "1px solid #1a1a1a", color: "#666", borderRadius: 6, padding: "6px 10px", fontSize: 11, boxSizing: "border-box", fontStyle: "italic" }} />
@@ -1519,6 +1538,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
         warmupSets: (progEx && progEx.warmupSets) || ex.warmupSets || 0,
         warmupLabel: (progEx && progEx.warmupLabel) || ex.warmupLabel || "",
         userNote: ex.userNote || "",
+        ...(estActivation(ex) ? { activation: true } : {}),
         lastSets: ex.sets,
         sets: pastSets.map((s, i) => ({
           weight: s.weight || "", reps: "",
@@ -1551,7 +1571,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
         const refS = coachReferenceSeance(sessions, ex.name, ex.repsTarget || (progExRef2 && progExRef2.repsTarget) || "8-12");
         const lastSets = refS.sets;
         return {
-          name: ex.name, repsTarget: ex.repsTarget || (progExRef2 && progExRef2.repsTarget) || "8-12", note: ex.note || (progExRef2 && progExRef2.note) || "", userNote: "", rest: ex.rest || 90, warmupSets: ex.warmupSets || (progExRef2 && progExRef2.warmupSets) || 0, warmupLabel: ex.warmupLabel || (progExRef2 && progExRef2.warmupLabel) || "", lastSets, lastSetsDate: refS.date,
+          name: ex.name, repsTarget: ex.repsTarget || (progExRef2 && progExRef2.repsTarget) || "8-12", note: ex.note || (progExRef2 && progExRef2.note) || "", userNote: "", rest: ex.rest || 90, warmupSets: ex.warmupSets || (progExRef2 && progExRef2.warmupSets) || 0, warmupLabel: ex.warmupLabel || (progExRef2 && progExRef2.warmupLabel) || "", lastSets, lastSetsDate: refS.date, ...(estActivation(ex) ? { activation: true } : {}),
           sets: Array.from({ length: ex.sets || 3 }, (_, i) => ({
             weight: (lastSets[i] && lastSets[i].weight) || (lastSets[0] && lastSets[0].weight) || "", reps: "",
             rir: "", rirCible: i === 0 ? 3 : i === 1 ? 2 : 1, rirSaisi: false, done: false
@@ -1565,7 +1585,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
 
       // Derniere sollicitation des muscles de cette seance : information descriptive affichee en haut de la seance.
       // (Plus de verdict « optimal / bon / moyen / insuffisant » ni de fenetre declenchee par les seuils 24 / 48 / 72 h.)
-      setRecupInfo(recupSollicitations(sessions, exercises.map(e => e.name), Date.now()));
+      setRecupInfo(recupSollicitations(sessions, exercises.filter(e => !estActivation(e)).map(e => e.name), Date.now()));
 
       // Fatigue ressentie (calcul unique du moteur). Elle informe seulement : aucune baisse de charge ou de volume n'est proposee sur ce score seul.
       const fat = fatigueAffichage(load(KEYS.fatigue));
@@ -1643,16 +1663,17 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
       // Détecter PR
       const currentSet = exSets2[setIdx];
       let isPR = false;
-      if (window._isPremium && window._isPremium() && currentSet && currentSet.weight && currentSet.reps) {
+      if (window._isPremium && window._isPremium() && currentSet && currentSet.weight && currentSet.reps && !estActivation(ex)) {
+        const sessT = horsActivation(sessions); // records comptes sans les series d'activation
         const currentRM = parseFloat(currentSet.weight) * (1 + parseInt(currentSet.reps) / 30);
         // 1) Comparaison 1RM global (toutes séries confondues) — record absolu sur l exercice
-        const pastRM = sessions.flatMap(s => (s.exercises||[]).filter(e=>e.name===ex.name).flatMap(e=>(e.sets||[]).filter(st=>st.weight&&st.reps).map(st=>parseFloat(st.weight)*(1+parseInt(st.reps)/30))));
+        const pastRM = sessT.flatMap(s => (s.exercises||[]).filter(e=>e.name===ex.name).flatMap(e=>(e.sets||[]).filter(st=>st.weight&&st.reps).map(st=>parseFloat(st.weight)*(1+parseInt(st.reps)/30))));
         const currentSessionRM = exSets2.filter((s, si) => si !== setIdx && s.done && s.weight && s.reps).map(s => parseFloat(s.weight) * (1 + parseInt(s.reps) / 30));
         const allPastRM = [...pastRM, ...currentSessionRM];
         const isGlobalPR = allPastRM.length > 0 && currentRM > Math.max(...allPastRM);
 
         // 2) Comparaison par position de série (S1 vs S1, S2 vs S2, S3 vs S3...) — progression sur CETTE série précise
-        const pastAtSamePosition = sessions.flatMap(s => {
+        const pastAtSamePosition = sessT.flatMap(s => {
           const e = (s.exercises||[]).find(e=>e.name===ex.name);
           if (!e || !e.sets || !e.sets[setIdx]) return [];
           const st = e.sets[setIdx];
@@ -1660,14 +1681,14 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
         });
         const isPositionPR = pastAtSamePosition.length > 0 && currentRM > Math.max(...pastAtSamePosition);
         // 2b) Comparaison reps à cette position vs seance precedente uniquement
-        const lastSession = [...sessions].reverse().find(s => (s.exercises||[]).some(e=>e.name===ex.name));
+        const lastSession = [...sessT].reverse().find(s => (s.exercises||[]).some(e=>e.name===ex.name));
         const lastSet = lastSession && (lastSession.exercises.find(e=>e.name===ex.name)||{sets:[]}).sets[setIdx];
         const prevSessionSamePosiReps = lastSet && lastSet.reps ? parseInt(lastSet.reps) : 0;
         const moreRepsThanLastSession = prevSessionSamePosiReps > 0 && parseInt(currentSet.reps) > prevSessionSamePosiReps && lastSet && parseFloat(currentSet.weight) >= parseFloat(lastSet.weight);
 
         // 3) Même charge, plus de reps que le max historique à cette charge (toutes positions confondues)
         const prevMaxRepsAtWeight = Math.max(0,
-          ...sessions.flatMap(s=>(s.exercises||[]).filter(e=>e.name===ex.name).flatMap(e=>(e.sets||[]).filter(st=>st.weight&&st.reps&&Math.abs(parseFloat(st.weight)-parseFloat(currentSet.weight))<0.01).map(st=>parseInt(st.reps)))),
+          ...sessT.flatMap(s=>(s.exercises||[]).filter(e=>e.name===ex.name).flatMap(e=>(e.sets||[]).filter(st=>st.weight&&st.reps&&Math.abs(parseFloat(st.weight)-parseFloat(currentSet.weight))<0.01).map(st=>parseInt(st.reps)))),
           ...exSets2.filter((s,si)=>si!==setIdx&&s.done&&s.weight&&Math.abs(parseFloat(s.weight)-parseFloat(currentSet.weight))<0.01&&s.reps).map(s=>parseInt(s.reps))
         );
         const sameWeightMoreReps = prevMaxRepsAtWeight > 0 && parseInt(currentSet.reps) > prevMaxRepsAtWeight;
@@ -1685,7 +1706,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
       const stagSet = exSets2[setIdx];
       if (setIdx === exSets2.length - 1 && stagSet && stagSet.weight && stagSet.reps) {
         const validSets = updatedSets.filter(s => s.weight && s.reps);
-        if (window._isPremium && window._isPremium() && validSets.length > 0) checkStagnation(ex.name, validSets);
+        if (window._isPremium && window._isPremium() && validSets.length > 0 && !estActivation(ex)) checkStagnation(ex.name, validSets);
       }
     }
   }
@@ -1707,6 +1728,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
       note: ex.note || "",
       userNote: ex.userNote || "",
       rest: ex.rest || 90,
+      ...(estActivation(ex) ? { activation: true } : {}),
       sets: ex.sets
         .filter(s => s.weight && s.reps)
         .map(s => ({ weight: parseFloat(s.weight), reps: parseInt(s.reps), rir: parseRir(s.rir), rirSaisi: s.rirSaisi === true && parseRir(s.rir) !== null, ...(parseRir(s.rirCible) !== null ? { rirCible: parseRir(s.rirCible) } : {}), done: true }))
@@ -1742,10 +1764,11 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
     // Analyse stagnation post-séance
     const alerts = finV2 ? finV2.alerts : [];
     if (!finV2) validExs.forEach(ex => {
+      if (estActivation(ex)) return;
       // Pas d'analyse stagnation sur séries longues (30-50 reps)
       const rtMax3 = ex.repsTarget ? parseInt((ex.repsTarget.split("-")[1] || ex.repsTarget.split("-")[0])) : 12;
       if (rtMax3 > 15) return;
-      const hist = sessions.filter(s => s.exercises && s.exercises.some(e => e.name === ex.name))
+      const hist = horsActivation(sessions).filter(s => s.exercises && s.exercises.some(e => e.name === ex.name))
         .map(s => { const e2 = s.exercises.find(e => e.name === ex.name); return { date: s.date, sets: (e2 && e2.sets) || [] }; });
       const diag = analyzeEx([...hist, { date: today(), sets: ex.sets }]);
       if (diag && diag.type > 0) alerts.push({ ...diag, exName: ex.name });
@@ -1774,8 +1797,8 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
     // Exercices progressés / stagnes / régressés
     const progressed = [], stagnated = [], regressed = [];
     validExs.forEach(ex => {
-      if (finV2) return;
-      const prevSession = sessions.filter(s => s.exercises && s.exercises.some(e => e.name === ex.name)).slice(-1)[0];
+      if (finV2 || estActivation(ex)) return;
+      const prevSession = horsActivation(sessions).filter(s => s.exercises && s.exercises.some(e => e.name === ex.name)).slice(-1)[0];
       if (!prevSession) return;
       const prevEx = prevSession.exercises ? prevSession.exercises.find(e => e.name === ex.name) : null;
       if (!prevEx) return;
@@ -1790,9 +1813,10 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
     if (finV2) { progressed.push(...finV2.progressed); stagnated.push(...finV2.stagnated); regressed.push(...finV2.regressed); }
     const sessionPRs = finV2 ? finV2.sessionPRs : [];
     if (!finV2) validExs.forEach(ex => {
+      if (estActivation(ex)) return;
       ex.sets.forEach(s => {
         const rm = s.weight * (1 + s.reps / 30);
-        const allPast = sessions.flatMap(sess => (sess.exercises||[]).filter(e=>e.name===ex.name).flatMap(e=>(e.sets||[]).map(st=>parseFloat(st.weight||0)*(1+parseInt(st.reps||0)/30))));
+        const allPast = horsActivation(sessions).flatMap(sess => (sess.exercises||[]).filter(e=>e.name===ex.name).flatMap(e=>(e.sets||[]).map(st=>parseFloat(st.weight||0)*(1+parseInt(st.reps||0)/30))));
         if (allPast.length > 0 && rm > Math.max(...allPast) * 1.01) {
           if (!sessionPRs.includes(ex.name)) sessionPRs.push(ex.name);
         }
@@ -2215,6 +2239,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
                     {Math.floor((ex.rest || 90) / 60)}:{String((ex.rest || 90) % 60).padStart(2, "0")}
                   </div>
                   {warmupSets > 0 && <div style={{ background: "#0a1a0a", borderRadius: 5, padding: "2px 7px", fontSize: 9, color: "#4CAF50", fontFamily: "monospace", fontWeight: 700 }}>{warmupLabel} echauf.</div>}
+                  {estActivation(ex) && <div style={{ background: "#29B6F622", borderRadius: 5, padding: "2px 7px", fontSize: 9, color: "#29B6F6", fontFamily: "monospace", fontWeight: 900, border: "1px solid #29B6F644" }}>ACTIVATION</div>}
                 </div>
                 {ex.note && <div style={{ fontSize: 10, color: "#666", fontStyle: "italic", marginTop: 4, lineHeight: 1.5, padding: "4px 8px", background: "#0d0d0d", borderRadius: 5, borderLeft: "2px solid #333" }}>{ex.note}</div>}
                 <input value={ex.userNote || ""} onChange={e => setCurrentSets(prev => ({ ...prev, exercises: prev.exercises.map((e2, ei) => ei !== exIdx ? e2 : { ...e2, userNote: e.target.value }) }))}
@@ -2304,7 +2329,8 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
             )}
             {(() => {
               if (!window._isPremium || !window._isPremium()) return null;
-              const tip = getProgressionTip(ex.lastSets, sessions, ex.name, ex.repsTarget, ex.sets.length);
+              if (estActivation(ex)) return null; // activation : pas de conseil de progression
+              const tip = getProgressionTip(ex.lastSets, horsActivation(sessions), ex.name, ex.repsTarget, ex.sets.length);
               if (!tip) return null;
               return (
                 <div style={{ background: tip.color + "12", border: "1px solid " + tip.color + "44", borderRadius: 7, padding: "7px 10px", marginBottom: 8, display: "flex", gap: 8, alignItems: "center" }}>
@@ -2398,7 +2424,8 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
   );
 }
 
-function ProgressTab({ sessions }) {
+function ProgressTab({ sessions: sessionsBrutes }) {
+  const sessions = horsActivation(sessionsBrutes); // progression, records et graphiques sans les series d'activation
   const [selectedEx, setSelectedEx] = useState("");
   const [showPicker, setShowPicker] = useState(false);
   const [graphView, setGraphView] = useState("1rm");
@@ -2567,7 +2594,8 @@ function MiniCurve({ hist, color, valueKey }) {
   );
 }
 
-function CycleBilan({ sessions, onClose, onNewCycle }) {
+function CycleBilan({ sessions: sessionsBrutes, onClose, onNewCycle }) {
+  const sessions = horsActivation(sessionsBrutes); // progression du cycle sans les series d'activation
   const cycleData = load(KEYS.cycle) || { startDate: (sessions[0] && sessions[0].date) || today(), num: 1 };
   const cycleSessions = sessions.filter(s => s.date >= cycleData.startDate);
   const exNames = [...new Set(cycleSessions.flatMap(s => (s.exercises || []).map(e => e.name)))];
@@ -2687,7 +2715,8 @@ function CycleBilan({ sessions, onClose, onNewCycle }) {
 
 
 // --- BILAN MENSUEL ---
-function BilanMensuel({ sessions, onClose }) {
+function BilanMensuel({ sessions: sessionsBrutes, onClose }) {
+  const sessions = horsActivation(sessionsBrutes); // progression du mois sans les series d'activation
   const allMonths = [...new Set(sessions.map(s => s.date.slice(0, 7)))].sort().reverse();
   const [selectedMonth, setSelectedMonth] = React.useState(allMonths[0] || today().slice(0, 7));
   const monthSessions = sessions.filter(s => s.date.startsWith(selectedMonth));
@@ -3471,7 +3500,8 @@ function IronTraining() {
   }
 
   // EXPORT — télécharge toutes les données en JSON
-  function exportPDF(sessions, routines, type, supps) {
+  function exportPDF(sessionsExport, routines, type, supps) {
+  const sessions = sessionsExport;
   const today = new Date().toLocaleDateString("fr-FR");
   let html = "";
 
@@ -3494,7 +3524,7 @@ function IronTraining() {
       s.exercises.forEach(ex => {
         const validSets = (ex.sets||[]).filter(st=>st.weight&&st.reps);
         if (!validSets.length) return;
-        html += `<h3>${ex.name}</h3><table><tr><th>#</th><th>Poids</th><th>Reps</th><th>RIR</th></tr>`;
+        html += `<h3>${ex.name}${estActivation(ex) ? " (activation)" : ""}</h3><table><tr><th>#</th><th>Poids</th><th>Reps</th><th>RIR</th></tr>`;
         validSets.forEach((st,i) => { html += `<tr><td>S${i+1}</td><td>${st.weight}kg</td><td>${st.reps}</td><td>${parseRir(st.rir) !== null ? parseRir(st.rir) : "-"}</td></tr>`; });
         html += "</table>";
         if (ex.userNote) html += `<div class="meta">Note: ${ex.userNote}</div>`;
@@ -3502,7 +3532,8 @@ function IronTraining() {
     });
     html += "</body></html>";
   } else {
-    // Export bilan progression
+    // Export bilan progression (sans les series d'activation)
+    const sessions = horsActivation(sessionsExport);
     const currentExNames = new Set(routines.flatMap(r => (r.exercises || []).map(e => e.name)));
     const exNames = [...new Set(sessions.flatMap(s => (s.exercises||[]).map(e=>e.name)))]
       .filter(n => currentExNames.has(n))

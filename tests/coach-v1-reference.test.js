@@ -27,7 +27,7 @@ const V1_MUSCLE_MAP = { "Élévations latérales": "Épaules", "Développé mili
 const V1_MUSCLE_GROUPS = { "Épaules": ["Élévations latérales","Développé militaire"], "Pectoraux": ["Développé couché","Écarté"], "Triceps": ["Extension triceps","Dips"], "Deltoïde post.": ["Oiseau"], "Dos": ["Tractions","Tirage","Rowing","Pull-over"], "Biceps": ["Curl"], "Quadriceps": ["Hack squat","Leg extension","Leg press"], "Ischio-jambiers": ["Leg curl"], "Mollets": ["Mollets"], "Adducteurs": ["Adducteurs"] };
 const C = { Math, JSON, Object, Array, String, Number, parseInt, parseFloat, isNaN, PROGRAMME: REAL_PROGRAMME, console };
 vm.createContext(C);
-vm.runInContext([fnSrc('function coachEngine('), fnSrc('function e1RM('), fnSrc('function parseRir('), fnSrc('function analyzeEx('), fnSrc('function getProgressionTip('),
+vm.runInContext([fnSrc('function estActivation('), fnSrc('function horsActivation('), fnSrc('function coachEngine('), fnSrc('function e1RM('), fnSrc('function parseRir('), fnSrc('function analyzeEx('), fnSrc('function getProgressionTip('),
   'const PALIERS = ' + literal('const PALIERS = [', '[', ']') + ';', fnSrc('function getPalier('),
   'const DB = ' + literal('const DB = {', '{', '}') + '; const ALL_EXERCISES = Object.values(DB).flat();',
   'const MUSCLE_MAP = ' + JSON.stringify(V1_MUSCLE_MAP) + ';',
