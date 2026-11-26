@@ -11,7 +11,7 @@ function fnSrc(sig) { const i = SRC.indexOf(sig); if (i < 0) throw new Error('in
 function literal(start, open, close) { const i = SRC.indexOf(start); let d = 0;
   for (let p = SRC.indexOf(open, i); p < SRC.length; p++) { if (SRC[p] === open) d++; if (SRC[p] === close && --d === 0) return SRC.slice(SRC.indexOf(open, i), p + 1); } }
 
-const CODE = [fnSrc('function coachEngine('), fnSrc('function coachA('), fnSrc('function coachHistorique('), fnSrc('function coachConseilAffichage('), fnSrc('function coachDiagAffichage('), fnSrc('function coachEcartTexte('),
+const CODE = [fnSrc('function coachReferenceTexte('), fnSrc('function coachReferenceSeance('), fnSrc('function fmtDate('), fnSrc('function coachEngine('), fnSrc('function coachA('), fnSrc('function coachHistorique('), fnSrc('function coachConseilAffichage('), fnSrc('function coachDiagAffichage('), fnSrc('function coachEcartTexte('),
   fnSrc('function e1RM('), fnSrc('function parseRir('), fnSrc('function analyzeEx('), fnSrc('function getProgressionTip('),
   'const EXERCISE_NAME_FIXES = ' + literal('const EXERCISE_NAME_FIXES = {', '{', '}') + ';', fnSrc('function normalizeExName('),
   'this.api = { coachEngine, coachHistorique, coachConseilAffichage, coachDiagAffichage, e1RM, analyzeEx, getProgressionTip, normalizeExName };'].join('\n');
@@ -32,12 +32,19 @@ function genHist(r, n, lo, hi) { const out = []; let w = 20 + Math.round(r() * 8
   for (let i = 0; i < n; i++) { if (r() < 0.25) w = Math.max(5, w + (r() < 0.6 ? 2.5 : -2.5)); const nb = 2 + Math.floor(r() * 3);
     out.push({ date: day(i), sets: Array.from({ length: nb }, () => S(w, lo + Math.floor(r() * (hi - lo + 1)), Math.floor(r() * 5))) }); } return out; }
 
+// 0.12.0 : le conseil ne s'appuie que sur une reference de 28 jours maximum (horloge reelle).
+// Les historiques generes datent de janvier 2026 : on fige « aujourd'hui » au 15/01/2026 pendant ces tests.
+const DateReelle = Date;
+function aLaDate(iso, fn) { const fixe = new DateReelle(iso + 'T12:00:00').getTime();
+  class DateFigee extends DateReelle { constructor(...a) { if (a.length) super(...a); else super(fixe); } static now() { return fixe; } }
+  global.Date = DateFigee; try { return fn(); } finally { global.Date = DateReelle; } }
+const AUJ_TESTS = '2026-01-15';
 const tests = []; const t = (n, f) => tests.push([n, f]); let infos = []; const info = s => infos.push(s);
 
 t('Moteur charge : coachEngine() le trouve ; sans moteur : null (l\'appli garde le V1)', () => { assert.strictEqual(V2.coachEngine(), E); assert.strictEqual(V1.coachEngine(), null); });
 t('index.html n\'appelle que des fonctions de LECTURE du moteur (aucune ecriture possible)', () => {
   const calls = [...new Set([...SRC.matchAll(/\bCE(?:fin)?\.(\w+)/g)].map(m => m[1]))].sort();
-  const allowed = ['bilanExercice', 'syntheseExercice', 'blocComparable', 'analyseExercice', 'recordsExercice', 'trierSeances', 'comparer', 'conseilProgression', 'diagnostiquer', 'historiqueExercice', 'lireFourchette', 'mesuresSeance', 'normaliserSeances', 'normaliserSerie', 'analyser', 'scoreFatigue', 'FATIGUE_CRITERES', 'repondreFatigue', 'dernieresSollicitations', 'uniteEntree'];  // uniteEntree (0.11.0) : lecture de l'unite d'une seance (kg ou poids du corps)  // repondreFatigue : pure, renvoie une NOUVELLE fiche (l'ecriture reste dans BilanTab.update)
+  const allowed = ['bilanExercice', 'syntheseExercice', 'blocComparable', 'analyseExercice', 'recordsExercice', 'trierSeances', 'comparer', 'conseilProgression', 'diagnostiquer', 'historiqueExercice', 'lireFourchette', 'mesuresSeance', 'referenceConseil', 'normaliserSeances', 'normaliserSerie', 'analyser', 'scoreFatigue', 'FATIGUE_CRITERES', 'repondreFatigue', 'dernieresSollicitations', 'uniteEntree'];  // uniteEntree (0.11.0) : lecture de l'unite d'une seance (kg ou poids du corps)  // repondreFatigue : pure, renvoie une NOUVELLE fiche (l'ecriture reste dans BilanTab.update)
   calls.forEach(c => assert.ok(allowed.includes(c), 'appel non prevu : CE.' + c)); info('fonctions du moteur utilisees : ' + calls.join(', ')); });
 
 // ── Conseil de progression (encadre au-dessus des series) ──
@@ -156,7 +163,9 @@ if (EXP) t('Export reel : alerte de stagnation rejouee seance par seance (chaque
     if ((a && a.title) !== (b && b.title)) diffs.push(cur.date + ' ' + ex.name + ' : V1 ' + (a ? a.title : 'aucune') + ' / moteur ' + (b ? b.title + ' (' + b.msg + ')' : 'aucune')); }); });
   info(n + ' validations rejouees ; alertes V1 ' + alertsV1 + ', moteur ' + alertsV2 + ' ; ' + diffs.length + ' difference(s)' + (diffs.length ? ' :\n         - ' + diffs.join('\n         - ') : '')); });
 
+// Export reel : « aujourd'hui » = lendemain de la derniere seance de l'export (resultat independant du jour ou le test est lance).
+function lendemainExport() { const d = EXP.sessions.map(x => String(x.date).slice(0, 10)).sort().pop(); const x = new DateReelle(d + 'T12:00:00'); x.setDate(x.getDate() + 1); return x.toISOString().slice(0, 10); }
 (async () => { let fail = 0;
   console.log('Moteur v' + E.VERSION + ' branche sur : Seance en cours (conseil, badge de force, alerte de stagnation)');
-  for (const [n, f] of tests) { infos = []; try { await f(); console.log('OK   ' + n); } catch (e) { fail++; console.log('FAIL ' + n + '\n     -> ' + String(e.message).split('\n')[0].slice(0, 500)); } infos.forEach(s => console.log('       info : ' + s)); }
+  for (const [n, f] of tests) { infos = []; try { const jour = n.startsWith('Export reel') ? (EXP ? lendemainExport() : AUJ_TESTS) : AUJ_TESTS; await aLaDate(jour, f); console.log('OK   ' + n); } catch (e) { fail++; console.log('FAIL ' + n + '\n     -> ' + String(e.message).split('\n')[0].slice(0, 500)); } infos.forEach(s => console.log('       info : ' + s)); }
   console.log(`\n${tests.length - fail}/${tests.length} tests passes`); process.exit(fail ? 1 : 0); })();

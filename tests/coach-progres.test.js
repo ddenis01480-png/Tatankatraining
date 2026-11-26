@@ -11,7 +11,7 @@ function fnSrc(sig) { const i = SRC.indexOf(sig); if (i < 0) throw new Error('in
 function literal(start, open, close) { const i = SRC.indexOf(start); let d = 0;
   for (let p = SRC.indexOf(open, i); p < SRC.length; p++) { if (SRC[p] === open) d++; if (SRC[p] === close && --d === 0) return SRC.slice(SRC.indexOf(open, i), p + 1); } }
 
-const LIB = [fnSrc('function coachEngine('), fnSrc('function coachA('), fnSrc('function coachHistorique('), fnSrc('function coachDiagAffichage('), fnSrc('function coachEcartTexte('), fnSrc('function coachBilanTexte('),
+const LIB = [fnSrc('function coachReferenceTexte('), fnSrc('function coachReferenceSeance('), fnSrc('function coachEngine('), fnSrc('function coachA('), fnSrc('function coachHistorique('), fnSrc('function coachDiagAffichage('), fnSrc('function coachEcartTexte('), fnSrc('function coachBilanTexte('),
   fnSrc('function coachProgres('), fnSrc('function coachPlafondProgression('), fnSrc('function coachRaisonsTexte('), fnSrc('function coachIncompleteTexte('), 'const COACH_RAISONS = ' + literal('const COACH_RAISONS = {', '{', '}') + ';', 'const COACH_UNITES = ' + literal('const COACH_UNITES = {', '{', '}') + ';',  'const COACH_TENDANCES = ' + literal('const COACH_TENDANCES = {', '{', '}') + ';',
   fnSrc('function coachSens('), fnSrc('function coachPct('), fnSrc('function coachLectureDerniere('), fnSrc('function coachLecturePeriode('),
   fnSrc('function e1RM('), fnSrc('function fmtDate('), fnSrc('function parseRir('), fnSrc('function analyzeEx('),
@@ -147,9 +147,11 @@ t('Serie aberrante (cas reel 6,8 kg x 112 entre deux x 12) : ignoree pour force,
 t('Fourchettes differentes (cas reel Leg press 8-12 -> 15-20) : plus de fausse regression, comparaison signalee non fiable', () => {
   const s = hist(['160x11,160x12,160x12']).concat(hist(['120x15,120x15,120x15'], '15-20').map(x => Object.assign(x, { id: 9, date: day(3) })));
   const b = progres(s, 'Exo test').synthese.derniere;
-  assert.strictEqual(b.verdict, 'regression', 'la regle de comparaison elle-meme ne change pas');
-  assert.deepStrictEqual(plain(b.comparaison), { fiable: false, raisons: [{ code: 'fourchette', avant: '8-12', apres: '15-20' }] });
-  assert.deepStrictEqual(lect(V2.coachLectureDerniere(b))[0], 'PERFORMANCE: Comparaison non fiable');
+  // 0.12.0 (decision David 26/11) : plages strictement identiques seulement -> premiere seance en 15-20, jamais comparee au 8-12.
+  assert.strictEqual(b.verdict, 'premiere', 'premiere seance dans la nouvelle plage');
+  assert.strictEqual(b.premiereDansPlage, true);
+  assert.deepStrictEqual(plain(b.comparaison), { fiable: false, raisons: [{ code: 'fourchette', avant: '8-12', apres: '15-20', premiereDansPlage: true, dateAutrePlage: day(0) }] });
+  assert.deepStrictEqual(lect(V2.coachLectureDerniere(b))[0], 'PERFORMANCE: Première séance dans cette plage');
   const diag = progres(hist(['60x10,60x10', '60x11,60x10']).concat(hist(['50x14,50x14', '50x14,50x15'], '10-15').map((x, k) => Object.assign(x, { id: 9 + k, date: day(4 + k) }))), 'Exo test');
   assert.strictEqual(diag.diag.title, 'PROGRESSION OPTIMALE', 'diagnostic calcule seulement sur les seances en 10-15'); });
 

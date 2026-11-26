@@ -45,6 +45,9 @@ function deepFreeze(o) { if (o && typeof o === 'object' && !Object.isFrozen(o)) 
 function rng(seed) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
 const day = i => new Date(Date.UTC(2026, 0, 1 + i * 2)).toISOString().slice(0, 10);
 // historique moteur a partir de seances brutes
+// 0.12.0 : le conseil (regle 1) depend de la date du jour (reference de 28 jours au plus). Les cas historiques ci-dessous sont
+// evalues le jour de leur derniere seance, comme le ferait l'appli ce jour-la.
+const conseilJ = (h, o) => E.conseilProgression(h, Object.assign({ aujourdhui: (h || []).reduce((m, x) => (x && x.date && x.date > m ? x.date : m), '2000-01-01') }, o || {}));
 const histOf = (sessions, name) => E.historiqueExercice(E.normaliserSeances(sessions), name);
 
 const tests = []; const t = (group, n, f) => tests.push([group, n, f]);
@@ -173,11 +176,11 @@ t('D', 'Conseil de double progression : meme conseil que getProgressionTip du V1
     const h = genHist(r, multi ? 1 + Math.floor(r() * 5) : 1, lo, hi); if (r() < 0.2) h[h.length - 1].sets[0].rir = undefined;
     const sessions = h.map((x, k) => sess(k + 1, x.date, [ex('Exo test', x.sets, rt)]));
     const a = v1.getProgressionTip(h[h.length - 1].sets.filter(st => st.weight && st.reps), sessions, 'Exo test', rt || undefined);
-    const c = E.conseilProgression(histOf(sessions, 'Exo test'), { seriesPrevues: 3, fourchette: rt });
+    const c = conseilJ(histOf(sessions, 'Exo test'), { seriesPrevues: 3, fourchette: rt });
     assert.strictEqual(texteV1(c), a ? a.msg : null, 'cas ' + i + ' (' + rt + ') : ' + JSON.stringify(h)); n++; if (c) dist[c.action] = (dist[c.action] || 0) + 1; }
   assert.ok(Object.keys(dist).length >= 5, JSON.stringify(dist)); info(n + ' cas — ' + JSON.stringify(dist)); });
 t('D', 'Exemples V1 de reference : 8-8-8 -> S3 vise 9 ; 8-8-9 -> S2 ; 12-12-12 -> +2,5 kg ; 15 kg -> +1,25 kg ; serie manquante d\'abord', () => {
-  const c = sets => E.conseilProgression([{ date: '2026-01-01', series: sets.map(E.normaliserSerie) }], { fourchette: '8-12' });
+  const c = sets => conseilJ([{ date: '2026-01-01', series: sets.map(E.normaliserSerie) }], { fourchette: '8-12' });
   assert.deepStrictEqual([c([S(50, 8), S(50, 8), S(50, 8)]).action, c([S(50, 8), S(50, 8), S(50, 8)]).serie], ['ajouter_rep', 3]);
   assert.strictEqual(c([S(50, 8), S(50, 8), S(50, 9)]).serie, 2);
   assert.deepStrictEqual([c([S(50, 12), S(50, 12), S(50, 12)]).nouvelleCharge, c([S(15, 12), S(15, 12), S(15, 12)]).nouvelleCharge], [52.5, 16.25]);
@@ -194,8 +197,8 @@ t('E', 'Une seule definition de la progression : charge en hausse et reps en bai
   assert.strictEqual(E.diagnostiquer([{ date: day(0), series: [S(60, 10), S(60, 10), S(60, 10)].map(E.normaliserSerie) }, { date: day(1), series: [S(70, 6), S(70, 6), S(70, 6)].map(E.normaliserSerie) }]).code, 'progression'); });
 t('E', 'Series prevues lues dans la routine de l\'utilisateur (plus dans le programme code en dur)', () => {
   const h = [{ date: day(0), series: [S(30, 10), S(30, 10)].map(E.normaliserSerie) }];
-  assert.strictEqual(E.conseilProgression(h, { seriesPrevues: 2, fourchette: '8-12' }).serieNonFaite, false);
-  assert.strictEqual(E.conseilProgression(h, { seriesPrevues: 3, fourchette: '8-12' }).serieNonFaite, true);
+  assert.strictEqual(conseilJ(h, { seriesPrevues: 2, fourchette: '8-12' }).serieNonFaite, false);
+  assert.strictEqual(conseilJ(h, { seriesPrevues: 3, fourchette: '8-12' }).serieNonFaite, true);
   const r = E.analyser({ sessions: [sess(1, day(0), [ex('Développé couché haltères', [S(30, 10), S(30, 10)])])], routines: [{ id: 1, exercises: [{ name: 'Développé couché haltères', sets: 2 }] }] }, { maintenant: day(1) });
   assert.strictEqual(r.exercices['Développé couché haltères'].conseil.serieNonFaite, false, 'routine a 2 series : pas de « serie non faite »'); });
 t('E', 'Seuil unique de force (12 reps) : series longues (15-20, 30-50) suivies par le travail total, plus par la force estimee', () => {
@@ -219,7 +222,7 @@ t('E', 'Mode force (8-12) : une serie a 13 reps compte avec sa vraie force (comm
   const h = [{ date: day(0), series: [S(30, 12), S(30, 12)].map(E.normaliserSerie) }, { date: day(1), series: [S(30, 13), S(30, 12)].map(E.normaliserSerie) }];
   const d = E.diagnostiquer(h, E.lireFourchette('8-12')); assert.deepStrictEqual([d.code, d.mesure.derniere, d.derniere.forceFiable], ['progression', E.e1RM(30, 13), false]); });
 t('E', 'Conseil : les series de reference peuvent venir de l\'ecran (comme le V1) ; RIR cible lu a part du RIR reel', () => {
-  const c = E.conseilProgression([{ date: day(0), series: [S(50, 8)].map(E.normaliserSerie) }], { fourchette: '8-12', dernieresSeries: [S(50, 10), S(50, 10), S(50, 9)] });
+  const c = conseilJ([{ date: day(0), series: [S(50, 8)].map(E.normaliserSerie) }], { fourchette: '8-12', dernieresSeries: [S(50, 10), S(50, 10), S(50, 9)] });
   assert.deepStrictEqual([c.action, c.serie], ['ajouter_rep', 3]);
   const st = E.normaliserSerie({ weight: 50, reps: 8, rir: '', rirCible: 2, rirSaisi: false }); assert.deepStrictEqual([st.rir, st.rirCible, st.statutRir], [null, 2, 'inconnu']); });
 t('E', 'Tendance de cycle sur TOUTES les seances (le V1 comparait seulement la premiere et la derniere)', () => {
@@ -228,11 +231,11 @@ t('E', 'Tendance de cycle sur TOUTES les seances (le V1 comparait seulement la p
   assert.strictEqual(E.tendance(mk([50, 50, 50, 50])).sens, 'stable'); assert.strictEqual(E.tendance(mk([50, 60, 55, 50, 45, 52.5])).sens, 'baisse', 'premiere < derniere mais tendance en baisse');
   assert.strictEqual(E.tendance(mk([50])), null); });
 t('E', 'RIR : le conseil indique si le RIR utilise est fiable (saisi) ou non verifie (anciennes series) — rien n\'est reconstitue', () => {
-  const old = E.conseilProgression([{ date: day(0), series: [S(50, 8, 3), S(50, 8, 2), S(50, 8, 1)].map(E.normaliserSerie) }], { fourchette: '8-12' });
+  const old = conseilJ([{ date: day(0), series: [S(50, 8, 3), S(50, 8, 2), S(50, 8, 1)].map(E.normaliserSerie) }], { fourchette: '8-12' });
   assert.deepStrictEqual([old.rir.moyen, old.rir.fiable, old.rir.statuts.non_verifie], [2, false, 3]);
-  const neuf = E.conseilProgression([{ date: day(0), series: [S(50, 8, 0, { rirSaisi: true }), S(50, 8, 1, { rirSaisi: true }), S(50, 8, 0, { rirSaisi: true })].map(E.normaliserSerie) }], { fourchette: '8-12' });
+  const neuf = conseilJ([{ date: day(0), series: [S(50, 8, 0, { rirSaisi: true }), S(50, 8, 1, { rirSaisi: true }), S(50, 8, 0, { rirSaisi: true })].map(E.normaliserSerie) }], { fourchette: '8-12' });
   assert.deepStrictEqual([neuf.rir.moyen, neuf.rir.note, neuf.rir.fiable], [0, 'prudence', true]);
-  const mix = E.conseilProgression([{ date: day(0), series: [S(50, 8, 2, { rirSaisi: true }), S(50, 8, 2, { rirSaisi: false })].map(E.normaliserSerie) }], { fourchette: '8-12' });
+  const mix = conseilJ([{ date: day(0), series: [S(50, 8, 2, { rirSaisi: true }), S(50, 8, 2, { rirSaisi: false })].map(E.normaliserSerie) }], { fourchette: '8-12' });
   assert.strictEqual(mix.rir.fiable, false, 'un RIR non choisi suffit a rendre la moyenne non fiable'); });
 
 t('E', 'Fin de seance : bilanExercice (meme definition que comparer) et recordsExercice (nature du record) ; premiere seance sans comparaison', () => {
@@ -287,8 +290,8 @@ t('G', 'Donnees abimees : seance sans exercices, exercice null, series vides, re
 t('G', 'Une seule seance ou series toutes invalides : pas de diagnostic, pas de conseil invente', () => {
   assert.strictEqual(E.diagnostiquer([{ date: day(0), series: [S(50, 8)].map(E.normaliserSerie) }]), null);
   assert.strictEqual(E.diagnostiquer([{ date: day(0), series: [S(0, 8)].map(E.normaliserSerie) }, { date: day(1), series: [S(50, '')].map(E.normaliserSerie) }]), null);
-  assert.strictEqual(E.conseilProgression([{ date: day(0), series: [S('', '')].map(E.normaliserSerie) }], { fourchette: '8-12' }), null);
-  assert.strictEqual(E.conseilProgression([], {}), null); assert.strictEqual(E.conseilProgression([{ date: day(0), series: [S(50, 8)].map(E.normaliserSerie) }], { fourchette: '45-60s' }), null); });
+  assert.strictEqual(conseilJ([{ date: day(0), series: [S('', '')].map(E.normaliserSerie) }], { fourchette: '8-12' }), null);
+  assert.strictEqual(conseilJ([], {}), null); assert.strictEqual(conseilJ([{ date: day(0), series: [S(50, 8)].map(E.normaliserSerie) }], { fourchette: '45-60s' }), null); });
 t('G', 'RIR 0 : serie a l\'echec reconnue comme serie dure, et note « prudence » ; RIR 10 lu, RIR 11 inconnu', () => {
   const m = E.mesuresSeance([S(50, 8, 0), S(50, 8, 10), S(50, 8, 11)].map(E.normaliserSerie)); assert.deepStrictEqual([m.seriesDures, m.rir.non_verifie, m.rir.inconnu], [1, 2, 1]); });
 t('G', 'Fourchette illisible signalee dans le constat des donnees, sans diagnostic', () => {

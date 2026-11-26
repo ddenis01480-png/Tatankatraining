@@ -12,7 +12,7 @@ function fnSrc(sig) { const i = SRC.indexOf(sig); if (i < 0) throw new Error('in
 function literal(start, open, close) { const i = SRC.indexOf(start); let d = 0;
   for (let p = SRC.indexOf(open, i); p < SRC.length; p++) { if (SRC[p] === open) d++; if (SRC[p] === close && --d === 0) return SRC.slice(SRC.indexOf(open, i), p + 1); } }
 
-const LIB = [fnSrc('function coachEngine('), fnSrc('function coachA('), fnSrc('function coachHistorique('), fnSrc('function coachConseilAffichage('), fnSrc('function coachDiagAffichage('), fnSrc('function coachEcartTexte('),
+const LIB = [fnSrc('function coachReferenceTexte('), fnSrc('function coachReferenceSeance('), fnSrc('function coachEngine('), fnSrc('function coachA('), fnSrc('function coachHistorique('), fnSrc('function coachConseilAffichage('), fnSrc('function coachDiagAffichage('), fnSrc('function coachEcartTexte('),
   fnSrc('function coachFinSeance('), fnSrc('function coachBilanTexte('), fnSrc('function coachRecordTexte('), fnSrc('function coachRaisonsTexte('), fnSrc('function coachIncompleteTexte('), 'const COACH_RAISONS = ' + literal('const COACH_RAISONS = {', '{', '}') + ';', 'const COACH_UNITES = ' + literal('const COACH_UNITES = {', '{', '}') + ';', 
   fnSrc('function coachProgres('), fnSrc('function coachPlafondProgression('),
   fnSrc('function e1RM('), fnSrc('function fmtDate('), fnSrc('function parseRir('), fnSrc('function analyzeEx('),
@@ -59,10 +59,10 @@ t('Regression reelle (3 seances en baisse a charge egale) : « en baisse » et a
   assert.deepStrictEqual([r.fin.performance, r.fin.alerte], ['regression', 'REGRESSION PERSISTANTE']); });
 t('Changement de fourchette (cas Leg press 8-12 -> 15-20, Leg curl 8-12 -> 10-15) : « non comparable » avec la raison, aucun diagnostic, dans les deux ecrans', () => {
   let r = memes(deuxEcrans(build([['160x11,160x12,160x12'], ['120x15,120x15,120x15', '15-20']]), 'Exo'));
-  assert.deepStrictEqual([r.fin.performance, r.fin.detail, r.fin.alerte], ['non_comparable', 'Fourchette changée (8-12 → 15-20)', null], 'le V1 et le moteur 0.5 affichaient ici « en baisse »');
+  assert.deepStrictEqual([r.fin.performance, r.fin.detail, r.fin.alerte], ['non_comparable', 'Première séance en 15-20 (dernière séance de cet exercice en 8-12, le 01/01) : plages différentes, jamais comparées', null], 'le V1 et le moteur 0.5 affichaient ici « en baisse » ; 0.12.0 : plages differentes jamais comparees');
   r = memes(deuxEcrans(build([['32x10,32x10'], ['32x10,32x10'], ['25x12,25x12,25x11', '10-15']]), 'Exo'));
   assert.deepStrictEqual([r.fin.performance, r.progres.statut, r.progres.carte], ['non_comparable', 'non_comparable', "PAS DE DIAGNOSTIC POUR L'INSTANT"]);
-  assert.strictEqual(r.progres.raison, 'Fourchette changée (8-12 → 10-15). Le diagnostic reprendra après 2 séances comparables.'); });
+  assert.strictEqual(r.progres.raison, 'Première séance en 10-15 (dernière séance de cet exercice en 8-12, le 03/01) : plages différentes, jamais comparées. Le diagnostic reprendra après 2 séances comparables.'); });
 t('Rupture de charge (cas Hack squat 160 -> 120 kg, memes reps) : « non comparable » avec la raison, aucune alerte, dans les deux ecrans', () => {
   const r = memes(deuxEcrans(build([['160x10,160x10,160x10', '10-15'], ['160x10,160x10,160x10', '10-15'], ['160x10,160x10,160x11', '10-15'], ['120x10,120x10,120x11', '10-15']]), 'Exo'));
   assert.deepStrictEqual([r.fin.performance, r.fin.alerte, r.progres.statut], ['non_comparable', null, 'non_comparable']);
@@ -86,7 +86,10 @@ t('Historique insuffisant : premiere seance -> aucun bilan ni diagnostic dans le
 const CARTE_PERF = { 'CHARGE MAINTENUE': ['stable'], 'PERFORMANCE EN BAISSE': ['regression'], 'LEGERE PROGRESSION': ['progression'], 'PROGRESSION OPTIMALE': ['progression'],
   'PROGRESSION — HAUT DE FOURCHETTE ATTEINT': ['progression'], 'PROGRESSION — HAUT DE FOURCHETTE PRESQUE ATTEINT': ['progression'], 'PROGRESSION TROP RAPIDE': ['progression'],
   'REGRESSION PERSISTANTE': ['regression'], 'STAGNATION — PLAFOND': ['stable', 'regression'], "PAS DE DIAGNOSTIC POUR L'INSTANT": ['non_comparable'], 'SÉANCE INCOMPLÈTE': ['seance_incomplete'] };
-const carteCoherente = r => !r.progres.carte || (CARTE_PERF[r.progres.carte] || []).includes(r.progres.performance);
+// 0.12.0 : apres une interruption de plus de 28 jours, le bilan compare quand meme a la derniere seance (information datee),
+// mais aucune alerte n'est tiree d'avant l'interruption : la carte « pas de diagnostic » accompagne alors n'importe quelle performance.
+const carteCoherente = r => !r.progres.carte || (CARTE_PERF[r.progres.carte] || []).includes(r.progres.performance)
+  || (r.progres.carte === "PAS DE DIAGNOSTIC POUR L'INSTANT" && /^Interruption de \d+ jours/.test(r.progres.raison || ''));
 t('Carte « CHARGE MAINTENUE » seulement si la performance est vraiment stable ; en baisse -> « PERFORMANCE EN BAISSE » ; legere hausse -> « LEGERE PROGRESSION »', () => {
   let r = memes(deuxEcrans(build([['60x10,60x10'], ['60x10,60x10']]), 'Exo'));
   assert.deepStrictEqual([r.progres.performance, r.progres.carte, r.progres.raison], ['stable', 'CHARGE MAINTENUE', 'Meme performance que la seance precedente.']);
@@ -123,7 +126,7 @@ t('Ecran Fin de seance reel (saveSession) : la rubrique « ≠ NON COMPARABLE »
   const out = {}; const env = { currentSets: { routineId: 1, routineName: 'R', exercises: [{ name: 'Exo', repsTarget: '15-20', sets: [1, 2, 3].map(() => ({ weight: '120', reps: '15', rir: '', done: true })) }] },
     sessions, today: () => day(1), KEYS: { sessions: 'k' }, setSessions: v => { out.saved = v; }, save: () => {}, load: () => null, autoBackup: () => {}, setStagAlert: a => { out.alert = a; }, setPostSeanceModal: m => { out.modal = m; }, alert: () => {} };
   const before = JSON.stringify(sessions); ctx.makeSave(env)(); const m = plain(out.modal);
-  assert.deepStrictEqual([m.nonComparables, m.details.Exo, m.regressed, m.progressed], [['Exo'], 'Fourchette changée (8-12 → 15-20)', [], []]);
+  assert.deepStrictEqual([m.nonComparables, m.details.Exo, m.regressed, m.progressed], [['Exo'], 'Première séance en 15-20 (dernière séance de cet exercice en 8-12, le 01/01) : plages différentes, jamais comparées', [], []]);
   assert.strictEqual(JSON.stringify(sessions), before); assert.strictEqual(out.saved.length, 2);
   assert.ok(SRC.includes('≠ NON COMPARABLE ({postSeanceModal.nonComparables.length})'), 'rubrique affichee dans la fenetre de fin de seance'); });
 t('Une seule regle : les deux ecrans passent par CE.analyseExercice (pas de diagnostic calcule a part)', () => {

@@ -5,6 +5,9 @@
 process.env.TZ = 'Europe/Paris';
 const fs = require('fs'), vm = require('vm'), assert = require('assert'), crypto = require('crypto');
 const E = require('../coach-engine.js');
+// 0.12.0 : le conseil (regle 1) depend de la date du jour (reference de 28 jours au plus). Les cas historiques ci-dessous sont
+// evalues le jour de leur derniere seance, comme le ferait l'appli ce jour-la.
+const conseilJ = (h, o) => E.conseilProgression(h, Object.assign({ aujourdhui: (h || []).reduce((m, x) => (x && x.date && x.date > m ? x.date : m), '2000-01-01') }, o || {}));
 const EXPORT_FILE = process.env.EXPORT_FILE || null;
 const plain = x => JSON.parse(JSON.stringify(x));
 const deepFreeze = o => { if (o && typeof o === 'object' && !Object.isFrozen(o)) { Object.freeze(o); Object.values(o).forEach(deepFreeze); } return o; };
@@ -58,7 +61,7 @@ t('Mollets debout machine : « 1 » = charge conventionnelle au poids du corps (
   assert.strictEqual(E.recordsExercice(h, sets('1x15'), f, { exercice: M }).record, false, '15 reps = pas de record (deja fait)');
   const rk = E.recordsExercice(h, sets('21x12'), f, { exercice: M }); assert.deepStrictEqual([rk.record, rk.chargeMax.avant], [true, 20], 'kg : compares aux seuls kg (pas au 1)');
   // Conseil : jamais « 1kg + 1,25 = 2,25kg ».
-  const c = E.conseilProgression(h, { fourchette: '10-15', exercice: M }); assert.deepStrictEqual([c.action, c.chargeConventionnelle, c.nouvelleCharge], ['augmenter_charge', true, null]);
+  const c = conseilJ(h, { fourchette: '10-15', exercice: M }); assert.deepStrictEqual([c.action, c.chargeConventionnelle, c.nouvelleCharge], ['augmenter_charge', true, null]);
   // Volume : les series faites comptent.
   const v = E.volumeMuscles(N(raw), { fin: '2026-05-10' }); assert.strictEqual(v.muscles.Mollets.direct.series, 6);
   // Performance du muscle : plus de « charge non fiable » ; la comparaison kg -> poids du corps est non comparable.
@@ -289,8 +292,9 @@ if (EXPORT_FILE) t('18. Tes donnees : rejeu jour par jour (01/04 -> 21/11) sans 
   assert.deepStrictEqual([T('Mollets'), p.Mollets.compte.fiables, p.Mollets.compte.progression, p.Mollets.compte.stable, p.Mollets.compte.regression], [['ok', 'hausse', 'moyenne'], 10, 8, 2, 0]);
   const hm = E.historiqueExercice(sn, 'Mollets debout machine');
   assert.deepStrictEqual([hm.length, hm.filter(x => E.uniteEntree(x) === 'conventionnelle').length, hm.reduce((n, x) => n + x.series.filter(s => s.suspecte === 'charge_suspecte').length, 0)], [57, 52, 0]);
-  const am = E.analyseExercice(hm.slice(0, hm.findIndex(x => x.date === '2026-05-06') + 1)).bilan.comparaison.raisons.map(r => r.code);
-  assert.deepStrictEqual(am, ['fourchette', 'unite_charge'], '06/05 : 1re seance au poids du corps apres 10 kg -> non comparable');
+  // 0.12.0 : le 06/05 est aussi la 1re seance en 20-30 (avant : 15-20) -> premiere dans cette plage, jamais comparee aux kg d'avant.
+  const a6 = E.analyseExercice(hm.slice(0, hm.findIndex(x => x.date === '2026-05-06') + 1)), am = a6.bilan.comparaison.raisons.map(r => r.code);
+  assert.deepStrictEqual([a6.performance, am, a6.bilan.premiereDansPlage], ['non_comparable', ['fourchette'], true], '06/05 : 1re seance au poids du corps (et en 20-30) apres 10 kg -> non comparable');
   assert.deepStrictEqual([p['Trapèzes'].statut, p.Fessiers.statut, p.Abdominaux.statut, p.Lombaires.statut], ['secondaire_seulement', 'secondaire_seulement', 'aucune_donnee', 'aucune_donnee']);
   const v = E.volumeMuscles(sn, { fin: '2026-11-21' });
   assert.deepStrictEqual([v.muscles.Pectoraux.direct.series, v.muscles.Mollets.direct.series, v.nonClasses.length], [42, 30, 0], 'Mollets : series faites comptees');

@@ -804,10 +804,11 @@ function analyzeEx(history) {
 // 8-8-8 → 8-8-9 → 8-9-9 → 9-9-9 → augmenter poids
 // Gère aussi les séries de 100 et les plages variables (10-15)
 function getProgressionTip(lastSets, sessions, exName, repsTarget, seriesPrevues) {
-  if (!lastSets || lastSets.length === 0) return null;
-  // Coach V2 : conseil calcule par le moteur (series prevues = celles de la seance en cours, plus le programme code en dur).
+  // Coach V2 (moteur 0.12.0, regle 1) : le moteur choisit lui-meme la reference = derniere seance du meme exercice dans la MEME
+  // plage, de 28 jours au plus ; sinon, aucun chiffre (« Premiere seance dans cette plage » / « Reference trop ancienne »).
   const CE = coachEngine();
-  if (CE) return coachConseilAffichage(CE.conseilProgression(coachHistorique(CE, sessions, exName), { fourchette: repsTarget || "", dernieresSeries: lastSets, seriesPrevues: seriesPrevues, exercice: exName }));
+  if (CE) return coachConseilAffichage(CE.conseilProgression(coachHistorique(CE, sessions, exName), { fourchette: repsTarget || "", seriesPrevues: seriesPrevues, exercice: exName }));
+  if (!lastSets || lastSets.length === 0) return null;
   const validLast = lastSets.filter(s => s.weight && s.reps);
   if (validLast.length === 0) return null;
   // RIR moyen — affine le conseil
@@ -980,6 +981,26 @@ function coachHistorique(CE, sessions, exName, seanceEnCours) {
   const list = seanceEnCours ? (sessions || []).concat([seanceEnCours]) : (sessions || []);
   return CE.historiqueExercice(CE.normaliserSeances(list, { normaliserNom: typeof normalizeExName === "function" ? normalizeExName : undefined }), exName);
 }
+// REGLE 1 (moteur 0.12.0) : series de reference pour le pre-remplissage des charges et l'encart « derniere seance » :
+// derniere seance du MEME exercice dans la MEME plage, de 28 jours au plus. Sinon : aucune serie (champs vides).
+// Moteur absent : comportement V1 (derniere seance de l'exercice).
+function coachReferenceSeance(sessions, exName, repsTarget) {
+  const CE = coachEngine();
+  if (!CE || typeof CE.referenceConseil !== "function") {
+    const s = [...(sessions || [])].reverse().find(x => x.exercises && x.exercises.some(e => e.name === exName));
+    const e = s ? s.exercises.find(x => x.name === exName) : null;
+    return { statut: "ok", sets: ((e && e.sets) || []).filter(x => x.weight && x.reps), date: s ? s.date : null, ageJours: null };
+  }
+  const rc = CE.referenceConseil(coachHistorique(CE, sessions, exName), repsTarget || "");
+  const sets = rc.statut === "ok" ? rc.reference.series.filter(st => st.valide).map(st => ({ weight: st.charge, reps: st.reps, rir: st.rir })) : [];
+  return { statut: rc.statut, sets, date: rc.date, ageJours: rc.ageJours, plage: rc.fourchette.texte };
+}
+// Bilan de fin de seance (regle 2) : date et anciennete de la seance comparee ; au-dela de 28 jours, information seulement.
+function coachReferenceTexte(b) {
+  const r = b && b.reference; if (!r || !r.date) return "";
+  return "comparé au " + fmtDate(r.date) + (r.ageJours !== null && r.ageJours !== undefined ? " (il y a " + r.ageJours + " j)" : "")
+    + (r.ancienne ? " · comparaison ancienne : information seulement, pas un conseil pour la prochaine séance" : "");
+}
 // Charge en clair : « a 22.5kg », ou « au poids du corps » pour une charge conventionnelle (ex. Mollets debout machine : 1 = poids du corps).
 function coachA(kg, unite) { return unite === "conventionnelle" || unite === "poids_du_corps" || unite === true ? "au poids du corps" : "à " + kg + "kg"; }
 // Affichage d'un conseil du moteur : memes textes, couleurs et icones que le V1.
@@ -995,6 +1016,9 @@ function coachConseilAffichage(c) {
     case "ajouter_rep": return { color: c.serieNonFaite ? "#FF8C00" : "#4FC3F7", icon: c.serieNonFaite ? "!" : ">",
       msg: "S" + c.serie + " : vise " + c.reps + " rep · " + (c.chargeConventionnelle ? "poids du corps" : c.charge + "kg") + (c.serieNonFaite ? " · série non faite la dernière fois" : "") + (c.ensuiteCharge ? " · Puis +poids" : "") + note };
     case "maintenir": return { color: "#888", icon: "=", msg: "Maintiens " + (c.chargeConventionnelle ? "le poids du corps" : c.charge + "kg") + " · Vise " + c.repsMin + " reps minimum sur toutes les séries" };
+    case "aucune_reference": return c.raison === "reference_trop_ancienne"
+      ? { color: "#888", icon: "i", msg: "Référence trop ancienne : dernière séance en " + c.fourchette.texte + " le " + fmtDate(c.date) + " (il y a " + c.ageJours + " j). Pas de conseil chiffré ni de charge pré-remplie." }
+      : { color: "#888", icon: "i", msg: "Première séance dans cette plage (" + c.fourchette.texte + ") : pas de conseil chiffré ni de charge pré-remplie." };
   }
   return null;
 }
@@ -1044,7 +1068,7 @@ function coachEcartTexte(d) {
 // Seance en cours (diagnostic du moteur + definition unique de la progression). Lecture seule : rien n'est enregistre ici.
 // `sessions` = seances enregistrees AVANT celle du jour ; `validExs` = exercices du jour (series deja converties pour l'enregistrement).
 function coachFinSeance(CE, sessions, validExs, todayStr, nowId) {
-  const res = { alerts: [], progressed: [], stagnated: [], regressed: [], nonComparables: [], incompletes: [], sessionPRs: [], details: {}, prDetails: {} }, vus = {};
+  const res = { alerts: [], progressed: [], stagnated: [], regressed: [], nonComparables: [], incompletes: [], sessionPRs: [], details: {}, prDetails: {}, references: {} }, vus = {};
   const jour = { id: nowId, date: todayStr, exercises: validExs };
   validExs.forEach(ex => {
     if (vus[ex.name]) return; vus[ex.name] = true; // exercice en double dans la seance : premiere occurrence, comme l'historique
@@ -1055,6 +1079,7 @@ function coachFinSeance(CE, sessions, validExs, todayStr, nowId) {
     const a = CE.analyseExercice(coachHistorique(CE, sessions, ex.name, jour), { fourchette: f });
     if (a.alerte && avant.length) res.alerts.push({ ...coachDiagAffichage(a.alerte), exName: ex.name });
     const b = a.bilan;
+    if (b && b.reference && (a.performance === "progression" || a.performance === "regression" || a.performance === "stable")) res.references[ex.name] = coachReferenceTexte(b);
     if (a.performance === "progression") { res.progressed.push(ex.name); res.details[ex.name] = coachBilanTexte(b) + (a.diagnostic && a.diagnostic.enProgression ? " · haut de fourchette : " + (b.jour && b.jour.unite === "conventionnelle" ? "ajouter une charge possible" : "augmenter la charge possible") : ""); }
     else if (a.performance === "regression") { res.regressed.push(ex.name); res.details[ex.name] = coachBilanTexte(b); }
     else if (a.performance === "stable") res.stagnated.push(ex.name);
@@ -1082,6 +1107,7 @@ function coachRecordTexte(r) {
   if (r.chargeMax) parts.push("charge max " + r.chargeMax.charge + "kg");
   if (r.reps) parts.push(r.reps.reps + " reps à " + r.reps.charge + "kg");
   parts.push("force " + (r.force.fiable ? "" : "≈") + r.force.valeur + "kg");
+  if (r.plage && r.autresPlages) parts.push("record en " + r.plage); // seulement si l'exercice a aussi ete fait dans d'autres plages
   return parts.join(" · ");
 }
 
@@ -1100,7 +1126,7 @@ function coachProgres(CE, sessions, exName) {
   const a = h.length ? CE.analyseExercice(brut, { fourchette: f }) : null, d = a ? a.diagnostic : null;
   const synthese = h.length ? CE.syntheseExercice(brut, f, { diagnostic: d }) : null;
   let diag = d && d.enProgression ? coachPlafondProgression(d, synthese && synthese.derniere, f) : coachDiagAffichage(d);
-  if (!diag && a && a.statut === "non_comparable" && a.bloc.rupture) diag = { type: -2, color: "#FFD600", icon: "?", urgency: "COMPARAISON NON FIABLE", title: "PAS DE DIAGNOSTIC POUR L'INSTANT",
+  if (!diag && a && a.statut === "non_comparable" && a.bloc.rupture) diag = { type: -2, color: "#FFD600", icon: "?", urgency: a.bloc.rupture.raisons.some(r => r.code === "interruption") ? "NOUVELLE PÉRIODE" : "COMPARAISON NON FIABLE", title: "PAS DE DIAGNOSTIC POUR L'INSTANT",
     msg: coachRaisonsTexte(a.bloc.rupture.raisons).replace(/([^?])$/, "$1.") + " Le diagnostic reprendra après 2 séances comparables.", actions: [] };
   return { history, fourchette: f, diag, analyse: a, synthese,
     // Graphiques en kg : les seances a charge conventionnelle (ex. 1 = poids du corps) n'y figurent pas (jamais melangees a des kg).
@@ -1123,7 +1149,8 @@ const COACH_RAISONS = {
 };
 const COACH_UNITES = { kg: "charge en kg", conventionnelle: "poids du corps (valeur 1)", mixte: "poids du corps et kg mélangés" };
 function coachRaisonsTexte(raisons) {
-  return (raisons || []).map(r => r.code === "fourchette" ? "Fourchette changée (" + r.avant + " → " + r.apres + ")"
+  return (raisons || []).map(r => r.code === "fourchette" ? (r.premiereDansPlage ? "Première séance en " + r.apres + " (dernière séance de cet exercice en " + r.avant + (r.dateAutrePlage ? ", le " + fmtDate(r.dateAutrePlage) : "") + ") : plages différentes, jamais comparées" : "Fourchette changée (" + r.avant + " → " + r.apres + ")")
+    : r.code === "interruption" ? "Interruption de " + r.jours + " jours : nouvelle période, aucune alerte tirée des séances d'avant"
     : r.code === "unite_charge" ? "Unité de charge différente (" + (COACH_UNITES[r.avant] || r.avant) + " → " + (COACH_UNITES[r.apres] || r.apres) + ") : pas de comparaison directe"
     : r.code === "rupture_charge" ? "Charge " + r.avant + " → " + r.apres + "kg (" + (r.pct > 0 ? "+" : "−") + Math.abs(r.pct) + "%) avec les mêmes reps : changement de machine ou de réglage ?" : COACH_RAISONS[r.code] || r.code).join(" · ");
 }
@@ -1148,7 +1175,10 @@ function coachSens(sens) { return sens === "hausse" ? { c: "#00C853", t: "En hau
 function coachPct(x) { return (x > 0 ? "+" : x < 0 ? "−" : "±") + Math.abs(Math.round(x)) + "%"; }
 // Lignes de la carte « Lecture » : [titre, etat, couleur, detail].
 function coachLectureDerniere(b) {
-  if (!b || b.verdict === "premiere") return null;
+  if (!b) return null;
+  // Premiere seance dans cette plage (moteur 0.12.0) : jamais comparee a une autre plage.
+  if (b.premiereDansPlage) return [["PERFORMANCE", "Première séance dans cette plage", "#888", coachRaisonsTexte(b.comparaison && b.comparaison.raisons)]];
+  if (b.verdict === "premiere") return null;
   // Derniere seance sans serie analysable (ex. charges « 1 ») : pas de volume compare, pas de verdict.
   if (!b.volume) return [["PERFORMANCE", "Comparaison non fiable", "#FFD600", coachRaisonsTexte(b.comparaison && b.comparaison.raisons)], ["TENDANCE", "Non interprétée", "#888", "dernière séance sans série analysable"]];
   const perf = coachSens({ progression: "hausse", regression: "baisse" }[b.verdict] || "stable"), v = b.volume, vs = coachSens(v.sens), t = COACH_TENDANCES[b.tendance] || COACH_TENDANCES.stable;
@@ -1160,14 +1190,14 @@ function coachLectureDerniere(b) {
   if (b.verdict === "seance_incomplete") return [["PERFORMANCE", "Séance incomplète", "#888", coachIncompleteTexte(b.incomplete)], volLigne, ["TENDANCE", "Non interprétée", "#888", "moins de séries que la séance précédente" + (p.date ? " (vs " + fmtDate(p.date) + ")" : "")]];
   const perfDetail = coachBilanTexte(b) || (j.unite === "conventionnelle" ? j.repsAChargeMax + " reps au poids du corps" : "force estimée " + (a.forceFiable ? "" : "≈") + j.force + "kg, " + j.chargeMax + "kg max");
   const volDetail = (v.seriesAvant === v.seriesApres ? v.seriesApres + " séries" : v.seriesAvant + " → " + v.seriesApres + " séries") + " · tonnage " + coachPct(v.tonnagePct);
-  return [["PERFORMANCE", perf.t, perf.c, perfDetail], ["VOLUME", vs.t, vs.c, volDetail], ["TENDANCE", t.t, t.c, b.gainParSeriesSeules ? "le gain vient des séries en plus, pas d'une meilleure série" : (p.date ? "vs " + fmtDate(p.date) : "")]];
+  return [["PERFORMANCE", perf.t, perf.c, perfDetail], ["VOLUME", vs.t, vs.c, volDetail], ["TENDANCE", t.t, t.c, b.gainParSeriesSeules ? "le gain vient des séries en plus, pas d'une meilleure série" : (b.reference ? coachReferenceTexte(b) : p.date ? "vs " + fmtDate(p.date) : "")]];
 }
 function coachLecturePeriode(per, rupture) {
   if (!per) return null;
   const pf = coachSens(per.performance.sens), vs = coachSens(per.volume.sens), t = COACH_TENDANCES[per.tendance] || COACH_TENDANCES.stable;
   return [["PERFORMANCE", pf.t, pf.c, "meilleure série " + coachPct(per.performance.variationPct) + " (force " + (per.performance.fiable ? "" : "≈") + per.performance.debut + " → " + per.performance.fin + "kg)"],
     ["VOLUME", vs.t, vs.c, "tonnage " + coachPct(per.volume.variationPct) + " · " + per.volume.seriesDebut + " → " + per.volume.seriesFin + " séries"],
-    ["TENDANCE", t.t, t.c, per.seances + " séances" + (per.fourchette ? " en " + per.fourchette : "") + ", du " + fmtDate(per.du) + " au " + fmtDate(per.au) + (rupture ? " · avant le " + fmtDate(rupture.date) + " : " + coachRaisonsTexte(rupture.raisons).toLowerCase() : "")]];
+    ["TENDANCE", t.t, t.c, per.seances + " séances" + (per.fourchette ? " en " + per.fourchette : "") + ", du " + fmtDate(per.du) + " au " + fmtDate(per.au) + (per.ageDerniereJours !== null && per.ageDerniereJours !== undefined ? " (dernière il y a " + per.ageDerniereJours + " j)" : "") + (rupture ? " · avant le " + fmtDate(rupture.date) + " : " + coachRaisonsTexte(rupture.raisons).toLowerCase() : "")]];
 }
 
 // --- SYSTEME DE PALIERS ---
@@ -1517,11 +1547,11 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
     if (activeRoutine) {
       const exercises = activeRoutine.exercises.map(ex => {
         const progExRef2 = PROGRAMME.flatMap(r => r.exercises).find(e => e.name === ex.name);
-        const lastSession = [...sessions].reverse().find(s => s.exercises && s.exercises.some(e => e.name === ex.name));
-        const lastEx = lastSession ? lastSession.exercises.find(e => e.name === ex.name) : null;
-        const lastSets = ((lastEx && lastEx.sets) || []).filter(s => s.weight && s.reps);
+        // Regle 1 (moteur 0.12.0) : charges pre-remplies depuis la derniere seance du meme exercice dans la MEME plage (28 j max).
+        const refS = coachReferenceSeance(sessions, ex.name, ex.repsTarget || (progExRef2 && progExRef2.repsTarget) || "8-12");
+        const lastSets = refS.sets;
         return {
-          name: ex.name, repsTarget: ex.repsTarget || (progExRef2 && progExRef2.repsTarget) || "8-12", note: ex.note || (progExRef2 && progExRef2.note) || "", userNote: "", rest: ex.rest || 90, warmupSets: ex.warmupSets || (progExRef2 && progExRef2.warmupSets) || 0, warmupLabel: ex.warmupLabel || (progExRef2 && progExRef2.warmupLabel) || "", lastSets,
+          name: ex.name, repsTarget: ex.repsTarget || (progExRef2 && progExRef2.repsTarget) || "8-12", note: ex.note || (progExRef2 && progExRef2.note) || "", userNote: "", rest: ex.rest || 90, warmupSets: ex.warmupSets || (progExRef2 && progExRef2.warmupSets) || 0, warmupLabel: ex.warmupLabel || (progExRef2 && progExRef2.warmupLabel) || "", lastSets, lastSetsDate: refS.date,
           sets: Array.from({ length: ex.sets || 3 }, (_, i) => ({
             weight: (lastSets[i] && lastSets[i].weight) || (lastSets[0] && lastSets[0].weight) || "", reps: "",
             rir: "", rirCible: i === 0 ? 3 : i === 1 ? 2 : 1, rirSaisi: false, done: false
@@ -1783,7 +1813,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
       tonnageDiff,
       progressed, stagnated, regressed,
       sessionPRs,
-      details: finV2 ? finV2.details : null, prDetails: finV2 ? finV2.prDetails : null, nonComparables: finV2 ? finV2.nonComparables : [],
+      details: finV2 ? finV2.details : null, prDetails: finV2 ? finV2.prDetails : null, nonComparables: finV2 ? finV2.nonComparables : [], references: finV2 ? finV2.references : null,
       totalSets: validExs.reduce((a,ex)=>a+ex.sets.length,0),
       nbEx: validExs.length
     });
@@ -1827,7 +1857,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
             {postSeanceModal.progressed.length > 0 && (
               <div style={{ background: "#001a00", border: "1px solid #00C85344", borderRadius: 12, padding: "10px 14px", marginBottom: 8 }}>
                 <div style={{ fontSize: 10, color: "#00C853", fontFamily: "monospace", fontWeight: 900, marginBottom: 6 }}>↑ EN PROGRESSION ({postSeanceModal.progressed.length})</div>
-                {postSeanceModal.progressed.map((n,i) => <div key={i} style={{ fontSize: 11, color: "#00C853", marginBottom: 2 }}>· {n}{postSeanceModal.details && postSeanceModal.details[n] ? <span style={{ opacity: 0.7 }}> — {postSeanceModal.details[n]}</span> : null}</div>)}
+                {postSeanceModal.progressed.map((n,i) => <div key={i} style={{ fontSize: 11, color: "#00C853", marginBottom: 2 }}>· {n}{postSeanceModal.details && postSeanceModal.details[n] ? <span style={{ opacity: 0.7 }}> — {postSeanceModal.details[n]}</span> : null}{postSeanceModal.references && postSeanceModal.references[n] ? <div style={{ fontSize: 9.5, color: "#999", marginLeft: 10, marginTop: 1 }}>{postSeanceModal.references[n]}</div> : null}</div>)}
               </div>
             )}
 
@@ -1835,7 +1865,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
             {postSeanceModal.regressed.length > 0 && (
               <div style={{ background: "#1a0000", border: "1px solid #FF444444", borderRadius: 12, padding: "10px 14px", marginBottom: 8 }}>
                 <div style={{ fontSize: 10, color: "#FF4444", fontFamily: "monospace", fontWeight: 900, marginBottom: 6 }}>↓ EN BAISSE ({postSeanceModal.regressed.length})</div>
-                {postSeanceModal.regressed.map((n,i) => <div key={i} style={{ fontSize: 11, color: "#FF4444", marginBottom: 2 }}>· {n}{postSeanceModal.details && postSeanceModal.details[n] ? <span style={{ opacity: 0.7 }}> — {postSeanceModal.details[n]}</span> : null}</div>)}
+                {postSeanceModal.regressed.map((n,i) => <div key={i} style={{ fontSize: 11, color: "#FF4444", marginBottom: 2 }}>· {n}{postSeanceModal.details && postSeanceModal.details[n] ? <span style={{ opacity: 0.7 }}> — {postSeanceModal.details[n]}</span> : null}{postSeanceModal.references && postSeanceModal.references[n] ? <div style={{ fontSize: 9.5, color: "#999", marginLeft: 10, marginTop: 1 }}>{postSeanceModal.references[n]}</div> : null}</div>)}
               </div>
             )}
 
@@ -1957,9 +1987,8 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
     <div style={{ padding: "16px 16px 80px" }}>
       {showPicker && <ExercisePicker onSelect={ex => {
         const _progEx = PROGRAMME.flatMap(r => r.exercises).find(e => e.name === ex);
-        const _addLastSession = [...sessions].reverse().find(s => s.exercises && s.exercises.some(e => e.name === ex));
-        const _addLastEx = _addLastSession ? _addLastSession.exercises.find(e => e.name === ex) : null;
-        const _addLastSets = ((_addLastEx && _addLastEx.sets) || []).filter(s => s.weight && s.reps);
+        const _addRef = coachReferenceSeance(sessions, ex, (_progEx && _progEx.repsTarget) || "8-12"); // regle 1 : meme plage, 28 j max
+        const _addLastSets = _addRef.sets;
         const _addNbSets = (_progEx && _progEx.sets) || 3;
         setCurrentSets(prev => ({ ...prev, exercises: [...prev.exercises, {
           name: ex,
@@ -1968,7 +1997,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
           rest: (_progEx && _progEx.rest) || 90,
           warmupSets: (_progEx && _progEx.warmupSets) || 0,
           warmupLabel: (_progEx && _progEx.warmupLabel) || "",
-          lastSets: _addLastSets,
+          lastSets: _addLastSets, lastSetsDate: _addRef.date,
           sets: Array.from({ length: _addNbSets }, (_, si) => ({
             weight: (_addLastSets[si] && _addLastSets[si].weight) || (_addLastSets[0] && _addLastSets[0].weight) || "",
             reps: "", rir: "", rirCible: si === 0 ? 3 : si === 1 ? 2 : 1, rirSaisi: false, done: false
@@ -1979,9 +2008,8 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
       {replaceIdx !== null && <ExercisePicker onSelect={ex => {
         const _rEx = PROGRAMME.flatMap(r => r.exercises).find(e => e.name === ex);
         // Cherche les derniers poids connus pour le nouvel exercice
-        const _lastSession = [...sessions].reverse().find(s => s.exercises && s.exercises.some(e => e.name === ex));
-        const _lastEx = _lastSession ? _lastSession.exercises.find(e => e.name === ex) : null;
-        const _lastSets = ((_lastEx && _lastEx.sets) || []).filter(s => s.weight && s.reps);
+        const _repRef = coachReferenceSeance(sessions, ex, (_rEx && _rEx.repsTarget) || "8-12"); // regle 1 : meme plage, 28 j max
+        const _lastSets = _repRef.sets;
         const _nbSets = (_rEx && _rEx.sets) || 3;
         setCurrentSets(prev => ({ ...prev, exercises: prev.exercises.map((e, i) => i !== replaceIdx ? e : {
           ...e, name: ex,
@@ -1990,7 +2018,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
           rest: (_rEx && _rEx.rest) || 90,
           warmupSets: (_rEx && _rEx.warmupSets) || 0,
           warmupLabel: (_rEx && _rEx.warmupLabel) || "",
-          lastSets: _lastSets,
+          lastSets: _lastSets, lastSetsDate: _repRef.date,
           sets: Array.from({ length: _nbSets }, (_, si) => ({
             weight: (_lastSets[si] && _lastSets[si].weight) || (_lastSets[0] && _lastSets[0].weight) || "",
             reps: "", rir: "", rirCible: si === 0 ? 3 : si === 1 ? 2 : 1, rirSaisi: false, done: false
@@ -2249,7 +2277,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
             )}
             {ex.lastSets && ex.lastSets.length > 0 && (
               <div style={{ background: "#0d0d0d", borderRadius: 7, padding: "6px 10px", marginBottom: 6, border: "1px solid #1a1a1a" }}>
-                <div style={{ fontSize: 8, color: "#444", fontFamily: "monospace", marginBottom: 4 }}>DERNIERE SEANCE</div>
+                <div style={{ fontSize: 8, color: "#444", fontFamily: "monospace", marginBottom: 4 }}>DERNIERE SEANCE{ex.lastSetsDate ? " EN " + ex.repsTarget + " · " + fmtDate(ex.lastSetsDate) : ""}</div>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   {ex.lastSets.map((ls, i) => (
                     <div key={i} style={{ background: "#161616", borderRadius: 5, padding: "3px 8px", border: "1px solid #222" }}>

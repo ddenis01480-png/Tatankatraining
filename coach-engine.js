@@ -33,7 +33,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var VERSION = "0.11.0";
+  var VERSION = "0.12.0";
 
   // Reglages centralises (une seule valeur par regle).
   var REGLES = Object.freeze({
@@ -68,6 +68,8 @@
     // Etape 3 (0.10.0) : volume et performances par muscle. Aucun coefficient : direct et indirect sont deux compteurs separes.
     CHARGE_SUSPECTE_MAX: 1,        // R-P2 : charge <= 1 kg...
     CHARGE_SUSPECTE_REFERENCE: 10, // ... alors que l'exercice a deja ete enregistre avec >= 10 kg -> « charge probablement erronee »
+    REFERENCE_CONSEIL_JOURS: 28,   // 0.12.0 regle 1 : conseil en seance et pre-remplissage = reference de 28 jours au plus (J-28 inclus)
+    INTERRUPTION_ALERTE_JOURS: 28, // 0.12.0 : alertes calculees dans une periode sans interruption de plus de 28 jours entre deux seances
     PAUSE_JOURS: 7,                // pause = ecart >= 7 jours entre deux seances (toutes routines)
     FENETRE_JOURS: 28,             // fenetre principale glissante (J-27 a J)
     FENETRE_COURTE_JOURS: 14,      // detection des baisses (J-13 a J)
@@ -460,6 +462,39 @@
   function seriesNorm(series) { return (series || []).map(function (st) { return st && st.statutRir ? st : normaliserSerie(st); }); }
   function trierHist(h) { return (h || []).slice().sort(function (x, y) { return (x.date || "") < (y.date || "") ? -1 : (x.date || "") > (y.date || "") ? 1 : 0; }); }
 
+  // ═══ 0.12.0 : COMPARAISON DANS LA MEME PLAGE (decisions de l'utilisateur du 26/11/2026) ═══
+  // Deux performances d'un meme exercice ne sont comparables que si leurs plages de repetitions sont STRICTEMENT identiques
+  // (8-12 = 8-12 ; 10-12 != 10-15). Une plage differente n'est jamais comparee : ni conseil, ni bilan, ni record, ni tendance.
+  // Entree sans plage (donnees anciennes) : plage par defaut, comme partout dans le moteur (FOURCHETTE_DEFAUT).
+  function memePlage(fa, fb) {
+    fa = fa || lireFourchette(""); fb = fb || lireFourchette("");
+    if (fa.type !== fb.type) return false;
+    if (fa.type === "inconnu") return String(fa.texte) === String(fb.texte);
+    return fa.min === fb.min && fa.max === fb.max;
+  }
+  function enFourchette(f) { return typeof f === "string" ? lireFourchette(f) : (f || lireFourchette("")); }
+  function aSeriesValides(h) { return !!h && mesuresSeance(seriesNorm(h.series)).seriesValides > 0; }
+  function etendre(a, b) { Object.keys(b).forEach(function (k) { a[k] = b[k]; }); return a; }
+  // Entrees d'historique dans la plage donnee (copie triee ; l'historique recu n'est pas modifie).
+  function historiqueMemePlage(historique, fourchette) { var f = enFourchette(fourchette); return trierHist(historique).filter(function (h) { return memePlage(h.fourchette, f); }); }
+  // Historique limite a la plage de sa DERNIERE entree (lecture d'un exercice « dans sa plage actuelle »).
+  function plageDeLaDerniere(historique) { var t = trierHist(historique); return t.length ? t.filter(function (h) { return memePlage(h.fourchette, t[t.length - 1].fourchette); }) : t; }
+  // REGLE 1 — conseil en seance et pre-remplissage des charges : derniere seance du meme exercice, plage identique, avec au moins
+  // une serie valide, datant de REFERENCE_CONSEIL_JOURS jours au plus (J-28 inclus). Au-dela, ou sans seance : AUCUN chiffre.
+  // options.aujourdhui : date du jour (defaut : horloge). Retour :
+  //   { statut: "ok" | "premiere_dans_plage" | "reference_trop_ancienne", reference (entree ou null), date, ageJours, fourchette, autresPlages }
+  function referenceConseil(historique, fourchette, options) {
+    options = options || {};
+    var f = enFourchette(fourchette), auj = options.aujourdhui !== undefined && options.aujourdhui !== null ? dateLocale(options.aujourdhui) : jourParDefaut();
+    var valides = trierHist(historique).filter(function (h) { return h && h.date && h.date <= auj && aSeriesValides(h); });
+    var meme = valides.filter(function (h) { return memePlage(h.fourchette, f); });
+    var base = { fourchette: { type: f.type, min: f.min, max: f.max, texte: texteFourchette(f) }, autresPlages: valides.length > meme.length };
+    if (!meme.length) return etendre(base, { statut: "premiere_dans_plage", reference: null, date: null, ageJours: null });
+    var ref = meme[meme.length - 1], age = joursEntre(ref.date, auj);
+    if (age > REGLES.REFERENCE_CONSEIL_JOURS) return etendre(base, { statut: "reference_trop_ancienne", reference: null, date: ref.date, ageJours: age });
+    return etendre(base, { statut: "ok", reference: ref, date: ref.date, ageJours: age });
+  }
+
   // Bilan d'un exercice a la fin d'une seance : la seance du jour contre la precedente, avec la MEME definition que comparer()
   // (celle de l'ecran Seance en cours). Retour :
   //   { verdict: "premiere" | "progression" | "stable" | "regression", nature?, mode, axes?, precedente?, jour }
@@ -480,15 +515,22 @@
     return v.slice(0, k);
   }
   // options.exercice (0.11.0) : nom de l'exercice, pour reconnaitre une charge conventionnelle dans des series du jour brutes.
+  // 0.12.0 (regle 2, bilan) : la reference est la derniere seance de la MEME plage, quel que soit son age. options.date (date de la
+  // seance analysee) permet d'indiquer l'anciennete : reference { date, ageJours, ancienne } — une comparaison « ancienne »
+  // (> REFERENCE_CONSEIL_JOURS) est informative, jamais un conseil. premiereDansPlage : l'exercice existe dans d'autres plages seulement.
   function bilanExercice(historiqueAvant, seriesDuJour, fourchette, options) {
-    var hist = trierHist(historiqueAvant), f = fourchette || lireFourchette("");
-    var jourSeries = filtrerSuspectes(seriesNorm(seriesDuJour), f, { chargeMaxAvant: chargeMaxValide(hist), exercice: options && options.exercice }).series;
+    options = options || {};
+    var tousAvant = trierHist(historiqueAvant), f = enFourchette(fourchette);
+    var hist = tousAvant.filter(function (h) { return memePlage(h.fourchette, f); });
+    var cmAvant = options.chargeMaxAvant !== undefined ? options.chargeMaxAvant : chargeMaxValide(tousAvant);
+    var jourSeries = filtrerSuspectes(seriesNorm(seriesDuJour), f, { chargeMaxAvant: cmAvant, exercice: options.exercice }).series;
     var cur = mesuresSeance(jourSeries), mode = modeMesure(f), modeCmp = mode === "aucun" ? "reps" : mode;
     var uJour = uniteEntree({ series: jourSeries });
     var resume = function (m, date, u) { return { date: date || null, chargeMax: m.chargeMax, repsAChargeMax: m.repsAChargeMax, repsTotal: m.repsTotal, force: m.force, forceFiable: m.forceFiable, series: m.seriesValides, unite: u || null }; };
     var iPrev = -1; for (var i = hist.length - 1; i >= 0; i--) { if (mesuresSeance(seriesNorm(hist[i].series)).seriesValides > 0) { iPrev = i; break; } }
     var prevEntry = iPrev >= 0 ? hist[iPrev] : null;
-    if (!prevEntry || cur.seriesValides === 0) return { verdict: "premiere", mode: mode, jour: resume(cur, null, uJour) };
+    if (!prevEntry || cur.seriesValides === 0) return { verdict: "premiere", mode: mode, jour: resume(cur, null, uJour),
+      premiereDansPlage: !prevEntry && tousAvant.some(aSeriesValides), plage: texteFourchette(f) };
     var prev = mesuresSeance(seriesNorm(prevEntry.series)), fCmp = mode === "aucun" ? null : f, uPrev = uniteEntree(prevEntry);
     // Deux seances a charge conventionnelle (ex. poids du corps) : progression en repetitions a charge constante, jamais en force estimee.
     if (uJour === "conventionnelle" && uPrev === "conventionnelle") modeCmp = "reps";
@@ -505,6 +547,9 @@
     if (verdict === "progression") out.nature = natureProgression(axes);
     lectureTravail(out, prev, cur);
     out.comparaison = comparabiliteEntre(hist.concat([{ date: null, fourchette: f, series: jourSeries }]), iPrev, hist.length);
+    var age = options.date && prevEntry.date ? joursEntre(prevEntry.date, dateLocale(options.date)) : null;
+    out.reference = { date: prevEntry.date, ageJours: age, ancienne: age !== null && age > REGLES.REFERENCE_CONSEIL_JOURS };
+    out.plage = texteFourchette(f);
     return out;
   }
 
@@ -515,9 +560,17 @@
   // Charge conventionnelle (0.11.0, options.exercice) : les series du jour ne sont comparees qu'aux series passees de la MEME unite.
   //   Series en kg : regles ci-dessus, contre les seules series passees en kg. Seance uniquement a charge conventionnelle : seul le
   //   record de repetitions compte (reps, conventionnelle: true) ; ni charge max, ni force estimee (record = record de repetitions).
+  // 0.12.0 (regle 2, records) : records SEPARES PAR PLAGE (fourchette donnee : seules les seances de la meme plage comptent),
+  // sur TOUT l'historique de cette plage, sans limite d'age : un record ancien reste un record.
   function recordsExercice(historiqueAvant, seriesDuJour, fourchette, options) {
     var nom = options && options.exercice, tousPasse = [];
-    (historiqueAvant || []).forEach(function (h) { marquerConventionnelles(seriesNorm(h.series), nom).forEach(function (st) { if (st.valide) tousPasse.push(st); }); });
+    var hRec = fourchette ? (historiqueAvant || []).filter(function (h) { return memePlage(h.fourchette, enFourchette(fourchette)); }) : (historiqueAvant || []);
+    var res = recordsDansPlage(historiqueAvant, hRec, seriesDuJour, fourchette, nom, tousPasse);
+    if (res) { res.plage = fourchette ? texteFourchette(enFourchette(fourchette)) : null; res.autresPlages = (historiqueAvant || []).length - hRec.length; }
+    return res;
+  }
+  function recordsDansPlage(historiqueAvant, hRec, seriesDuJour, fourchette, nom, tousPasse) {
+    hRec.forEach(function (h) { marquerConventionnelles(seriesNorm(h.series), nom).forEach(function (st) { if (st.valide) tousPasse.push(st); }); });
     var jourTous = (fourchette ? filtrerSuspectes(seriesNorm(seriesDuJour), fourchette, { chargeMaxAvant: chargeMaxValide(historiqueAvant), exercice: nom }).series : marquerConventionnelles(seriesNorm(seriesDuJour), nom)).filter(function (st) { return st.valide; });
     var jour = jourTous.filter(function (st) { return !st.conventionnelle; }), passe = tousPasse.filter(function (st) { return !st.conventionnelle; });
     if (!jour.length) {
@@ -577,11 +630,15 @@
     return out;
   }
   // Variation relative d'une droite des moindres carres (debut -> fin), ou null (< 2 points).
-  function variationDroite(ys) {
+  // Variation relative de la droite des moindres carres, du premier au dernier point. xs (0.12.0) : abscisses reelles (jours) ;
+  // absentes, invalides ou toutes egales -> points regulierement espaces (comportement d'avant).
+  function variationDroite(ys, xs) {
     var n = ys.length; if (n < 2) return null;
-    var mx = (n - 1) / 2, my = ys.reduce(function (s, y) { return s + y; }, 0) / n, sxy = 0, sxx = 0;
-    ys.forEach(function (y, x) { sxy += (x - mx) * (y - my); sxx += (x - mx) * (x - mx); });
-    var pente = sxy / sxx, debut = my - pente * mx, fin = my + pente * mx;
+    var ok = Array.isArray(xs) && xs.length === n && xs.every(function (x) { return typeof x === "number" && isFinite(x); }) && xs.some(function (x) { return x !== xs[0]; });
+    var X = ok ? xs : ys.map(function (y, i) { return i; });
+    var mx = X.reduce(function (s, x) { return s + x; }, 0) / n, my = ys.reduce(function (s, y) { return s + y; }, 0) / n, sxy = 0, sxx = 0;
+    ys.forEach(function (y, i) { sxy += (X[i] - mx) * (y - my); sxx += (X[i] - mx) * (X[i] - mx); });
+    var pente = sxy / sxx, debut = my + pente * (X[0] - mx), fin = my + pente * (X[n - 1] - mx);
     return debut > 0 ? (fin - debut) / debut : 0;
   }
   function sensDe(v, seuil) { return v > seuil ? "hausse" : v < -seuil ? "baisse" : "stable"; }
@@ -620,14 +677,19 @@
     return { fiable: false, raisons: c.raisons.concat([{ code: "charge_suspecte", dates: dates }]) };
   }
   // Dernier bloc comparable : les seances les plus recentes reliees entre elles par des comparaisons fiables.
-  function blocComparable(historique) {
-    var tous = trierHist(historique), idx = [];
+  // 0.12.0 : options.interruptionJours (alertes) : le bloc est aussi coupe par un ecart de plus de N jours entre deux seances
+  // comparables (raison « interruption ») : apres une interruption, une nouvelle periode commence, sans alerte tiree d'avant.
+  function blocComparable(historique, options) {
+    var tous = trierHist(historique), idx = [], lim = options && options.interruptionJours;
     tous.forEach(function (h, i) { if (mesuresSeance(seriesNorm(h.series)).seriesValides > 0) idx.push(i); });
     if (!idx.length) return { seances: [], rupture: null };
     var cmp = function (j) { return comparabiliteEntre(tous, idx[j - 1], idx[j]); };
+    var ecart = function (j) { var a = tous[idx[j - 1]].date, b = tous[idx[j]].date; return a && b ? joursEntre(a, b) : 0; };
+    var coupe = function (j) { return !!lim && ecart(j) > lim; };
     var i = idx.length - 1;
-    while (i > 0 && cmp(i).fiable) i--;
-    return { seances: idx.slice(i).map(function (j) { return tous[j]; }), rupture: i > 0 ? { date: tous[idx[i]].date, avant: tous[idx[i - 1]].date, raisons: cmp(i).raisons } : null };
+    while (i > 0 && !coupe(i) && cmp(i).fiable) i--;
+    var raisons = i > 0 ? (coupe(i) ? [{ code: "interruption", jours: ecart(i) }] : []).concat(cmp(i).fiable ? [] : cmp(i).raisons) : null;
+    return { seances: idx.slice(i).map(function (j) { return tous[j]; }), rupture: i > 0 ? { date: tous[idx[i]].date, avant: tous[idx[i - 1]].date, raisons: raisons } : null };
   }
 
   // Derniere seance sans AUCUNE serie analysable (toutes a charge suspecte, inversees, aberrantes ou sans charge) : bilan
@@ -652,10 +714,31 @@
   //                 regression sur 3 seances alors que la derniere progresse -> pas de diagnostic (meme garde partout)
   //   alerte      : le diagnostic s'il faut ALERTER (trop rapide, vrai plafond, vraie regression), sinon null
   //   bloc        : { seances, rupture } (rupture = raisons de la derniere coupure)
+  // Bilan « premiere » alors que l'exercice a deja ete fait dans une AUTRE plage : premiereDansPlage, comparaison non fiable
+  // (raison « fourchette », avec la date de la derniere seance dans l'autre plage). Les deux plages ne sont jamais comparees.
+  function marquerPremiereDansPlage(bilan, avant, f) {
+    if (!bilan || bilan.verdict !== "premiere") return bilan;
+    var autres = trierHist(avant).filter(function (h) { return !memePlage(h.fourchette, f) && aSeriesValides(h); });
+    if (!autres.length) return bilan;
+    var pa = autres[autres.length - 1];
+    bilan.premiereDansPlage = true; bilan.precedenteAutrePlage = { date: pa.date, plage: texteFourchette(pa.fourchette) };
+    bilan.comparaison = { fiable: false, raisons: [{ code: "fourchette", avant: texteFourchette(pa.fourchette), apres: texteFourchette(f), premiereDansPlage: true, dateAutrePlage: pa.date }] };
+    return bilan;
+  }
+  // 0.12.0 : l'analyse ne lit que la PLAGE de la seance analysee (options.fourchette, sinon celle de la derniere seance) : les
+  // seances d'une autre plage sont ignorees (jamais comparees). Bilan : derniere seance de la meme plage, sans limite d'age, avec
+  // son anciennete. Diagnostic et alerte : dernier bloc comparable SANS interruption de plus de INTERRUPTION_ALERTE_JOURS jours.
   function analyseExercice(historique, options) {
     options = options || {};
-    var tous = trierHist(historique), dernierBrut = tous[tous.length - 1];
-    var hist = tous.filter(function (h) { return mesuresSeance(seriesNorm(h.series)).seriesValides > 0; });
+    var tous0 = trierHist(historique);
+    if (!tous0.length) return { performance: "premiere", statut: "historique_insuffisant", bilan: null, diagnostic: null, alerte: null, bloc: { seances: 0, rupture: null } };
+    var fFiltre = options.fourchette ? enFourchette(options.fourchette) : tous0[tous0.length - 1].fourchette;
+    var tous = tous0.filter(function (h, i) { return i === tous0.length - 1 || memePlage(h.fourchette, fFiltre); }), dernierBrut = tous[tous.length - 1];
+    var valide = function (h) { return mesuresSeance(seriesNorm(h.series)).seriesValides > 0; };
+    var hist = tous.filter(valide);
+    // Derniere seance sans serie analysable : signalee comme avant 0.12.0, quelle que soit la plage des seances precedentes.
+    var histToutes = tous0.filter(valide);
+    if (!hist.length && histToutes.length && !valide(dernierBrut)) hist = [histToutes[histToutes.length - 1]];
     if (!hist.length) return { performance: "premiere", statut: "historique_insuffisant", bilan: null, diagnostic: null, alerte: null, bloc: { seances: 0, rupture: null } };
     var last = hist[hist.length - 1], f = options.fourchette || last.fourchette || lireFourchette("");
     if (dernierBrut !== last) {
@@ -664,10 +747,14 @@
         bloc: { seances: 0, rupture: { date: dernierBrut.date, avant: last.date, raisons: bnc.comparaison.raisons } }, bilan: bnc };
     }
     // Seances precedentes AVEC celles sans serie analysable : une periode de charges suspectes entre les deux rend la comparaison non fiable.
-    var bilan = bilanExercice(tous.slice(0, -1), last.series, f);
-    var performance = bilan.verdict === "premiere" ? "premiere" : (bilan.comparaison && !bilan.comparaison.fiable) ? "non_comparable" : bilan.verdict;
-    var bc = blocComparable(tous), bloc = bc.seances, diag = null, statut;
-    if (!(f.type === "reps" && f.max <= REGLES.DIAGNOSTIC_REPS_MAX)) statut = "hors_perimetre";
+    var bilan = bilanExercice(tous.slice(0, -1), last.series, f, { date: last.date, chargeMaxAvant: chargeMaxValide(tous0.slice(0, -1)), exercice: options.exercice });
+    // Premiere seance dans cette plage alors que l'exercice existe dans une autre plage : « non comparable », raison « fourchette »
+    // (premiereDansPlage) — jamais comparee a l'autre plage, jamais lue comme une premiere seance de l'exercice.
+    marquerPremiereDansPlage(bilan, tous0.slice(0, -1), f);
+    var performance = bilan.premiereDansPlage ? "non_comparable" : bilan.verdict === "premiere" ? "premiere" : (bilan.comparaison && !bilan.comparaison.fiable) ? "non_comparable" : bilan.verdict;
+    var bc = blocComparable(tous, { interruptionJours: REGLES.INTERRUPTION_ALERTE_JOURS }), bloc = bc.seances, diag = null, statut;
+    if (bilan.premiereDansPlage) { statut = "non_comparable"; bc = { seances: bloc, rupture: { date: last.date, avant: bilan.precedenteAutrePlage.date, raisons: bilan.comparaison.raisons } }; }
+    else if (!(f.type === "reps" && f.max <= REGLES.DIAGNOSTIC_REPS_MAX)) statut = "hors_perimetre";
     else if (hist.length < 2) statut = "historique_insuffisant";
     else if (bloc.length < 2) statut = "non_comparable";
     else {
@@ -688,7 +775,8 @@
       if (diag && diag.typeV1 === -1 && bilan.comparaison && bilan.comparaison.fiable && performance !== "premiere") diag.performance = performance;
     }
     return { fourchette: f, performance: performance, bilan: bilan, statut: statut, diagnostic: diag,
-      alerte: diag && diag.typeV1 > 0 && !diag.enProgression ? diag : null, bloc: { seances: bloc.length, rupture: bc.rupture } };
+      alerte: diag && diag.typeV1 > 0 && !diag.enProgression ? diag : null, bloc: { seances: bloc.length, rupture: bc.rupture },
+      plage: { texte: texteFourchette(f), seancesAutresPlages: tous0.length - tous.length } };
   }
 
   // Synthese d'un exercice pour l'onglet Progres (lecture seule).
@@ -696,25 +784,34 @@
   //   periode  : sur les N dernieres seances (defaut 8) : performance = meilleure serie (force estimee, « fiable » si toutes
   //              les meilleures series font <= 12 reps), volume = tonnage, et la tendance generale qui combine les deux ;
   //   pistes   : futures adaptations PREPAREES, statut "non_activee" : ni affichees, ni appliquees.
+  // 0.12.0 (regle 2, tendances) : seances de la MEME plage uniquement, historique complet (aucune limite d'age), droite calculee
+  // sur les VRAIES dates (un trou de 2 mois pese 2 mois) ; la periode indique du/au et l'age de la derniere performance.
   function syntheseExercice(historique, fourchette, options) {
     options = options || {};
-    var tous = trierHist(historique), dernierBrut = tous[tous.length - 1];
+    var tous0 = trierHist(historique);
+    if (!tous0.length) return null;
+    var fFiltre = fourchette ? enFourchette(fourchette) : tous0[tous0.length - 1].fourchette;
+    var tous = tous0.filter(function (h, i) { return i === tous0.length - 1 || memePlage(h.fourchette, fFiltre); }), dernierBrut = tous[tous.length - 1];
     var hist = tous.filter(function (h) { return mesuresSeance(seriesNorm(h.series)).seriesValides > 0; });
     if (!hist.length) return null;
     var last = hist[hist.length - 1], f = fourchette || last.fourchette || lireFourchette("");
-    var derniere = dernierBrut !== last ? bilanNonAnalysable(dernierBrut, last, f) : bilanExercice(tous.slice(0, -1), last.series, f);
+    var derniere = dernierBrut !== last ? bilanNonAnalysable(dernierBrut, last, f) : bilanExercice(tous.slice(0, -1), last.series, f, { date: last.date, chargeMaxAvant: chargeMaxValide(tous0.slice(0, -1)) });
+    if (dernierBrut === last) marquerPremiereDansPlage(derniere, tous0.slice(0, -1), f);
     // Fenetre : les N dernieres seances du dernier BLOC COMPARABLE (meme fourchette, pas de rupture de charge) : un changement de
     // programme (ex. 8-12 -> 15-20 avec une charge plus legere) ou de machine n'est pas lu comme une baisse de performance.
     var bc = blocComparable(tous), bloc = bc.seances.length ? bc.seances : [last];
     var n = int(options.seances) || REGLES.SYNTHESE_SEANCES, fen = bloc.slice(-n), ms = fen.map(function (h) { return mesuresSeance(seriesNorm(h.series)); });
     var periode = null;
     if (fen.length >= 3) {
-      var vp = variationDroite(ms.map(function (m) { return m.forcePrecise; })), vv = variationDroite(ms.map(function (m) { return m.tonnage; }));
+      var xs = fen.map(function (h) { return h.date ? joursEntre(fen[0].date, h.date) : null; });
+      var vp = variationDroite(ms.map(function (m) { return m.forcePrecise; }), xs), vv = variationDroite(ms.map(function (m) { return m.tonnage; }), xs);
       var perf = { sens: sensDe(vp, REGLES.TENDANCE_PCT), variationPct: round1(vp * 100), fiable: ms.every(function (m) { return m.forceFiable; }),
         debut: Math.round(ms[0].forcePrecise), fin: Math.round(ms[ms.length - 1].forcePrecise) };
       var vol = { sens: sensDe(vv, REGLES.VOLUME_PCT), variationPct: round1(vv * 100),
         seriesDebut: ms[0].seriesValides, seriesFin: ms[ms.length - 1].seriesValides };
-      periode = { seances: fen.length, fourchette: texteFourchette(f), du: fen[0].date, au: last.date, performance: perf, volume: vol, tendance: tendanceGenerale(perf.sens, vol.sens, false) };
+      var aujS = options.aujourdhui !== undefined ? dateLocale(options.aujourdhui) : jourParDefaut();
+      periode = { seances: fen.length, fourchette: texteFourchette(f), du: fen[0].date, au: last.date, performance: perf, volume: vol, tendance: tendanceGenerale(perf.sens, vol.sens, false),
+        joursCouverts: fen[0].date && last.date ? joursEntre(fen[0].date, last.date) : null, ageDerniereJours: last.date ? joursEntre(last.date, aujS) : null };
     }
     var out = { mode: modeMesure(f), derniere: derniere, periode: periode, rupture: bc.rupture, seancesComparables: bc.seances.length };
     out.pistes = pistesAdaptation(options.diagnostic || null, out);
@@ -737,17 +834,18 @@
 
   // Tendance sur toutes les seances d'une periode (ex. un cycle) : droite des moindres carres sur la mesure principale.
   // Retour : { sens: "hausse" | "baisse" | "stable", variationPct, seances } ou null (< 2 seances mesurables).
+  // 0.12.0 : seances de la MEME plage seulement (celle donnee, sinon celle de la derniere seance), toutes dates confondues,
+  // abscisses = vraies dates. Retour enrichi de la periode (du, au).
   function tendance(historique, fourchette) {
-    var hist = (historique || []).slice().sort(function (x, y) { return (x.date || "") < (y.date || "") ? -1 : (x.date || "") > (y.date || "") ? 1 : 0; });
-    var f = fourchette || (hist.length && hist[hist.length - 1].fourchette) || lireFourchette("");
+    var tous = trierHist(historique);
+    var f = fourchette || (tous.length && tous[tous.length - 1].fourchette) || lireFourchette("");
     var mode = modeMesure(f); if (mode === "aucun") return null;
-    var ys = hist.map(function (h) { return metrique(mesuresSeance(h.series), mode); }).filter(function (y) { return y > 0; });
-    var n = ys.length; if (n < 2) return null;
-    var mx = (n - 1) / 2, my = ys.reduce(function (s, y) { return s + y; }, 0) / n, sxy = 0, sxx = 0;
-    ys.forEach(function (y, x) { sxy += (x - mx) * (y - my); sxx += (x - mx) * (x - mx); });
-    var pente = sxy / sxx, debut = my - pente * mx, fin = my + pente * mx;
-    var variation = debut > 0 ? (fin - debut) / debut : 0;
-    return { sens: variation > REGLES.TENDANCE_PCT ? "hausse" : variation < -REGLES.TENDANCE_PCT ? "baisse" : "stable", variationPct: round1(variation * 100), mode: mode, seances: n };
+    var pts = tous.filter(function (h) { return memePlage(h.fourchette, f); }).map(function (h) { return { d: h.date, y: metrique(mesuresSeance(h.series), mode) }; }).filter(function (p) { return p.y > 0; });
+    var n = pts.length; if (n < 2) return null;
+    var xs = pts.map(function (p) { return p.d && pts[0].d ? joursEntre(pts[0].d, p.d) : null; });
+    var variation = variationDroite(pts.map(function (p) { return p.y; }), xs);
+    return { sens: variation > REGLES.TENDANCE_PCT ? "hausse" : variation < -REGLES.TENDANCE_PCT ? "baisse" : "stable", variationPct: round1(variation * 100), mode: mode, seances: n,
+      du: pts[0].d, au: pts[n - 1].d };
   }
 
   // Conseil de double progression pour la PROCHAINE seance (port fidele de getProgressionTip du V1, sans texte).
@@ -761,6 +859,16 @@
     var hist = (historique || []).slice().sort(function (x, y) { return (x.date || "") < (y.date || "") ? -1 : (x.date || "") > (y.date || "") ? 1 : 0; });
     if (!hist.length && !Array.isArray(options.dernieresSeries)) return null;
     var dernier = hist.length ? hist[hist.length - 1] : { date: null, fourchette: null, series: [] };
+    // 0.12.0 REGLE 1 : sans series fournies par l'ecran, la reference est la derniere seance de la MEME plage, de 28 jours au plus.
+    // Sinon : { action: "aucune_reference", raison } — aucun chiffre (jamais un conseil tire d'une autre plage ou d'une seance ancienne).
+    var fOpt = typeof options.fourchette === "string" ? lireFourchette(options.fourchette) : (options.fourchette || dernier.fourchette || lireFourchette(""));
+    if (fOpt.type !== "reps" && fOpt.type !== "serie100") return null; // gainage en secondes, fourchette illisible : jamais de conseil (inchange)
+    if (!Array.isArray(options.dernieresSeries)) {
+      var rc = referenceConseil(hist, options.fourchette !== undefined && options.fourchette !== null ? options.fourchette : dernier.fourchette, { aujourdhui: options.aujourdhui });
+      if (rc.statut !== "ok") return rc.statut === "reference_trop_ancienne" || rc.autresPlages
+        ? { action: "aucune_reference", raison: rc.statut, date: rc.date, ageJours: rc.ageJours, fourchette: rc.fourchette } : null;
+      dernier = rc.reference;
+    }
     // L'ecran peut fournir les series de reference (comportement V1 : « lastSets » de la seance en cours).
     if (Array.isArray(options.dernieresSeries)) dernier = { date: dernier.date, fourchette: dernier.fourchette, series: options.dernieresSeries.map(function (st) { return st && st.statutRir ? st : normaliserSerie(st); }) };
     var f = typeof options.fourchette === "string" ? lireFourchette(options.fourchette) : (options.fourchette || dernier.fourchette || lireFourchette(""));
@@ -1112,7 +1220,7 @@
 
   // Ampleur d'un exercice sur la fenetre (R-P5), dans son dernier bloc comparable.
   function ampleurExercice(hist, du) {
-    var bloc = blocComparable(hist).seances.filter(function (h) { return h.date >= du; });
+    var bloc = blocComparable(plageDeLaDerniere(hist)).seances.filter(function (h) { return h.date >= du; });
     if (bloc.length < 2) return { statut: "insuffisant", seances: bloc.length };
     var f = bloc[bloc.length - 1].fourchette, mode = modeMesure(f), ms = bloc.map(function (h) { return mesuresSeance(seriesNorm(h.series)); });
     var p = ms[0], d = ms[ms.length - 1], o = { statut: "ok", mode: mode, du: bloc[0].date, au: bloc[bloc.length - 1].date, seances: bloc.length };
@@ -1170,7 +1278,7 @@
           raison: v && v.indirect.series > 0 ? "sollicite_seulement_en_secondaire" : "aucune_serie" };
         return;
       }
-      var blocs = exos.map(function (k) { return blocComparable(cp.exercices[k].historique).seances.length; });
+      var blocs = exos.map(function (k) { return blocComparable(plageDeLaDerniere(cp.exercices[k].historique)).seances.length; });
       var ev = evaluerMuscle(cs, fen, blocs);
       muscles[m] = { muscle: m, statut: ev.statut, tendance: ev.tendance, confiance: ev.confiance, raison: ev.raison, compte: ev.compte, partPct: ev.partPct || null, conditions: ev.conditions,
         exercices: exos.map(function (k, i) { var ce = cs.filter(function (c) { return c.exercice === k; });
@@ -1273,8 +1381,8 @@
       var h = historiqueExercice(seances, n), dern = h[h.length - 1];
       exercices[n] = {
         catalogue: classerExercice(n, options), seances: h.length, derniereDate: dern.date, fourchette: dern.fourchette, mode: modeMesure(dern.fourchette),
-        derniereMesure: mesuresSeance(dern.series), diagnostic: diagnostiquer(h, dern.fourchette), tendance: tendance(h, dern.fourchette),
-        conseil: conseilProgression(h, { seriesPrevues: seriesPrevues[n], fourchette: dern.fourchette })
+        derniereMesure: mesuresSeance(dern.series), diagnostic: diagnostiquer(historiqueMemePlage(h, dern.fourchette), dern.fourchette), tendance: tendance(h, dern.fourchette),
+        conseil: conseilProgression(h, { seriesPrevues: seriesPrevues[n], fourchette: dern.fourchette, aujourdhui: aujourdhui })
       };
     });
     var recup = recuperation(seances, aujourdhui, options);
@@ -1304,6 +1412,8 @@
     e1RM: e1RM, forceSerie: forceSerie, mesuresSeance: mesuresSeance,
     // 3. catalogue
     classerExercice: classerExercice,
+    // 0.12.0 comparaison dans la meme plage
+    memePlage: memePlage, historiqueMemePlage: historiqueMemePlage, referenceConseil: referenceConseil,
     // 4. diagnostics
     modeMesure: modeMesure, axesProgression: axesProgression, comparer: comparer, natureProgression: natureProgression, diagnostiquer: diagnostiquer, tendance: tendance, conseilProgression: conseilProgression,
     bilanExercice: bilanExercice, recordsExercice: recordsExercice,
