@@ -4,6 +4,90 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Tatanka Training</title>
+<script>
+// ============================================================
+// ENVIRONNEMENT DE TEST (branche dev-coach-moteur uniquement)
+// Cette branche ne connait QUE la base tatanka-test. Aucune autre
+// configuration n'existe dans ce fichier : aucun repli possible.
+// - Adresse autorisee : exactement HOTE_TEST, en https, sans port.
+//   Toute autre adresse : aucune base, connexion bloquee.
+// - Premier chargement sur l'adresse autorisee : les donnees locales
+//   anciennes sont MISES DE COTE (renommees avec un prefixe que l'appli
+//   ne lit jamais), pas effacees. L'environnement demarre vierge et
+//   rien d'ancien ne peut partir vers tatanka-test.
+// ============================================================
+(function () {
+  var HOTE_TEST = "tatankatraining-git-dev-coach-moteur-ddenis01480-1492s-projects.vercel.app";
+  var CONFIG_TEST = {
+    nom: "tatanka-test",
+    url: "https://syfrtspfsevkbnnaispu.supabase.co",
+    key: "sb_publishable_Ln5a2USE1kEL2Ep-HPQG4A_cIT1NCja"
+  };
+  var MARQUE_VIERGE = "tatanka_test_env_vierge_v1";
+  var PREFIXE_MIS_DE_COTE = "zz_mis_de_cote_avant_test::";
+
+  function adresseAutorisee(loc) {
+    return !!loc && loc.protocol === "https:" && loc.hostname === HOTE_TEST &&
+      loc.host === HOTE_TEST && (loc.port === "" || loc.port === undefined);
+  }
+
+  // Deplace chaque cle existante sous le prefixe, sans jamais rien perdre :
+  // l'original n'est retire qu'apres verification de la copie.
+  function mettreDeCote(ls) {
+    if (ls.getItem(MARQUE_VIERGE) === "1") return 0;
+    var cles = [], i, n = 0;
+    for (i = 0; i < ls.length; i++) cles.push(ls.key(i));
+    for (i = 0; i < cles.length; i++) {
+      var k = cles[i];
+      if (k === null || k === MARQUE_VIERGE || k.indexOf(PREFIXE_MIS_DE_COTE) === 0) continue;
+      var v = ls.getItem(k);
+      ls.setItem(PREFIXE_MIS_DE_COTE + k, v);
+      if (ls.getItem(PREFIXE_MIS_DE_COTE + k) !== v) throw new Error("copie non verifiee : " + k);
+      ls.removeItem(k);
+      n++;
+    }
+    ls.setItem(MARQUE_VIERGE, "1");
+    return n;
+  }
+
+  function preparer(loc, ls) {
+    if (!adresseAutorisee(loc)) return { autorise: false, raison: "adresse", hote: loc ? loc.hostname : "", config: null };
+    try {
+      var n = mettreDeCote(ls);
+      return { autorise: true, raison: "", hote: loc.hostname, config: CONFIG_TEST, misDeCote: n };
+    } catch (e) {
+      return { autorise: false, raison: "stockage", hote: loc.hostname, config: null };
+    }
+  }
+
+  // Exposition pour les tests automatiques (Node), sans effet dans le navigateur.
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = { preparer: preparer, adresseAutorisee: adresseAutorisee, HOTE_TEST: HOTE_TEST,
+      CONFIG_TEST: CONFIG_TEST, MARQUE_VIERGE: MARQUE_VIERGE, PREFIXE_MIS_DE_COTE: PREFIXE_MIS_DE_COTE };
+    return;
+  }
+
+  var env;
+  try { env = preparer(window.location, window.localStorage); }
+  catch (e) { env = { autorise: false, raison: "stockage", hote: "", config: null }; }
+  if (env.config) Object.freeze(env.config);
+  window.TATANKA_ENV = Object.freeze(env);
+
+  document.addEventListener("DOMContentLoaded", function () {
+    var d = document.createElement("div");
+    if (env.autorise) {
+      d.textContent = "TEST · base tatanka-test · données fictives uniquement";
+      d.setAttribute("style", "position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#c0392b;color:#fff;font:700 12px/22px sans-serif;text-align:center;letter-spacing:1px;pointer-events:none");
+    } else {
+      d.innerHTML = "<div style='max-width:420px;padding:24px'><div style='font-size:20px;font-weight:800;margin-bottom:12px'>Adresse non autorisée</div>" +
+        "<div>Cette version de développement ne fonctionne que sur son adresse de test. La connexion est bloquée.</div></div>";
+      d.setAttribute("style", "position:fixed;inset:0;z-index:2147483647;background:#111;color:#fff;font:15px/1.5 sans-serif;display:flex;align-items:center;justify-content:center;text-align:center");
+    }
+    d.id = "tatanka-env-bandeau";
+    document.body.appendChild(d);
+  });
+})();
+</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
@@ -248,8 +332,11 @@ function fmtDate(d) { if (!d) return ""; const p = d.split("-"); return p[2] + "
 // ============================================================
 // SUPABASE AUTH + SAUVEGARDE - copie exacte de Tatanka Nutrition
 // ============================================================
-var SB_URL = 'https://ogkrgsnnoebsvbgsngvm.supabase.co';
-var SB_KEY = 'sb_publishable_KvM3k3gwBAArOFyUEd1a7A_oY0RTIom';
+// Base fournie UNIQUEMENT par window.TATANKA_ENV (script environnement en tete de page).
+// Pas de valeur par defaut : adresse non autorisee = aucune base.
+var SB_ENV = (window.TATANKA_ENV && window.TATANKA_ENV.autorise && window.TATANKA_ENV.config) ? window.TATANKA_ENV.config : null;
+var SB_URL = SB_ENV ? SB_ENV.url : null;
+var SB_KEY = SB_ENV ? SB_ENV.key : null;
 var STRIPE_MONTHLY = 'https://buy.stripe.com/test_bJe8wRb1s0kcc1l1uQcQU02';
 var STRIPE_YEARLY  = 'https://buy.stripe.com/test_7sY6oJfhI1og1mH3CYcQU04';
 var PACK_MONTHLY = 'https://buy.stripe.com/test_aFa3cxglMgja9TdddycQU07';
@@ -302,6 +389,7 @@ function migrateLegacyDataForUser(userId) {
 }
 
 function initSupabase() {
+  if (!SB_URL || !SB_KEY) { console.warn('Connexion bloquee : adresse non autorisee pour cette version de test'); return; }
   if (_sbInited) return;
   _sbInited = true;
   var s = document.createElement('script');
