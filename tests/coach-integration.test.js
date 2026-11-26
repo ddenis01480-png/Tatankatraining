@@ -45,6 +45,9 @@ t('Moteur charge : coachEngine() le trouve ; sans moteur : null (l\'appli garde 
 t('index.html n\'appelle que des fonctions de LECTURE du moteur (aucune ecriture possible)', () => {
   const calls = [...new Set([...SRC.matchAll(/\bCE(?:fin)?\.(\w+)/g)].map(m => m[1]))].sort();
   const allowed = ['bilanExercice', 'syntheseExercice', 'blocComparable', 'analyseExercice', 'recordsExercice', 'trierSeances', 'comparer', 'conseilProgression', 'diagnostiquer', 'historiqueExercice', 'lireFourchette', 'mesuresSeance', 'referenceConseil', 'normaliserSeances', 'normaliserSerie', 'analyser', 'scoreFatigue', 'FATIGUE_CRITERES', 'repondreFatigue', 'dernieresSollicitations', 'uniteEntree'];  // uniteEntree (0.11.0) : lecture de l'unite d'une seance (kg ou poids du corps)  // repondreFatigue : pure, renvoie une NOUVELLE fiche (l'ecriture reste dans BilanTab.update)
+  // 0.16.0 (choix de muscles) : fonctions PURES du moteur (elles renvoient un objet neuf) ; seule l'appli enregistre, par save().
+  allowed.push('classementsMoteur', 'classerExercice', 'choisirClassement', 'choixUtilisateur', 'libelleGroupe', 'GROUPES');
+  ['choisirClassement', 'classementsMoteur', 'fusionnerClassements'].forEach(f => assert.ok(!/localStorage|save\(|fetch\(/.test(E[f].toString()), f + ' : aucune ecriture'));
   calls.forEach(c => assert.ok(allowed.includes(c), 'appel non prevu : CE.' + c)); info('fonctions du moteur utilisees : ' + calls.join(', ')); });
 
 // ── Conseil de progression (encadre au-dessus des series) ──

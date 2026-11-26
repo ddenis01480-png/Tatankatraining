@@ -33,7 +33,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var VERSION = "0.15.0";
+  var VERSION = "0.16.0";
 
   // Reglages centralises (une seule valeur par regle).
   var REGLES = Object.freeze({
@@ -380,6 +380,76 @@
       if (r.mots.every(function (m) { return n.indexOf(m) !== -1; })) return { principal: r.principal, secondaires: r.secondaires.slice(), mouvement: r.mouvement, source: "catalogue" };
     }
     return { principal: null, secondaires: [], mouvement: null, source: "non_classe" };
+  }
+
+  // ═══════════════════════ 3 bis. CHOIX DE L'UTILISATEUR (0.16.0, etape 2b-1) ═══════════════════════
+  // L'utilisateur peut preciser ou corriger les muscles d'un exercice. Son choix est rattache a l'EXERCICE (son nom) et a son compte,
+  // jamais a une routine ni a une seance : rien n'est ecrit dans les seances, le choix est applique au moment du calcul (passe et futur).
+  // Format stocke (cle locale it3_classements, propre au compte) :
+  //   { version: 1, exercices: { "Nom": { principal, secondaires: [...], modifieLe } | { catalogue: true, modifieLe } } }
+  // « catalogue: true » = retour au choix par defaut, garde comme trace (un ancien import ne peut pas faire revenir l'ancien choix).
+  // Toute la logique (controles, fusion sans ecrasement, alias de noms) est ici ; l'interface n'appelle que ces fonctions.
+  var LIBELLES_GROUPES = Object.freeze({ "Pectoraux": "Pectoraux", "Deltoïde ant.": "Épaules – avant", "Deltoïde lat.": "Épaules – côté", "Deltoïde post.": "Épaules – arrière",
+    "Triceps": "Triceps", "Dos": "Dos", "Biceps": "Biceps", "Trapèzes": "Trapèzes", "Quadriceps": "Quadriceps", "Ischio-jambiers": "Ischio-jambiers", "Fessiers": "Fessiers",
+    "Adducteurs": "Adducteurs", "Mollets": "Mollets", "Abdominaux": "Abdominaux", "Lombaires": "Lombaires" });
+  function libelleGroupe(g) { return LIBELLES_GROUPES[g] || g; }
+  function classementsVides() { return { version: 1, exercices: {} }; }
+  // Lecture tolerante d'un stockage (absent, ancien, abime) : jamais d'exception, jamais de perte de ce qui est lisible.
+  function lireClassements(brut) {
+    var out = classementsVides(); var ex = brut && typeof brut === "object" && brut.exercices && typeof brut.exercices === "object" ? brut.exercices : null;
+    if (!ex) return out;
+    Object.keys(ex).forEach(function (nom) { var c = ex[nom]; if (!nom || !c || typeof c !== "object") return;
+      if (c.catalogue === true) { out.exercices[nom] = { catalogue: true, modifieLe: typeof c.modifieLe === "string" ? c.modifieLe : null }; return; }
+      if (typeof c.principal !== "string" || !c.principal) return;
+      out.exercices[nom] = { principal: c.principal, secondaires: Array.isArray(c.secondaires) ? c.secondaires.filter(function (m) { return typeof m === "string" && m && m !== c.principal; }) : [],
+        modifieLe: typeof c.modifieLe === "string" ? c.modifieLe : null }; });
+    return out;
+  }
+  // Controle d'un choix saisi : principal parmi les groupes, secondaires parmi les groupes, sans doublon et sans le principal.
+  function validerClassement(principal, secondaires) {
+    if (GROUPES.indexOf(principal) === -1) return null;
+    var vus = {}; var sec = (Array.isArray(secondaires) ? secondaires : []).filter(function (m) { if (GROUPES.indexOf(m) === -1 || m === principal || vus[m]) return false; vus[m] = true; return true; });
+    return { principal: principal, secondaires: GROUPES.filter(function (g) { return sec.indexOf(g) !== -1; }) };
+  }
+  // Nouveau stockage avec le choix de l'utilisateur pour un exercice (objet NEUF ; l'ancien n'est pas modifie).
+  // choix = { principal, secondaires } ou { catalogue: true }. Retour : le stockage, ou null si le choix est invalide.
+  function choisirClassement(stock, nom, choix, maintenant) {
+    if (typeof nom !== "string" || !nom.trim()) return null;
+    var base = lireClassements(stock), quand = (maintenant instanceof Date ? maintenant : new Date(isFinite(maintenant) ? maintenant : Date.now())).toISOString();
+    if (choix && choix.catalogue === true) { base.exercices[nom] = { catalogue: true, modifieLe: quand }; return base; }
+    var v = validerClassement(choix && choix.principal, choix && choix.secondaires); if (!v) return null;
+    base.exercices[nom] = { principal: v.principal, secondaires: v.secondaires, modifieLe: quand }; return base;
+  }
+  // Choix de l'utilisateur pour un exercice (null = rien, ou retour au catalogue). alias : { ancienNom: nomCorrige } (corrections de noms de l'appli).
+  function choixUtilisateur(stock, nom, alias) {
+    var ex = lireClassements(stock).exercices; var n = alias && Object.prototype.hasOwnProperty.call(alias, nom) ? alias[nom] : nom;
+    var c = ex[n] || ex[nom]; return c && !c.catalogue ? c : null;
+  }
+  // Conversion en options.classements du moteur (seuls les choix valides et actifs). Les anciens noms corriges par l'appli (alias) suivent
+  // le choix du nom corrige. Un choix dont un groupe n'existe plus (ex. ancien « Epaules ») est ignore dans les calculs mais reste stocke.
+  function classementsMoteur(stock, alias) {
+    var ex = lireClassements(stock).exercices, out = {};
+    Object.keys(ex).forEach(function (nom) { var c = ex[nom]; if (c.catalogue) return; var v = validerClassement(c.principal, c.secondaires);
+      if (!v || v.secondaires.length !== c.secondaires.length) return; out[nom] = { principal: v.principal, secondaires: v.secondaires }; });
+    if (alias && typeof alias === "object") Object.keys(alias).forEach(function (ancien) { var nv = alias[ancien]; if (out[nv] && !out[ancien] && !ex[ancien]) out[ancien] = out[nv]; });
+    return out;
+  }
+  // Choix devenus inutilisables (groupe disparu) : a revoir par l'utilisateur, jamais supprimes.
+  function classementsARevoir(stock) {
+    var ex = lireClassements(stock).exercices;
+    return Object.keys(ex).filter(function (nom) { var c = ex[nom]; if (c.catalogue) return false; var v = validerClassement(c.principal, c.secondaires); return !v || v.secondaires.length !== c.secondaires.length; });
+  }
+  // Fusion d'un import dans le stockage local : on AJOUTE seulement. Un exercice deja choisi sur l'appareil (y compris « catalogue »)
+  // garde son choix ; les differences sont comptees, jamais appliquees. Rien n'est supprime. Retour : objet NEUF + resume.
+  function fusionnerClassements(local, importe) {
+    var res = lireClassements(local), imp = lireClassements(importe).exercices, ajoutes = 0, conserves = 0, identiques = 0, invalides = 0;
+    Object.keys(imp).forEach(function (nom) { var l = res.exercices[nom], i = imp[nom];
+      // Un choix importe illisible pour cette version (groupe inconnu) n'est pas ajoute ; un choix local, lui, n'est jamais retire.
+      if (!i.catalogue) { var v = validerClassement(i.principal, i.secondaires); if (!v || v.secondaires.length !== i.secondaires.length) { invalides++; return; } }
+      if (!l) { res.exercices[nom] = i; ajoutes++; return; }
+      var memes = !!l.catalogue === !!i.catalogue && (l.catalogue || (l.principal === i.principal && JSON.stringify(l.secondaires) === JSON.stringify(i.secondaires)));
+      if (memes) identiques++; else conserves++; });
+    return { classements: res, ajoutes: ajoutes, conserves: conserves, identiques: identiques, invalides: invalides, change: ajoutes > 0 };
   }
 
   // ═══════════════════════ 4. DIAGNOSTICS ═══════════════════════
@@ -1438,6 +1508,9 @@
     e1RM: e1RM, forceSerie: forceSerie, mesuresSeance: mesuresSeance,
     // 3. catalogue
     classerExercice: classerExercice,
+    // 3 bis. choix de l'utilisateur (0.16.0)
+    LIBELLES_GROUPES: LIBELLES_GROUPES, libelleGroupe: libelleGroupe, classementsVides: classementsVides, lireClassements: lireClassements, validerClassement: validerClassement,
+    choisirClassement: choisirClassement, choixUtilisateur: choixUtilisateur, classementsMoteur: classementsMoteur, classementsARevoir: classementsARevoir, fusionnerClassements: fusionnerClassements,
     // 0.12.0 comparaison dans la meme plage
     memePlage: memePlage, historiqueMemePlage: historiqueMemePlage, referenceConseil: referenceConseil,
     // 4. diagnostics

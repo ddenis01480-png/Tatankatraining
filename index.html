@@ -754,7 +754,7 @@ function applyImport(data, current, opts) {
 // rirCible : RIR vise par le programme (3/2/1...), simple indication affichee dans la liste ; jamais recopie dans le RIR reel.
 // Les series plus anciennes n'ont pas rirSaisi : leur RIR est « non verifie ».
 function parseRir(v) { if (v === null || v === undefined || v === "") return null; const n = parseInt(v, 10); return (isNaN(n) || n < 0 || n > 10) ? null : n; }
-const KEYS = { routines: "it3_routines", sessions: "it3_sessions", fatigue: "it3_fatigue", cycle: "it3_cycle", supps: "it3_supps", customEx: "it3_customEx" };
+const KEYS = { routines: "it3_routines", sessions: "it3_sessions", fatigue: "it3_fatigue", cycle: "it3_cycle", supps: "it3_supps", customEx: "it3_customEx", classements: "it3_classements" };
 function load(k) { try { const v = lsGetNs(k); return v ? JSON.parse(v) : null; } catch(e) { return null; } }
 function save(k, v) {
   try {
@@ -960,10 +960,19 @@ function fatigueAffichage(fiche) {
 }
 // Recuperation musculaire : information DESCRIPTIVE seulement (moteur dernieresSollicitations : catalogue unique, muscles
 // secondaires, heure reelle d'enregistrement). Aucune conclusion « recupere / insuffisant » n'est tiree du seul delai.
+// CHOIX DE MUSCLES DE L'UTILISATEUR (Coach 0.16.0) : stockes par compte (it3_classements), rattaches au NOM de l'exercice, appliques
+// au moment du calcul (seances passees et futures). Jamais ecrits dans les seances ni dans les routines. Toute la logique est dans le moteur.
+function classementsStock() { try { return load(KEYS.classements); } catch(e) { return null; } }
+function cleExercice(nom) { return typeof normalizeExName === "function" ? normalizeExName(nom) : nom; }
+function optionsMuscles(CE) {
+  if (!CE || typeof CE.classementsMoteur !== "function") return {};
+  return { classements: CE.classementsMoteur(classementsStock(), typeof EXERCISE_NAME_FIXES !== "undefined" ? EXERCISE_NAME_FIXES : null) };
+}
 function recupSollicitations(sessions, exercices, maintenant) {
   const CE = coachEngine(); if (!CE || typeof CE.dernieresSollicitations !== "function") return null;
   const seances = CE.normaliserSeances(sessions || [], { normaliserNom: typeof normalizeExName === "function" ? normalizeExName : undefined });
-  return CE.dernieresSollicitations(seances, maintenant, exercices ? { exercices: exercices } : undefined);
+  const opts = typeof optionsMuscles === "function" ? optionsMuscles(CE) : {};
+  return CE.dernieresSollicitations(seances, maintenant, exercices ? { ...opts, exercices: exercices } : opts);
 }
 const RECUP_JOURS = ["dim.", "lun.", "mar.", "mer.", "jeu.", "ven.", "sam."];
 function recupDelaiTexte(ec) {
@@ -1356,8 +1365,65 @@ function StagnationAlert({ diag, onClose, onNext }) {
   );
 }
 
+// Panneau « Muscles » : l'utilisateur precise ou corrige les muscles d'UN exercice. Enregistrement automatique (compte, appareil),
+// applique partout (toutes les routines, seances passees et futures) sans modifier aucune seance. Aucun reglage technique.
+function MusclesPanel({ nom, onClose, onSaved }) {
+  const CE = coachEngine();
+  const cle = cleExercice(nom);
+  const actuel = CE ? CE.classerExercice(cle, optionsMuscles(CE)) : { principal: null, secondaires: [] };
+  const perso = CE ? CE.choixUtilisateur(classementsStock(), cle, typeof EXERCISE_NAME_FIXES !== "undefined" ? EXERCISE_NAME_FIXES : null) : null;
+  const [principal, setPrincipal] = useState(actuel.principal);
+  const [aussi, setAussi] = useState(actuel.secondaires || []);
+  const [etat, setEtat] = useState(null); // "ok" | "erreur"
+  if (!CE) return null;
+  const L = g => CE.libelleGroupe(g);
+  function enregistrer(choix) {
+    const avant = classementsStock();
+    const nouveau = CE.choisirClassement(avant, cle, choix);
+    if (!nouveau) { setEtat("erreur"); return; }
+    save(KEYS.classements, nouveau);
+    // Verification : on relit ce qui est reellement enregistre avant d'afficher « Enregistré ».
+    const relu = classementsStock(); const ok = !!(relu && relu.exercices && JSON.stringify(relu.exercices[cle]) === JSON.stringify(nouveau.exercices[cle]));
+    setEtat(ok ? "ok" : "erreur");
+    if (ok) { onSaved && onSaved(); setTimeout(onClose, 900); }
+  }
+  const bouton = (actif, couleur) => ({ background: actif ? couleur + "22" : "#141414", border: "1px solid " + (actif ? couleur : "#2a2a2a"), color: actif ? couleur : "#999",
+    borderRadius: 8, padding: "9px 6px", fontSize: 12, fontWeight: actif ? 800 : 500, cursor: "pointer", textAlign: "center" });
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "#000c", zIndex: 300, display: "flex", alignItems: "flex-end", justifyContent: "center" }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#0d0d0d", border: "1px solid #222", borderRadius: "16px 16px 0 0", padding: "18px 16px 24px", width: "100%", maxWidth: 480, maxHeight: "88vh", overflowY: "auto" }}>
+        <div style={{ fontSize: 15, fontWeight: 900, color: "#fff", marginBottom: 2 }}>{nom}</div>
+        <div style={{ fontSize: 11, color: "#777", marginBottom: 14 }}>{perso ? "Muscles choisis par toi" : actuel.principal ? "Muscles reconnus automatiquement" : "Muscles non reconnus : choisis-les ci-dessous"}</div>
+        <div style={{ fontSize: 12, color: "#ccc", fontWeight: 700, marginBottom: 8 }}>Quel muscle cet exercice travaille-t-il surtout ?</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 14 }}>
+          {CE.GROUPES.map(g => <button key={g} onClick={() => { setPrincipal(g); setAussi(a => a.filter(x => x !== g)); setEtat(null); }} style={bouton(principal === g, "#ff6600")}>{L(g)}</button>)}
+        </div>
+        {principal && <>
+          <div style={{ fontSize: 12, color: "#ccc", fontWeight: 700, marginBottom: 8 }}>D'autres muscles travaillent aussi ? <span style={{ color: "#666", fontWeight: 400 }}>(facultatif)</span></div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 14 }}>
+            {CE.GROUPES.filter(g => g !== principal).map(g => { const on = aussi.includes(g);
+              return <button key={g} onClick={() => { setAussi(a => on ? a.filter(x => x !== g) : [...a, g]); setEtat(null); }} style={bouton(on, "#4CAF50")}>{(on ? "✓ " : "") + L(g)}</button>; })}
+          </div>
+        </>}
+        <div style={{ fontSize: 11, color: "#888", marginBottom: 12 }}>Ce choix s'applique à cet exercice partout, même dans tes séances passées.</div>
+        {etat === "ok" && <div style={{ fontSize: 13, color: "#4CAF50", fontWeight: 800, marginBottom: 10 }}>Enregistré ✓</div>}
+        {etat === "erreur" && <div style={{ fontSize: 12, color: "#FF4444", marginBottom: 10 }}>Impossible d'enregistrer pour l'instant. Réessaie dans un moment.</div>}
+        <button disabled={!principal} onClick={() => enregistrer({ principal, secondaires: aussi })}
+          style={{ width: "100%", background: principal ? "#ff6600" : "#333", border: "none", color: "#000", borderRadius: 10, padding: "12px", fontSize: 14, fontWeight: 900, cursor: principal ? "pointer" : "default", marginBottom: 8 }}>Valider</button>
+        {perso && <button onClick={() => enregistrer({ catalogue: true })}
+          style={{ width: "100%", background: "none", border: "1px solid #333", color: "#aaa", borderRadius: 10, padding: "10px", fontSize: 12, cursor: "pointer", marginBottom: 8 }}>Revenir au choix par défaut</button>}
+        <button onClick={onClose} style={{ width: "100%", background: "none", border: "none", color: "#666", padding: "8px", fontSize: 12, cursor: "pointer" }}>Annuler</button>
+      </div>
+    </div>
+  );
+}
+
 function RoutinesTab({ routines, setRoutines, onStartSession, view, setView, editing, setEditing }) {
   const [showPicker, setShowPicker] = useState(false);
+  const [musclesEx, setMusclesEx] = useState(null); // nom de l'exercice dont on precise les muscles
+  const [, setMusclesMaj] = useState(0);
+  const CEm = coachEngine(), optsM = optionsMuscles(CEm);
+  const aPreciser = ex => !!CEm && !estActivation(ex) && !CEm.classerExercice(cleExercice(ex.name), optsM).principal;
   const DC = { "LUNDI": "#FF6600", "MARDI": "#4CAF50", "MERCREDI": "#FFC107", "JEUDI": "#FF6600", "VENDREDI": "#4CAF50" };
 
   function newRoutine() { setEditing({ id: Date.now(), name: "", day: "", exercises: [] }); setView("edit"); }
@@ -1407,6 +1473,7 @@ function RoutinesTab({ routines, setRoutines, onStartSession, view, setView, edi
 
   return (
     <div style={{ padding: "16px 16px 80px" }}>
+      {musclesEx && <MusclesPanel nom={musclesEx} onClose={() => setMusclesEx(null)} onSaved={() => setMusclesMaj(n => n + 1)} />}
       {showPicker && <ExercisePicker onSelect={ex => { setEditing(p => ({ ...p, exercises: [...p.exercises, { name: ex, sets: 3, repsTarget: "8-12", rest: 90, note: "", warmupSets: 0, warmupLabel: "" }] })); setShowPicker(false); }} onClose={() => setShowPicker(false)} />}
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
         <button onClick={() => setView("list")} style={{ background: "none", border: "none", color: "#ff6600", fontSize: 20, cursor: "pointer", padding: 0 }}>{"<"}</button>
@@ -1469,6 +1536,13 @@ function RoutinesTab({ routines, setRoutines, onStartSession, view, setView, edi
             </div>
           </div>
           {estActivation(ex) && <div style={{ fontSize: 9, color: "#29B6F6", fontFamily: "monospace", marginBottom: 6 }}>Exercice d'activation : enregistré, mais hors progression, records, volume et récupération.</div>}
+          {CEm && <div style={{ marginBottom: 6 }}>
+            <button onClick={() => setMusclesEx(ex.name)} style={aPreciser(ex)
+              ? { background: "#FF980022", border: "1px solid #FF9800", color: "#FF9800", borderRadius: 6, padding: "4px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" }
+              : { background: "none", border: "1px solid #2a2a2a", color: "#666", borderRadius: 6, padding: "3px 10px", fontSize: 10, cursor: "pointer" }}>
+              {aPreciser(ex) ? "Muscles à préciser" : "Muscles"}
+            </button>
+          </div>}
           <input value={ex.note || ""} onChange={e => { const exs = [...editing.exercises]; exs[i] = { ...exs[i], note: e.target.value }; setEditing(p => ({ ...p, exercises: exs })); }}
             placeholder="Note technique..."
             style={{ width: "100%", background: "#0d0d0d", border: "1px solid #1a1a1a", color: "#666", borderRadius: 6, padding: "6px 10px", fontSize: 11, boxSizing: "border-box", fontStyle: "italic" }} />
@@ -3595,6 +3669,7 @@ function exportData() {
       fatigue: load(KEYS.fatigue) || {},
       cycle: load(KEYS.cycle) || { startDate: ((load(KEYS.sessions)||[])[0] && (load(KEYS.sessions)||[])[0].date) || today(), num: 1 },
       customEx: CUSTOM_EXERCISES.slice(),
+      classements: load(KEYS.classements) || { version: 1, exercices: {} },
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -3650,11 +3725,19 @@ function exportData() {
     if (r.changed.fatigue) { save(KEYS.fatigue, r.fatigue); setFatigue(r.fatigue); }
     if (r.changed.cycle) { save(KEYS.cycle, r.cycle); }
     if (data && Array.isArray(data.customEx)) { data.customEx.forEach(n => { if (typeof n === "string") addCustomExercise(n); }); }
+    // Choix de muscles : on AJOUTE seulement ; un choix deja fait sur cet appareil est toujours conserve (fusion dans le moteur).
+    const CEi = typeof coachEngine === "function" ? coachEngine() : null;
+    if (data && data.classements && CEi && typeof CEi.fusionnerClassements === "function") {
+      const f = CEi.fusionnerClassements(load(KEYS.classements), data.classements);
+      if (f.change) save(KEYS.classements, f.classements);
+      return { ...r.summary, classementsAjoutes: f.ajoutes, classementsConserves: f.conserves };
+    }
     return r.summary;
   }
   function importSummaryText(sm) {
     return "Import terminé (rien n'a été supprimé ni remplacé).\n- Séances ajoutées : " + sm.sessionsAdded + " (déjà présentes, ignorées : " + sm.sessionsDuplicates + (sm.sessionsConflicts ? " ; ajoutées avec un nouvel identifiant : " + sm.sessionsConflicts : "") + ")" +
-      "\n- Routines ajoutées : " + sm.routinesAdded + (sm.routinesDuplicates ? " (déjà présentes : " + sm.routinesDuplicates + ")" : "") + (sm.routinesRenamed ? " ; renommées « (import) » : " + sm.routinesRenamed : "");
+      "\n- Routines ajoutées : " + sm.routinesAdded + (sm.routinesDuplicates ? " (déjà présentes : " + sm.routinesDuplicates + ")" : "") + (sm.routinesRenamed ? " ; renommées « (import) » : " + sm.routinesRenamed : "") +
+      (sm.classementsAjoutes ? "\n- Muscles d'exercices ajoutés : " + sm.classementsAjoutes : "") + (sm.classementsConserves ? "\n- Tes choix de muscles déjà faits sont conservés : " + sm.classementsConserves : "");
   }
   function addImportedRoutines(routines, label) {
     const m = mergeRoutinesNonDestructive(load(KEYS.routines) || [], routines);
