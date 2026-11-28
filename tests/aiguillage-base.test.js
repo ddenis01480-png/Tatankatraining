@@ -26,7 +26,7 @@ t('aucune cle secrete dans la page', () => {
   assert.strictEqual((SRC.match(/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g) || []).length, 0);
 });
 t('production (et alias main) : base de production, tous les comptes, Coach pour David seul', () => {
-  for (const h of ['https://tatankatraining.vercel.app/', 'https://tatankatraining-git-main-ddenis01480-1492s-projects.vercel.app/']) {
+  for (const h of ['https://tatankatraining.vercel.app/', 'https://tatankatraining-ddenis01480-1492s-projects.vercel.app/', 'https://tatankatraining-git-main-ddenis01480-1492s-projects.vercel.app/']) {
     const e = E.preparer(loc(h)); assert.ok(e.autorise && e.production && e.config.url.includes(PROD_REF), h);
     assert.ok(E.compteAutorise(e, DAVID) && E.compteAutorise(e, 'autre-compte'), 'connexion refusee a un compte');
     assert.ok(E.coachPour(e, DAVID));
