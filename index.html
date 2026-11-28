@@ -814,11 +814,11 @@ function analyzeEx(history) {
 // Règle exacte : +1 rep sur DERNIERE série d'abord
 // 8-8-8 → 8-8-9 → 8-9-9 → 9-9-9 → augmenter poids
 // Gère aussi les séries de 100 et les plages variables (10-15)
-function getProgressionTip(lastSets, sessions, exName, repsTarget, seriesPrevues) {
+function getProgressionTip(lastSets, sessions, exName, repsTarget, seriesPrevues, chargeAcceptee) {
   // Coach V2 (moteur 0.12.0, regle 1) : le moteur choisit lui-meme la reference = derniere seance du meme exercice dans la MEME
   // plage, de 28 jours au plus ; sinon, aucun chiffre (« Premiere seance dans cette plage » / « Reference trop ancienne »).
   const CE = coachEngine();
-  if (CE) return coachConseilAffichage(CE.conseilProgression(coachHistorique(CE, sessions, exName), { fourchette: repsTarget || "", seriesPrevues: seriesPrevues, exercice: exName }));
+  if (CE) return coachConseilAffichage(CE.conseilProgression(coachHistorique(CE, sessions, exName), { fourchette: repsTarget || "", seriesPrevues: seriesPrevues, exercice: exName, chargeAcceptee: chargeAcceptee }));
   if (!lastSets || lastSets.length === 0) return null;
   const validLast = lastSets.filter(s => s.weight && s.reps);
   if (validLast.length === 0) return null;
@@ -1084,15 +1084,19 @@ function coachA(kg, unite) { return unite === "conventionnelle" || unite === "po
 function coachConseilAffichage(c) {
   if (!c) return null;
   const note = c.rir && c.rir.note === "pousser" ? " · RIR élevé → pousse plus fort" : c.rir && c.rir.note === "prudence" ? " · RIR faible → sois prudent" : "";
+  // 0.19.0 : seance qui suit une hausse de charge : simple information, jamais un blocage.
+  const ah = c.apresHausse, noteH = !ah ? "" : ah.evaluation === "trop_lourde_probable" ? " · Sous " + c.fourchette.min + " reps avec un RIR faible : la charge est peut-être trop lourde"
+    : ah.evaluation === "marge" ? " · RIR élevé : la nouvelle charge passe bien" : "";
   switch (c.action) {
+    case "nouvelle_charge": return { color: "#00C853", icon: "+", msg: "NOUVELLE CHARGE " + c.charge + "kg (validée) · vise " + c.repsCible + " reps sur chaque série, puis +1 rep par séance jusqu'à " + c.repsMax + " avant la prochaine hausse" };
     case "serie100": return { color: "#9C27B0", icon: "★", msg: "SERIE DE 100 — charge légère, rest-pause 1-5 sec autorisé. Vise les 100 reps en continu à terme." };
     case "reduire_charge": return { color: "#FF4444", icon: "!", msg: "Régression — réduis de 5-10% et repars à RIR 4 minimum" };
     case "consolider": return { color: "#FFD600", icon: "!", msg: "Progression rapide — maintiens " + c.charge + "kg, consolide les reps avant d'augmenter" };
     case "augmenter_charge": if (c.chargeConventionnelle) return { color: "#00C853", icon: "+", msg: "✓ HAUT DE FOURCHETTE atteint au poids du corps · si tu ajoutes une charge, repars à " + c.repsCible + " reps" + note };
       return { color: "#00C853", icon: "+", msg: "✓ AUGMENTE → " + c.charge + "kg +" + c.increment + " = " + c.nouvelleCharge + "kg · Repars à " + c.repsCible + " reps" + note };
     case "ajouter_rep": return { color: c.serieNonFaite ? "#FF8C00" : "#4FC3F7", icon: c.serieNonFaite ? "!" : ">",
-      msg: "S" + c.serie + " : vise " + c.reps + " rep · " + (c.chargeConventionnelle ? "poids du corps" : c.charge + "kg") + (c.serieNonFaite ? " · série non faite la dernière fois" : "") + (c.ensuiteCharge ? " · Puis +poids" : "") + note };
-    case "maintenir": return { color: "#888", icon: "=", msg: "Maintiens " + (c.chargeConventionnelle ? "le poids du corps" : c.charge + "kg") + " · Vise " + c.repsMin + " reps minimum sur toutes les séries" };
+      msg: "S" + c.serie + " : vise " + c.reps + " rep · " + (c.chargeConventionnelle ? "poids du corps" : c.charge + "kg") + (c.serieNonFaite ? " · série non faite la dernière fois" : "") + (c.ensuiteCharge ? " · Puis +poids" : "") + note + noteH };
+    case "maintenir": return { color: "#888", icon: "=", msg: "Maintiens " + (c.chargeConventionnelle ? "le poids du corps" : c.charge + "kg") + " · Vise " + c.repsMin + " reps minimum sur toutes les séries" + noteH };
     case "aucune_reference": return c.raison === "reference_trop_ancienne"
       ? { color: "#888", icon: "i", msg: "Référence trop ancienne : dernière séance en " + c.fourchette.texte + " le " + fmtDate(c.date) + " (il y a " + c.ageJours + " j). Pas de conseil chiffré ni de charge pré-remplie." }
       : { color: "#888", icon: "i", msg: "Première séance dans cette plage (" + c.fourchette.texte + ") : pas de conseil chiffré ni de charge pré-remplie." };
@@ -1704,10 +1708,15 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
         const lastSets = refS.sets;
         // Coach 0.18.0 : charge d'une proposition ACCEPTEE par l'utilisateur, jusqu'a la premiere seance faite avec cet exercice apres l'acceptation.
         const CEc = coachEngine(), chargeCoach = CEc && typeof CEc.chargeCibleActive === "function" ? CEc.chargeCibleActive(ex, sessions, { normaliserNom: cleExercice }) : null;
+        // 0.19.0 : apres une hausse acceptee, cible de repetitions = bas de la fourchette de CET exercice (champ a part, jamais recopie dans les reps faites).
+        const fCoach = chargeCoach !== null ? CEc.lireFourchette(ex.repsTarget || (progExRef2 && progExRef2.repsTarget) || "8-12") : null;
+        const repsCibleCoach = fCoach && fCoach.type === "reps" ? fCoach.min : null;
         return {
+          ...(chargeCoach !== null ? { chargeAcceptee: chargeCoach } : {}),
           name: ex.name, repsTarget: ex.repsTarget || (progExRef2 && progExRef2.repsTarget) || "8-12", note: ex.note || (progExRef2 && progExRef2.note) || "", userNote: "", rest: ex.rest || 90, warmupSets: ex.warmupSets || (progExRef2 && progExRef2.warmupSets) || 0, warmupLabel: ex.warmupLabel || (progExRef2 && progExRef2.warmupLabel) || "", lastSets, lastSetsDate: refS.date, ...(estActivation(ex) ? { activation: true } : {}),
           sets: Array.from({ length: ex.sets || 3 }, (_, i) => ({
             weight: chargeCoach !== null ? String(chargeCoach) : (lastSets[i] && lastSets[i].weight) || (lastSets[0] && lastSets[0].weight) || "", reps: "",
+            ...(repsCibleCoach !== null ? { repsCible: repsCibleCoach } : {}),
             rir: "", rirCible: i === 0 ? 3 : i === 1 ? 2 : 1, rirSaisi: false, done: false
           }))
         };
@@ -1865,7 +1874,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
       ...(estActivation(ex) ? { activation: true } : {}),
       sets: ex.sets
         .filter(s => s.weight && s.reps)
-        .map(s => ({ weight: parseFloat(s.weight), reps: parseInt(s.reps), rir: parseRir(s.rir), rirSaisi: s.rirSaisi === true && parseRir(s.rir) !== null, ...(parseRir(s.rirCible) !== null ? { rirCible: parseRir(s.rirCible) } : {}), done: true }))
+        .map(s => ({ weight: parseFloat(s.weight), reps: parseInt(s.reps), rir: parseRir(s.rir), rirSaisi: s.rirSaisi === true && parseRir(s.rir) !== null, ...(parseRir(s.rirCible) !== null ? { rirCible: parseRir(s.rirCible) } : {}), ...(parseInt(s.repsCible) > 0 ? { repsCible: parseInt(s.repsCible) } : {}), done: true }))
     })).filter(ex => ex.sets.length > 0);
 
     if (!validExs.length) return alert("Aucune serie remplie !");
@@ -2464,7 +2473,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
             {(() => {
               if (!window._isPremium || !window._isPremium()) return null;
               if (estActivation(ex)) return null; // activation : pas de conseil de progression
-              const tip = getProgressionTip(ex.lastSets, horsActivation(sessions), ex.name, ex.repsTarget, ex.sets.length);
+              const tip = getProgressionTip(ex.lastSets, horsActivation(sessions), ex.name, ex.repsTarget, ex.sets.length, ex.chargeAcceptee);
               if (!tip) return null;
               return (
                 <div style={{ background: tip.color + "12", border: "1px solid " + tip.color + "44", borderRadius: 7, padding: "7px 10px", marginBottom: 8, display: "flex", gap: 8, alignItems: "center" }}>
@@ -2502,7 +2511,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
                       placeholder={(ref && ref.weight) ? String(ref.weight) : "kg"} readOnly={s.done}
                       style={{ background: s.done ? "#111" : "#1a1a1a", border: "1px solid #2a2a2a", color: s.done ? "#444" : "#fff", borderRadius: 7, padding: "7px 4px", fontSize: 15, fontWeight: 800, textAlign: "center", width: "100%", boxSizing: "border-box" }} />
                     <input type="number" value={s.reps} onChange={e => !s.done && updateSet(exIdx, si, "reps", e.target.value)}
-                      placeholder={(ref && ref.reps) ? String(ref.reps) : "reps"} readOnly={s.done}
+                      placeholder={parseInt(s.repsCible) > 0 ? String(s.repsCible) : (ref && ref.reps) ? String(ref.reps) : "reps"} readOnly={s.done}
                       style={{ background: s.done ? "#111" : "#1a1a1a", border: "1px solid #2a2a2a", color: s.done ? "#444" : "#fff", borderRadius: 7, padding: "7px 4px", fontSize: 15, fontWeight: 800, textAlign: "center", width: "100%", boxSizing: "border-box" }} />
                     {/* RIR : la liste = RIR REELLEMENT effectue (« RIR ? » = inconnu tant que rien n'est choisi) ; en dessous, toujours visible, le RIR CIBLE du programme. */}
                     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>

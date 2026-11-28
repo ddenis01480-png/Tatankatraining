@@ -33,7 +33,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var VERSION = "0.18.0";
+  var VERSION = "0.19.0";
 
   // Reglages centralises (une seule valeur par regle).
   var REGLES = Object.freeze({
@@ -1186,6 +1186,23 @@
   // Retour : null ou { action, ... , rir:{ moyen, note, fiable, statuts } }. Actions :
   //   "serie100" | "augmenter_charge" {charge, increment, nouvelleCharge, repsCible} | "ajouter_rep" {serie, reps, charge, serieNonFaite, ensuiteCharge}
   //   | "maintenir" {charge, repsMin} | "reduire_charge" {pctMin:5, pctMax:10, rirMin:4} | "consolider" {charge}
+  // 0.19.0 : la seance de reference suit-elle une HAUSSE DE CHARGE (charge plus lourde que la seance precedente, meme plage) ?
+  // Si oui : { chargeAvant, charge, repsMoy, sousLeBas, evaluation } avec evaluation :
+  //   "adaptee"            : repetitions dans la fourchette ;
+  //   "sous_le_bas"        : repetitions sous le bas de fourchette, RIR non saisi : AUCUNE conclusion, la progression continue ;
+  //   "trop_lourde_probable": sous le bas de fourchette ET RIR reellement saisi sur toutes les series, moyen <= RIR_BAS (1) ;
+  //   "marge"              : RIR reellement saisi sur toutes les series, moyen >= RIR_HAUT (4) : la charge semble facile.
+  // Information seulement : le conseil (+1 rep) n'est jamais bloque par le RIR.
+  function apresHausse(hist, dernier, f, valides, rir) {
+    if (!dernier || !dernier.date || f.type !== "reps" || !valides.length) return null;
+    var avant = trierHist(hist).filter(function (h) { return h.date && h.date < dernier.date && memePlage(h.fourchette, f) && aSeriesValides(h); });
+    if (!avant.length) return null;
+    var p = mesuresSeance(seriesNorm(avant[avant.length - 1].series)), c = mesuresSeance(valides);
+    if (!(c.chargeMax > p.chargeMax) || valides.some(function (st) { return st.conventionnelle; })) return null;
+    var sous = c.repsMoy < f.min, rirOk = rir.fiable && rir.statuts && rir.statuts.saisi === valides.length;
+    var ev = rirOk && sous && rir.moyen <= REGLES.RIR_BAS ? "trop_lourde_probable" : rirOk && rir.moyen >= REGLES.RIR_HAUT ? "marge" : sous ? "sous_le_bas" : "adaptee";
+    return { chargeAvant: p.chargeMax, charge: c.chargeMax, repsMoy: round1(c.repsMoy), sousLeBas: sous, rirUtilise: !!rirOk, evaluation: ev };
+  }
   function conseilProgression(historique, options) {
     options = options || {};
     var hist = (historique || []).slice().sort(function (x, y) { return (x.date || "") < (y.date || "") ? -1 : (x.date || "") > (y.date || "") ? 1 : 0; });
@@ -1195,6 +1212,15 @@
     // Sinon : { action: "aucune_reference", raison } — aucun chiffre (jamais un conseil tire d'une autre plage ou d'une seance ancienne).
     var fOpt = typeof options.fourchette === "string" ? lireFourchette(options.fourchette) : (options.fourchette || dernier.fourchette || lireFourchette(""));
     if (fOpt.type !== "reps" && fOpt.type !== "serie100") return null; // gainage en secondes, fourchette illisible : jamais de conseil (inchange)
+    // 0.19.0 : charge ACCEPTEE par l'utilisateur (proposition du coach, options.chargeAcceptee = chargeCibleActive de la routine) :
+    // elle devient la reference de la seance ; cible de repetitions = BAS de la fourchette de l'exercice. Aucun autre calcul.
+    var acceptee = num(options.chargeAcceptee);
+    if (acceptee > 0 && fOpt.type === "reps") {
+      var avantH = referenceConseil(hist, fOpt, { aujourdhui: options.aujourdhui });
+      var chAvant = avantH.statut === "ok" ? mesuresSeance(avantH.reference.series).chargeMax : null;
+      return { action: "nouvelle_charge", charge: acceptee, chargeAvant: chAvant || null, repsCible: fOpt.min, repsMax: fOpt.max,
+        fourchette: { min: fOpt.min, max: fOpt.max, type: fOpt.type }, rir: { moyen: null, note: null, fiable: false, statuts: null } };
+    }
     if (!Array.isArray(options.dernieresSeries)) {
       var rc = referenceConseil(hist, options.fourchette !== undefined && options.fourchette !== null ? options.fourchette : dernier.fourchette, { aujourdhui: options.aujourdhui });
       if (rc.statut !== "ok") return rc.statut === "reference_trop_ancienne" || rc.autresPlages
@@ -1211,7 +1237,7 @@
     var statuts = { saisi: 0, prerempli: 0, non_verifie: 0, inconnu: 0 }; valides.forEach(function (s) { statuts[s.statutRir]++; });
     var rir = { moyen: moyen, note: moyen === null ? null : moyen >= REGLES.RIR_HAUT ? "pousser" : moyen <= REGLES.RIR_BAS ? "prudence" : null,
       fiable: connus.length > 0 && statuts.saisi === connus.length, statuts: statuts };
-    var avec = function (o) { o.rir = rir; o.fourchette = { min: f.min, max: f.max, type: f.type }; return o; };
+    var avec = function (o) { o.rir = rir; o.fourchette = { min: f.min, max: f.max, type: f.type }; var ah = apresHausse(hist, dernier, f, valides, rir); if (ah) o.apresHausse = ah; return o; };
     if (f.type === "serie100") return avec({ action: "serie100" });
     if (f.type !== "reps") return null;
     var minR = f.min, maxR = f.max;
@@ -1848,7 +1874,7 @@
       if (e.etat === "plafond" && !e.conventionnelle && ch > 0) {
         var inc2 = incrementPour(ch), nv2 = Math.round((ch + inc2) * 100) / 100;
         ajouter(base("charge", { charge: ch }, { charge: nv2 }, g.nom + " : passer à " + chiffre(nv2) + " kg",
-          (e.diagnostic.seancesAuPlafond || 3) + " séances à " + chiffre(ch) + " kg avec " + chiffre(d.repsMoy) + " reps en moyenne : haut de ta fourchette " + fT + " atteint.",
+          (e.diagnostic.seancesAuPlafond || 3) + " séances à " + chiffre(ch) + " kg avec " + chiffre(d.repsMoy) + " reps en moyenne : haut de ta fourchette " + fT + " atteint. Tu repartiras à " + g.fourchette.min + " reps, puis tu remonteras vers " + g.fourchette.max + ".",
           { seances: e.diagnostic.seancesAuPlafond || 3, charge: ch, repsMoy: round1(d.repsMoy), fourchette: fT, au: e.derniereDate }, "haute"));
         return;
       }
