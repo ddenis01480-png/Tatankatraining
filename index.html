@@ -6,81 +6,62 @@
 <title>Tatanka Training</title>
 <script>
 // ============================================================
-// ENVIRONNEMENT DE TEST (branche dev-coach-moteur uniquement)
-// Cette branche ne connait QUE la base tatanka-test. Aucune autre
-// configuration n'existe dans ce fichier : aucun repli possible.
-// - Adresse autorisee : exactement HOTE_TEST, en https, sans port.
-//   Toute autre adresse : aucune base, connexion bloquee.
-// - Premier chargement sur l'adresse autorisee : les donnees locales
-//   anciennes sont MISES DE COTE (renommees avec un prefixe que l'appli
-//   ne lit jamais), pas effacees. L'environnement demarre vierge et
-//   rien d'ancien ne peut partir vers tatanka-test.
+// ENVIRONNEMENT DE L'APPLI (index.html, Coach integre)
+// - Adresse de production (et son alias de branche main) : base de
+//   production, TOUS les comptes acceptes comme aujourd'hui. Le Coach
+//   (propositions d'adaptation) n'est allume que pour les comptes de
+//   COMPTES_COACH (phase d'essai : David seul).
+// - Adresse exacte de la Preview coach-integre : base tatanka-test
+//   (compte fictif), Coach allume, bandeau TEST.
+// - Toute autre adresse : aucune base, connexion bloquee.
+// - Aucune donnee locale n'est deplacee, renommee ni effacee ici.
 // ============================================================
 (function () {
-  var HOTE_TEST = "tatankatraining-git-dev-coach-moteur-ddenis01480-1492s-projects.vercel.app";
-  var CONFIG_TEST = {
-    nom: "tatanka-test",
-    url: "https://syfrtspfsevkbnnaispu.supabase.co",
-    key: "sb_publishable_Ln5a2USE1kEL2Ep-HPQG4A_cIT1NCja"
-  };
-  var MARQUE_VIERGE = "tatanka_test_env_vierge_v1";
-  var PREFIXE_MIS_DE_COTE = "zz_mis_de_cote_avant_test::";
+  var HOTES_PROD = ["tatankatraining.vercel.app", "tatankatraining-git-main-ddenis01480-1492s-projects.vercel.app"];
+  var HOTE_PREVIEW = "tatankatraining-git-coach-integre-ddenis01480-1492s-projects.vercel.app";
+  var CONFIG_PROD = { nom: "production", url: "https://ogkrgsnnoebsvbgsngvm.supabase.co", key: "sb_publishable_KvM3k3gwBAArOFyUEd1a7A_oY0RTIom" };
+  var CONFIG_TEST = { nom: "tatanka-test", url: "https://syfrtspfsevkbnnaispu.supabase.co", key: "sb_publishable_Ln5a2USE1kEL2Ep-HPQG4A_cIT1NCja" };
+  // Regle unique « qui a le Coach » en production. Plus tard : droit lie a l'abonnement.
+  var COMPTES_COACH = ["00e6db68-34dd-4f97-afea-1a91eef02886"];
+  var COACH = { sansDeplacements: true, sansSynchroClassements: true, retourVersionNormale: false };
 
-  function adresseAutorisee(loc) {
-    return !!loc && loc.protocol === "https:" && loc.hostname === HOTE_TEST &&
-      loc.host === HOTE_TEST && (loc.port === "" || loc.port === undefined);
+  function adresseValide(loc) { return !!loc && loc.protocol === "https:" && loc.hostname === loc.host && (loc.port === "" || loc.port === undefined); }
+
+  function preparer(loc) {
+    if (!adresseValide(loc)) return { autorise: false, raison: "adresse", hote: loc ? loc.hostname : "", config: null, production: false, comptesCoach: [] };
+    if (HOTES_PROD.indexOf(loc.host) >= 0) return { autorise: true, raison: "", hote: loc.host, config: CONFIG_PROD, production: true, comptesCoach: COMPTES_COACH.slice() };
+    if (loc.host === HOTE_PREVIEW) return { autorise: true, raison: "", hote: loc.host, config: CONFIG_TEST, production: false, comptesCoach: null };
+    return { autorise: false, raison: "adresse", hote: loc.hostname, config: null, production: false, comptesCoach: [] };
+  }
+  // Tous les comptes peuvent se connecter (comme l'appli actuelle).
+  function compteAutorise(env, uid) { return !!(env && env.autorise && uid); }
+  // Coach : production = comptes de la liste ; Preview (base de test) = tous.
+  function coachPour(env, uid) {
+    if (!env || !env.autorise || !uid) return false;
+    return env.comptesCoach === null ? true : env.comptesCoach.indexOf(uid) >= 0;
   }
 
-  // Deplace chaque cle existante sous le prefixe, sans jamais rien perdre :
-  // l'original n'est retire qu'apres verification de la copie.
-  function mettreDeCote(ls) {
-    if (ls.getItem(MARQUE_VIERGE) === "1") return 0;
-    var cles = [], i, n = 0;
-    for (i = 0; i < ls.length; i++) cles.push(ls.key(i));
-    for (i = 0; i < cles.length; i++) {
-      var k = cles[i];
-      if (k === null || k === MARQUE_VIERGE || k.indexOf(PREFIXE_MIS_DE_COTE) === 0) continue;
-      var v = ls.getItem(k);
-      ls.setItem(PREFIXE_MIS_DE_COTE + k, v);
-      if (ls.getItem(PREFIXE_MIS_DE_COTE + k) !== v) throw new Error("copie non verifiee : " + k);
-      ls.removeItem(k);
-      n++;
-    }
-    ls.setItem(MARQUE_VIERGE, "1");
-    return n;
-  }
-
-  function preparer(loc, ls) {
-    if (!adresseAutorisee(loc)) return { autorise: false, raison: "adresse", hote: loc ? loc.hostname : "", config: null };
-    try {
-      var n = mettreDeCote(ls);
-      return { autorise: true, raison: "", hote: loc.hostname, config: CONFIG_TEST, misDeCote: n };
-    } catch (e) {
-      return { autorise: false, raison: "stockage", hote: loc.hostname, config: null };
-    }
-  }
-
-  // Exposition pour les tests automatiques (Node), sans effet dans le navigateur.
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { preparer: preparer, adresseAutorisee: adresseAutorisee, HOTE_TEST: HOTE_TEST,
-      CONFIG_TEST: CONFIG_TEST, MARQUE_VIERGE: MARQUE_VIERGE, PREFIXE_MIS_DE_COTE: PREFIXE_MIS_DE_COTE };
+    module.exports = { preparer: preparer, compteAutorise: compteAutorise, coachPour: coachPour, HOTES_PROD: HOTES_PROD, HOTE_PREVIEW: HOTE_PREVIEW, COMPTES_COACH: COMPTES_COACH, COACH: COACH };
     return;
   }
 
-  var env;
-  try { env = preparer(window.location, window.localStorage); }
-  catch (e) { env = { autorise: false, raison: "stockage", hote: "", config: null }; }
+  var env = preparer(window.location);
   if (env.config) Object.freeze(env.config);
+  env.coach = Object.freeze(COACH);
+  env.compteAutorise = function (uid) { return compteAutorise(env, uid); };
+  env.coachPour = function (uid) { return coachPour(env, uid); };
   window.TATANKA_ENV = Object.freeze(env);
 
   document.addEventListener("DOMContentLoaded", function () {
+    if (env.production) return; // production : aucun bandeau, c'est l'appli normale
     var d = document.createElement("div");
     if (env.autorise) {
       d.textContent = "TEST · base tatanka-test · données fictives uniquement";
       d.setAttribute("style", "position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#c0392b;color:#fff;font:700 12px/22px sans-serif;text-align:center;letter-spacing:1px;pointer-events:none");
     } else {
       d.innerHTML = "<div style='max-width:420px;padding:24px'><div style='font-size:20px;font-weight:800;margin-bottom:12px'>Adresse non autorisée</div>" +
-        "<div>Cette version de développement ne fonctionne que sur son adresse de test. La connexion est bloquée.</div></div>";
+        "<div>Cette page ne fonctionne que sur son adresse prévue. La connexion est bloquée.</div></div>";
       d.setAttribute("style", "position:fixed;inset:0;z-index:2147483647;background:#111;color:#fff;font:15px/1.5 sans-serif;display:flex;align-items:center;justify-content:center;text-align:center");
     }
     d.id = "tatanka-env-bandeau";
@@ -340,6 +321,8 @@ var SB_URL = SB_ENV ? SB_ENV.url : null;
 var SB_KEY = SB_ENV ? SB_ENV.key : null;
 // Options de la page coach (coach.html) : fournies par le script d'environnement. Absentes = comportement habituel.
 function _coachOptions() { return (window.TATANKA_ENV && window.TATANKA_ENV.coach) || {}; }
+// Regle unique : ce compte a-t-il le Coach (propositions d'adaptation) ? Page coach.html : toujours (elle n'accepte que les comptes autorises).
+function _aLeCoach() { var e = window.TATANKA_ENV, u = window.currentUser; if (!e || typeof e.coachPour !== "function") return true; return !!(u && u.id && e.coachPour(u.id)); }
 var STRIPE_MONTHLY = 'https://buy.stripe.com/test_bJe8wRb1s0kcc1l1uQcQU02';
 var STRIPE_YEARLY  = 'https://buy.stripe.com/test_7sY6oJfhI1og1mH3CYcQU04';
 var PACK_MONTHLY = 'https://buy.stripe.com/test_aFa3cxglMgja9TdddycQU07';
@@ -3115,7 +3098,7 @@ function HomeTab({ sessions, currentSets, setTab, fatigue, routines, setRoutines
           <div style={{flex:1}}><div style={{fontSize:14,fontWeight:900,color:"#eee"}}>ROUTINES</div><div style={{fontSize:10,color:"#8a3030",marginTop:2}}>Programmes prets a l emploi</div></div>
           <div style={{color:"#e74c3c",fontSize:20}}>›</div>
         </div>
-        {typeof CoachPropositions === "function" && <CoachPropositions sessions={sessions} routines={routines} setRoutines={setRoutines} fatigue={fatigue} />}
+        {typeof CoachPropositions === "function" && _aLeCoach() && <CoachPropositions sessions={sessions} routines={routines} setRoutines={setRoutines} fatigue={fatigue} />}
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
           {tiles.map(function(b){
             return (

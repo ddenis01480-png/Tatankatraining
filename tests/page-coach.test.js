@@ -16,7 +16,7 @@ t('coach.html est a jour : exactement index.html + script d environnement coach 
 });
 
 t('seules differences avec index.html : le titre et le script d environnement', () => {
-  const a = INDEX.indexOf('// ENVIRONNEMENT DE TEST'), finI = INDEX.indexOf('</script>', a);
+  const a = INDEX.indexOf("// ENVIRONNEMENT DE L'APPLI"), finI = INDEX.indexOf('</script>', a);
   const b = COACH.indexOf('// ENVIRONNEMENT DE LA PAGE COACH'), finC = COACH.indexOf('</script>', b);
   assert.ok(a > 0 && b > 0);
   assert.strictEqual(COACH.slice(finC), INDEX.slice(finI), 'tout ce qui suit le script est identique');

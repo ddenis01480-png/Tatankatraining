@@ -318,6 +318,8 @@ var SB_URL = SB_ENV ? SB_ENV.url : null;
 var SB_KEY = SB_ENV ? SB_ENV.key : null;
 // Options de la page coach (coach.html) : fournies par le script d'environnement. Absentes = comportement habituel.
 function _coachOptions() { return (window.TATANKA_ENV && window.TATANKA_ENV.coach) || {}; }
+// Regle unique : ce compte a-t-il le Coach (propositions d'adaptation) ? Page coach.html : toujours (elle n'accepte que les comptes autorises).
+function _aLeCoach() { var e = window.TATANKA_ENV, u = window.currentUser; if (!e || typeof e.coachPour !== "function") return true; return !!(u && u.id && e.coachPour(u.id)); }
 var STRIPE_MONTHLY = 'https://buy.stripe.com/test_bJe8wRb1s0kcc1l1uQcQU02';
 var STRIPE_YEARLY  = 'https://buy.stripe.com/test_7sY6oJfhI1og1mH3CYcQU04';
 var PACK_MONTHLY = 'https://buy.stripe.com/test_aFa3cxglMgja9TdddycQU07';
@@ -3093,7 +3095,7 @@ function HomeTab({ sessions, currentSets, setTab, fatigue, routines, setRoutines
           <div style={{flex:1}}><div style={{fontSize:14,fontWeight:900,color:"#eee"}}>ROUTINES</div><div style={{fontSize:10,color:"#8a3030",marginTop:2}}>Programmes prets a l emploi</div></div>
           <div style={{color:"#e74c3c",fontSize:20}}>›</div>
         </div>
-        {typeof CoachPropositions === "function" && <CoachPropositions sessions={sessions} routines={routines} setRoutines={setRoutines} fatigue={fatigue} />}
+        {typeof CoachPropositions === "function" && _aLeCoach() && <CoachPropositions sessions={sessions} routines={routines} setRoutines={setRoutines} fatigue={fatigue} />}
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
           {tiles.map(function(b){
             return (
