@@ -93,6 +93,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- Coach V2 : moteur d'analyse en lecture seule. S'il ne se charge pas, l'appli garde ses calculs V1. -->
+<script src="/stockage-durable.js"></script>
 <script src="/coach-engine.js"></script>
 <style>
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -364,11 +365,27 @@ function _canWriteUserData() {
 function lsGetNs(base) {
   try { return (currentUser && currentUser.id) ? localStorage.getItem(nsKey(base)) : null; } catch(e) { return null; }
 }
+// Copie durable : chaque ecriture d'une cle importante est aussi confirmee sur le disque (stockage-durable.js).
+function _copieDurable(k, valeur, avant) {
+  try { if (window.TatankaDurable && TatankaDurable.estProtegee(k)) TatankaDurable.ecrire(k, valeur, avant); } catch(e) {}
+}
 function lsSetNs(base, value) {
-  try { if (!_canWriteUserData()) return; localStorage.setItem(nsKey(base), value); } catch(e) {}
+  try {
+    if (!_canWriteUserData()) return;
+    const k = nsKey(base);
+    const avant = (window.TatankaDurable && TatankaDurable.estProtegee(k)) ? localStorage.getItem(k) : null;
+    localStorage.setItem(k, value);
+    _copieDurable(k, value, avant);
+  } catch(e) {}
 }
 function lsRemoveNs(base) {
-  try { if (!_canWriteUserData()) return; localStorage.removeItem(nsKey(base)); } catch(e) {}
+  try {
+    if (!_canWriteUserData()) return;
+    const k = nsKey(base);
+    const avant = localStorage.getItem(k);
+    localStorage.removeItem(k);
+    if (avant !== null) _copieDurable(k, null, avant);
+  } catch(e) {}
 }
 
 // Migration legacy : uniquement pour le compte historique ddenis01@free.fr
@@ -3684,6 +3701,14 @@ function IronTraining() {
   }, []);
 
   useEffect(() => { save(KEYS.routines, routines); }, [routines]);
+  // Seance en cours : enregistree des son demarrage et a chaque changement (exercice ajoute, serie supprimee, note...),
+  // pas seulement a la saisie. Seance annulee (passage a « aucune seance ») : la copie en cours est retiree.
+  const seanceAvantRef = useRef(currentSets);
+  useEffect(() => {
+    const avant = seanceAvantRef.current; seanceAvantRef.current = currentSets;
+    if (currentSets && Array.isArray(currentSets.exercises)) { try { lsSetNs("it3_current_session", JSON.stringify(currentSets)); } catch(e) {} }
+    else if (avant && !currentSets) { try { lsRemoveNs("it3_current_session"); } catch(e) {} }
+  }, [currentSets]);
 
   function handleStartSession(routine) { setActiveRoutine(routine); setTab("session"); }
 
@@ -4092,7 +4117,14 @@ function exportData() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<IronTraining />);
+// Avant l'affichage : rattrape les ecritures perdues lors d'une fermeture brutale (stockage-durable.js).
+(function demarrer() {
+  const afficher = () => ReactDOM.createRoot(document.getElementById("root")).render(<IronTraining />);
+  try {
+    if (!window.TatankaDurable) { afficher(); return; }
+    TatankaDurable.restaurer(window.localStorage, 2500).then(afficher, afficher);
+  } catch(e) { afficher(); }
+})();
 
 
 </script>
