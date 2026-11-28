@@ -33,7 +33,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var VERSION = "0.20.0";
+  var VERSION = "0.20.1";
 
   // Reglages centralises (une seule valeur par regle).
   var REGLES = Object.freeze({
@@ -2135,10 +2135,13 @@
     if (f.type === "reps" && f.min !== null && f.max !== null) return (f.min + f.max) / 2 * DUREE.SECONDES_PAR_REP;
     return DUREE.REPS_INCONNUES * DUREE.SECONDES_PAR_REP;
   }
+  // 0.20.1 : pas de repos apres la derniere serie (la transition suit) ; exercice unilateral = deux cotes, temps d'execution double.
+  function estUnilateral(nom) { return /unilat|une main|un bras|une jambe/i.test(String(nom || "")); }
   function dureeExercice(e) {
     var f = lireFourchette(e && e.repsTarget), n = int(e && e.sets) || REGLES.SERIES_PREVUES_DEFAUT, repos = num(e && e.rest), ech = int(e && e.warmupSets) || 0;
     if (!(repos >= 0)) repos = DUREE.REPOS_DEFAUT_S;
-    return Math.round(n * (dureeSerieTravail(f) + repos) + ech * (DUREE.ECHAUFFEMENT_SERIE_S + DUREE.ECHAUFFEMENT_REPOS_S));
+    var execution = dureeSerieTravail(f) * (estUnilateral(e && e.name) ? 2 : 1);
+    return Math.round(n * execution + Math.max(0, n - 1) * repos + ech * (DUREE.ECHAUFFEMENT_SERIE_S + DUREE.ECHAUFFEMENT_REPOS_S));
   }
   function dureeRoutine(r) {
     var exs = (r && Array.isArray(r.exercises) ? r.exercises : []).filter(Boolean);

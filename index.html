@@ -1795,7 +1795,8 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
     if (!exSets2[setIdx].reps) { alert("Saisis le nombre de reps avant de valider la série."); return; }
     if (!exSets2[setIdx].weight) { alert("Saisis la charge avant de valider la série."); return; }
     const wasNotDone = !exSets2[setIdx].done;
-    const updatedSets = exSets2.map((s, si) => si === setIdx ? { ...s, done: !s.done } : s);
+    // 0.20.1 : heure de validation de la serie (mesure de la duree active, rien d'affiche) ; retiree si la serie est devalidee.
+    const updatedSets = exSets2.map((s, si) => si !== setIdx ? s : (s.done ? (({ faiteLe, ...reste }) => ({ ...reste, done: false }))(s) : { ...s, done: true, faiteLe: Date.now() }));
     setCurrentSets(prev => ({
       ...prev, exercises: prev.exercises.map((e, ei) =>
         ei !== exIdx ? e : { ...e, sets: updatedSets }
@@ -1874,7 +1875,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
       ...(estActivation(ex) ? { activation: true } : {}),
       sets: ex.sets
         .filter(s => s.weight && s.reps)
-        .map(s => ({ weight: parseFloat(s.weight), reps: parseInt(s.reps), rir: parseRir(s.rir), rirSaisi: s.rirSaisi === true && parseRir(s.rir) !== null, ...(parseRir(s.rirCible) !== null ? { rirCible: parseRir(s.rirCible) } : {}), ...(parseInt(s.repsCible) > 0 ? { repsCible: parseInt(s.repsCible) } : {}), done: true }))
+        .map(s => ({ weight: parseFloat(s.weight), reps: parseInt(s.reps), rir: parseRir(s.rir), rirSaisi: s.rirSaisi === true && parseRir(s.rir) !== null, ...(parseRir(s.rirCible) !== null ? { rirCible: parseRir(s.rirCible) } : {}), ...(parseInt(s.repsCible) > 0 ? { repsCible: parseInt(s.repsCible) } : {}), ...(Number(s.faiteLe) > 0 ? { faiteLe: Number(s.faiteLe) } : {}), done: true }))
     })).filter(ex => ex.sets.length > 0);
 
     if (!validExs.length) return alert("Aucune serie remplie !");

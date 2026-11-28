@@ -40,14 +40,14 @@ const scVolumeEleve = () => ({ sessions: seances([{ du: -120, au: -30, pas: 4, e
 const tests = []; const t = (n, f) => tests.push([n, f]);
 
 // ── Duree estimee ──
-t('Duree : series x (reps x 3 s + repos) + echauffement + transitions ; total de la semaine = somme des seances', () => {
+t('Duree : series x reps x 3 s + repos entre series + echauffement + transitions ; total de la semaine = somme des seances', () => {
   const d = E.dureeProgramme([routine(1, 'A', [[DC, 3, 120], [EC, 2, 60]]), routine(2, 'B', [])]);
-  // DC : 3 x (10 x 3 + 120) - 120 (pas de repos apres la derniere) + echauffement ; EC : 2 x (10 x 3 + 60) - 60 + echauffement ; + 1 transition.
+  // DC : 3 x 10 x 3 + 2 x 120 ; EC : 2 x 10 x 3 + 1 x 60 ; + 1 transition (aucun echauffement saisi).
   const dc = E.dureeExercice({ name: DC, sets: 3, repsTarget: '8-12', rest: 120 }), ec = E.dureeExercice({ name: EC, sets: 2, repsTarget: '8-12', rest: 60 });
   assert.strictEqual(d.seances[0].secondes, dc + ec + 60);
   assert.strictEqual(d.seances[1].secondes, 0);
   assert.strictEqual(d.totalSecondes, d.seances[0].secondes);
-  assert.ok(dc > 3 * 30 + 2 * 120, 'repos et execution comptes');
+  assert.strictEqual(dc, 3 * 30 + 2 * 120, 'execution des 3 series + 2 repos (aucun apres la derniere)');
   assert.ok(E.dureeExercice({ name: DC, sets: 4, repsTarget: '8-12', rest: 120 }) > dc, 'une serie de plus = plus long');
 });
 
@@ -186,6 +186,29 @@ t('Entrees jamais modifiees ; resultat identique a chaque appel (aucun hasard)',
   const d = scRepartition('prog'); deepFreeze(d);
   const a = JSON.stringify(P(d)), b = JSON.stringify(P(d)); assert.strictEqual(a, b);
   assert.ok(JSON.parse(a).duree.totalSecondes > 0);
+});
+
+// ── 0.20.1 : calcul corrige et heure des series ──
+t('0.20.1 Duree : pas de repos apres la derniere serie ; formule exacte', () => {
+  const D = E.DUREE, e = { name: DC, sets: 3, repsTarget: '8-12', rest: 120, warmupSets: 2 };
+  const serie = 10 * D.SECONDES_PAR_REP; // fourchette 8-12 : 10 reps visees en moyenne
+  assert.strictEqual(E.dureeExercice(e), 3 * serie + 2 * 120 + 2 * (D.ECHAUFFEMENT_SERIE_S + D.ECHAUFFEMENT_REPOS_S));
+  assert.strictEqual(E.dureeExercice({ name: DC, sets: 1, repsTarget: '8-12', rest: 120 }), serie, 'une seule serie : aucun repos');
+});
+
+t('0.20.1 Duree : exercice unilateral = temps d\'execution double, repos inchange', () => {
+  const bi = E.dureeExercice({ name: 'Curl biceps câble', sets: 3, repsTarget: '8-12', rest: 60 });
+  const uni = E.dureeExercice({ name: 'Curl câble unilatéral', sets: 3, repsTarget: '8-12', rest: 60 });
+  assert.strictEqual(uni - bi, 3 * 10 * E.DUREE.SECONDES_PAR_REP);
+  ['Tirage horizontal câble une main', 'Rowing haltère unilatéral', 'Leg press unilatéral'].forEach(n =>
+    assert.ok(E.dureeExercice({ name: n, sets: 2, repsTarget: '8-12', rest: 60 }) > E.dureeExercice({ name: 'X', sets: 2, repsTarget: '8-12', rest: 60 }), n));
+});
+
+t('0.20.1 Appli : heure de validation notee a la validation, retiree a la devalidation, gardee a l\'enregistrement ; rien d\'affiche', () => {
+  const SRC = require('fs').readFileSync(require('path').join(__dirname, '..', 'index.html'), 'utf8');
+  assert.ok(SRC.includes('(s.done ? (({ faiteLe, ...reste }) => ({ ...reste, done: false }))(s) : { ...s, done: true, faiteLe: Date.now() })'));
+  assert.ok(SRC.includes('...(Number(s.faiteLe) > 0 ? { faiteLe: Number(s.faiteLe) } : {}), done: true }))'));
+  assert.strictEqual((SRC.match(/faiteLe/g) || []).length, 5, 'aucun autre usage (pas d\'affichage)');
 });
 
 (async () => { let fail = 0;

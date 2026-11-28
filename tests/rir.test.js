@@ -17,7 +17,7 @@ async function boot(ls) { const app = openApp(ls); app.mount(null); app.startSup
 // Le VRAI updateSet de la seance en cours, et la VRAIE transformation des series a l'enregistrement (saveSession).
 function realUpdateSet(app) { let cur = null; const f = vm.runInContext('(function(setCurrentSets, lsSetNs){ ' + fnSrc('function updateSet(') + ' return updateSet; })', app.ctx)(fn => { cur = fn(cur); }, () => {});
   return { set: v => { cur = v; }, get: () => cur, update: f }; }
-const SAVE_MAP = SRC.match(/\.map\(s => \(\{ weight: parseFloat\(s\.weight\), reps: parseInt\(s\.reps\), rir: parseRir\(s\.rir\), rirSaisi: s\.rirSaisi === true && parseRir\(s\.rir\) !== null, \.\.\.\(parseRir\(s\.rirCible\) !== null \? \{ rirCible: parseRir\(s\.rirCible\) \} : \{\}\)(?:, \.\.\.\(parseInt\(s\.repsCible\) > 0 \? \{ repsCible: parseInt\(s\.repsCible\) \} : \{\}\))?, done: true \}\)\)/);
+const SAVE_MAP = SRC.match(/\.map\(s => \(\{ weight: parseFloat\(s\.weight\), reps: parseInt\(s\.reps\), rir: parseRir\(s\.rir\), rirSaisi: s\.rirSaisi === true && parseRir\(s\.rir\) !== null, \.\.\.\(parseRir\(s\.rirCible\) !== null \? \{ rirCible: parseRir\(s\.rirCible\) \} : \{\}\)(?:, \.\.\.\(parseInt\(s\.repsCible\) > 0 \? \{ repsCible: parseInt\(s\.repsCible\) \} : \{\}\))?(?:, \.\.\.\(Number\(s\.faiteLe\) > 0 \? \{ faiteLe: Number\(s\.faiteLe\) \} : \{\}\))?, done: true \}\)\)/);
 if (!SAVE_MAP) throw new Error('transformation des series de saveSession introuvable');
 const toSaved = (app, sets) => vm.runInContext('(function(sets){ return sets.filter(s => s.weight && s.reps)' + SAVE_MAP[0] + '; })', app.ctx)(sets);
 
