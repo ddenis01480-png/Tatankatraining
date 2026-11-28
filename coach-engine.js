@@ -33,7 +33,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var VERSION = "0.19.0";
+  var VERSION = "0.20.0";
 
   // Reglages centralises (une seule valeur par regle).
   var REGLES = Object.freeze({
@@ -109,7 +109,12 @@
     ADAPT_MEME_PLAGE_JOURS: 56,    // stagnation dans la meme plage depuis >= 8 semaines (volume suffisant) : nouvelle plage de repetitions proposee
     ADAPT_FREQUENCE_BASSE: 1.5,    // muscle travaille < 1,5 fois / semaine active, tout dans une seule routine : repartition proposee
     ADAPT_SEANCES_APRES_ACCEPTATION: 2, // apres une proposition acceptee, l'exercice n'est plus evalue avant 2 seances faites avec le nouveau programme
-    ADAPT_FATIGUE_JOURS: 7         // le questionnaire de fatigue n'est pris en compte que s'il est complet et rempli dans les 7 derniers jours
+    ADAPT_FATIGUE_JOURS: 7,        // le questionnaire de fatigue n'est pris en compte que s'il est complet et rempli dans les 7 derniers jours
+    // 0.20.0 : reference individuelle et duree. Les anciens seuils universels ADAPT_VOLUME_BAS / ADAPT_VOLUME_HAUT ne sont plus utilises.
+    ADAPT_REF_FENETRES: 26,        // periodes de reference : 26 fenetres de 28 jours, terminees tous les 14 jours (un an au plus)
+    ADAPT_REF_PAS_JOURS: 14,
+    ADAPT_REMPLACANT_MIN_COMPARAISONS: 2, // un remplacant doit avoir au moins 2 comparaisons fiables dans son historique
+    ADAPT_TOLERANCE_DUREE_S: 120   // regle A (David, 28/11) : aucune seance > duree estimee actuelle + 2 min, total de la semaine non augmente
   });
 
   // ─────────────────────────── outils internes (purs) ───────────────────────────
@@ -1821,37 +1826,102 @@
     return { min: f.max, max: f.max + Math.max(ecart, 5) };
   }
 
+  // 0.20.0 : REFERENCE INDIVIDUELLE de chaque muscle = les periodes de 28 jours de son propre historique ou il PROGRESSAIT
+  // (tendance « hausse » fiable, meme calcul que performanceMuscles), avec son volume direct, indirect et sa frequence d'alors.
+  // Fenetres terminees tous les 14 jours, sans chevauchement avec la fenetre actuelle, sur un an au plus. Aucun seuil universel.
+  function referenceMuscles(seances, aujourdhui, options) {
+    var dates = datesSeances(seances, aujourdhui), ref = {};
+    GROUPES.forEach(function (m) { ref[m] = { periodes: [] }; });
+    if (!dates.length) return ref;
+    var opts = { normaliserNom: options.normaliserNom, classements: options.classements }, limite = ajouterJours(dates[0], REGLES.FENETRE_COURTE_JOURS - 1);
+    for (var k = 0; k < REGLES.ADAPT_REF_FENETRES; k++) {
+      var fin = ajouterJours(aujourdhui, -REGLES.FENETRE_JOURS - k * REGLES.ADAPT_REF_PAS_JOURS); if (fin < limite) break;
+      opts.fin = fin; var pf = performanceMuscles(seances, opts), vl = volumeMuscles(seances, opts);
+      if (vl.statut !== "ok") continue;
+      GROUPES.forEach(function (m) { var p = pf.muscles[m], v = vl.muscles[m];
+        if (p.statut === "ok" && p.tendance === "hausse") ref[m].periodes.push({ du: ajouterJours(fin, -REGLES.FENETRE_JOURS + 1), au: fin, direct: v.direct.parSemaineActive, indirect: v.indirect.parSemaineActive, frequence: v.direct.frequenceActive }); });
+    }
+    GROUPES.forEach(function (m) { var ps = ref[m].periodes, r = ref[m]; r.n = ps.length; if (!ps.length) return;
+      var d = ps.map(function (p) { return p.direct; }), t = ps.map(function (p) { return round1(p.direct + p.indirect); }), f = ps.map(function (p) { return p.frequence; });
+      r.directMin = Math.min.apply(null, d); r.directMax = Math.max.apply(null, d); r.totalMax = Math.max.apply(null, t); r.frequenceMin = Math.min.apply(null, f);
+      r.du = ps[ps.length - 1].du; r.au = ps[0].au; });
+    return ref;
+  }
+  // Volume adapte / insuffisant / excessif / indetermine, compare a la reference du muscle (jamais a un seuil universel).
+  function etatVolume(m, ref, fat, vol) {
+    var r = ref[m.muscle], o = { etat: "indetermine", raison: null, reference: r.n ? { periodes: r.n, du: r.du, au: r.au, directMin: r.directMin, directMax: r.directMax, totalMax: r.totalMax, frequenceMin: r.frequenceMin } : null };
+    if (m.etat === "progression") { o.etat = "adapte"; return o; }
+    if (["stagnation", "irregulier", "regression"].indexOf(m.etat) === -1) { o.raison = m.etat; return o; }
+    if (!r.n) { o.raison = "aucune_periode_de_progression_connue"; return o; }
+    var total = round1(m.directParSemaine + m.indirectParSemaine), hausse = vol.muscles[m.muscle].evolution && vol.muscles[m.muscle].evolution.statut === "hausse";
+    if (m.etat === "regression" && (total > r.totalMax || hausse)) { o.etat = "excessif"; o.raison = total > r.totalMax ? "volume_total_au_dessus_de_la_reference" : "volume_en_hausse_recente"; return o; }
+    if (m.etat !== "regression" && m.directParSemaine < r.directMin) {
+      if (fat.utilisable && fat.elevee) { o.raison = "fatigue_elevee"; return o; }
+      o.etat = "insuffisant"; o.raison = "volume_direct_sous_la_reference"; return o; }
+    o.raison = "volume_dans_la_reference"; return o;
+  }
+  // Productivite d'un exercice sur TOUT son historique dans sa plage la plus recente : part des comparaisons fiables en progression.
+  function productivite(hist) {
+    var h = plageDeLaDerniere(hist).filter(aSeriesValides), f = 0, p = 0;
+    for (var i = 1; i < h.length; i++) { var r = analyseExercice(h.slice(0, i + 1)).performance; if (FIABLES.indexOf(r) !== -1) { f++; if (r === "progression") p++; } }
+    return { fiables: f, progressions: p, part: f ? round1(p / f * 100) : null };
+  }
+  function texteDuree(cd) {
+    var ch = cd.seances.filter(function (x) { return Math.abs(Math.round(x.ecart / 60)) >= 1; });
+    if (!ch.length) return "Durée des séances : inchangée.";
+    return "Durée estimée : " + ch.map(function (x) { var mn = Math.round(x.ecart / 60); return "« " + x.nom + " » " + (mn > 0 ? "+" : "−") + Math.abs(mn) + " min"; }).join(", ") + ".";
+  }
+
   // PROPOSITIONS. donnees : { sessions, routines, fatigue, decisions } ; options : { maintenant, normaliserNom, classements }.
-  // Retour (objet neuf) : { aujourdhui, fatigue, muscles: { m: etat }, exercices: [etat], propositions: [...], adaptationAutomatique: false }
-  // Proposition : { id, type: "charge"|"series"|"fourchette"|"remplacer_exercice"|"deplacer_exercice", muscle, cible: { exercice, fourchette, occurrences },
-  //   avant, apres, titre, raison, mesures, confiance, statut: "proposee" }. Au plus une proposition par exercice ; ordre = priorite.
+  // Retour (objet neuf) : { aujourdhui, fatigue, muscles: { m: etat + volume }, exercices: [etat], propositions: [...], sansSolution: [...], adaptationAutomatique: false }
+  // Proposition : { id, type: "charge"|"series"|"fourchette"|"remplacer_exercice"|"deplacer_exercice"|"echanger_exercices"|"transferer_serie", muscle,
+  //   cible: { exercice, fourchette, occurrences }, avant, apres, titre, raison, mesures, duree, confiance, statut: "proposee" }.
+  // 0.20.0 : chaque proposition est verifiee sur la DUREE ESTIMEE du programme (aucune seance > duree actuelle + 2 min, total
+  // de la semaine non augmente). Hors de cette contrainte : pas de proposition, une ligne « sans solution » a la place.
   function propositionsAdaptation(donnees, options) {
     donnees = donnees || {}; options = options || {};
     var fnNom = typeof options.normaliserNom === "function" ? options.normaliserNom : nomParDefaut;
     var aujourdhui = options.maintenant !== undefined ? dateLocale(options.maintenant) : jourParDefaut();
     var brutes = Array.isArray(donnees.sessions) ? donnees.sessions : [], seances = normaliserSeances(brutes, options);
+    var routines = Array.isArray(donnees.routines) ? donnees.routines : [];
     var optsP = { fin: aujourdhui, normaliserNom: options.normaliserNom, classements: options.classements };
     var vol = volumeMuscles(seances, optsP), perf = performanceMuscles(seances, optsP), fat = fatiguePourAdaptation(donnees.fatigue, aujourdhui);
-    var decisions = lireDecisions(donnees.decisions).decisions, muscles = {};
-    GROUPES.forEach(function (m) { muscles[m] = etatMuscle(m, perf, vol); });
-    var groupes = exercicesDuProgramme(donnees.routines, fnNom), dansProgramme = {};
+    var decisions = lireDecisions(donnees.decisions).decisions, muscles = {}, ref = referenceMuscles(seances, aujourdhui, options);
+    GROUPES.forEach(function (m) { muscles[m] = etatMuscle(m, perf, vol); muscles[m].volume = etatVolume(muscles[m], ref, fat, vol); });
+    var groupes = exercicesDuProgramme(routines, fnNom), dansProgramme = {};
     groupes.forEach(function (g) { dansProgramme[g.nom] = true; });
+    var principal = {}; var principalDe = function (n) { return n in principal ? principal[n] : principal[n] = classerExercice(n, options).principal; };
     // Exercices en « periode d'essai » : une proposition acceptee, moins de 2 seances faites depuis -> le nouveau programme sert de reference, on attend.
     var enEssai = {};
-    Object.keys(decisions).forEach(function (k) { var d = decisions[k]; if (d.statut === "acceptee" && d.exercice && seancesApres(brutes, d.exercice, fnNom, d.le) < REGLES.ADAPT_SEANCES_APRES_ACCEPTATION) enEssai[d.exercice] = true; });
-    var props = [], cibles = {}, etats = [];
+    Object.keys(decisions).forEach(function (k) { var d = decisions[k]; if (d.statut !== "acceptee") return;
+      [d.exercice, d.apres && d.apres.exercice, d.apres && d.apres.echange && d.apres.echange.exercice, d.apres && d.apres.depuis && d.apres.depuis.exercice].forEach(function (x) {
+        if (x && seancesApres(brutes, x, fnNom, d.le) < REGLES.ADAPT_SEANCES_APRES_ACCEPTATION) enEssai[x] = true; }); });
+    var props = [], cibles = {}, etats = [], sansSolution = [], musclesTraites = {};
     var noteFatigue = fat.utilisable ? "Fatigue déclarée cette semaine : " + fat.score + "/" + fat.max + "." : "Fatigue non renseignée cette semaine : seule la performance mesurée est prise en compte.";
-    var ajouter = function (p) {
-      if (cibles[p.cible.exercice]) return; var d = decisions[p.id]; if (d) return; // deja acceptee ou refusee avec les memes chiffres
-      p.statut = "proposee"; cibles[p.cible.exercice] = true; props.push(p);
+    // Verification de duree : la proposition est appliquee a une COPIE du programme, puis comparee au programme actuel.
+    var verifierDuree = function (p) {
+      var a = appliquerProposition(routines, p, { normaliserNom: fnNom }); if (!a.ok) return null;
+      var cd = comparerDurees(routines, a.routines, REGLES.ADAPT_TOLERANCE_DUREE_S);
+      p.duree = { ok: cd.ok, ecartTotalS: cd.ecartTotal, seances: cd.seances.filter(function (x) { return x.ecart; }), texte: texteDuree(cd) };
+      return cd.ok;
     };
+    var ajouter = function (p) {
+      var touchees = [p.cible.exercice].concat(p.apres && p.apres.echange ? [p.apres.echange.exercice] : []).concat(p.apres && p.apres.depuis ? [p.apres.depuis.exercice] : []);
+      if (touchees.some(function (x) { return cibles[x] || enEssai[x]; })) return false;
+      if (decisions[p.id]) return false; // deja acceptee ou refusee avec les memes chiffres
+      if (!verifierDuree(p)) return false;
+      p.statut = "proposee"; touchees.forEach(function (x) { cibles[x] = true; }); props.push(p); if (p.muscle) musclesTraites[p.muscle] = true; return true;
+    };
+    var occ = function (g, filtre) { return g.occurrences.filter(filtre || function () { return true; }).map(function (o) { return { routineId: o.routineId, routineNom: o.routineNom, index: o.index, nom: o.nom }; }); };
     var hists = {}; var histDe = function (n) { return hists[n] = hists[n] || historiqueExercice(seances, n); };
+    var stagnants = [];
+    // 1. Exercices : charge (0.18.0 / 0.19.0, inchange) ; les stagnations sont traitees apres les muscles.
     groupes.forEach(function (g) {
-      var c = classerExercice(g.nom, options), e = etatExerciceProgramme(histDe(g.nom), g.fourchette, g.nom, aujourdhui);
+      var c = { principal: principalDe(g.nom) }, e = etatExerciceProgramme(histDe(g.nom), g.fourchette, g.nom, aujourdhui);
       e.exercice = g.nom; e.muscle = c.principal; e.enEssai = !!enEssai[g.nom]; etats.push(e);
       if (e.enEssai || !c.principal) return;
-      var m = muscles[c.principal], seriesAvant = g.occurrences[0].series, fT = texteFourchette(g.fourchette);
-      var cible = { exercice: g.nom, fourchette: fT, occurrences: g.occurrences.map(function (o) { return { routineId: o.routineId, routineNom: o.routineNom, index: o.index, nom: o.nom }; }) };
+      var seriesAvant = g.occurrences[0].series, fT = texteFourchette(g.fourchette);
+      var cible = { exercice: g.nom, fourchette: fT, occurrences: occ(g) };
       var base = function (type, avant, apres, titre, raison, mesures, confiance) {
         return { id: idProposition(type, g.nom, g.fourchette, avant, apres), type: type, muscle: c.principal, cible: cible, avant: avant, apres: apres, titre: titre, raison: raison, mesures: mesures, confiance: confiance };
       };
@@ -1861,9 +1931,15 @@
         var debut = round1(dg.mesure.derniere + (dg.perte || 0)), pct = debut > 0 ? round1((dg.perte || 0) / debut * 100) : null;
         var mesR = { periode: { du: null, au: e.derniereDate }, seances: 3, mesure: unite, debut: debut, fin: dg.mesure.derniere, baissePct: pct, fatigue: fat.utilisable ? fat.score : null };
         var phrase = "Baisse sur tes 3 dernières séances comparables en " + fT + " : " + unite + " " + chiffre(debut) + " kg → " + chiffre(dg.mesure.derniere) + " kg" + (pct !== null ? " (−" + chiffre(pct) + " %)" : "") + ". ";
+        var Mu = muscles[c.principal], vEx = Mu && Mu.volume.etat === "excessif" ? Mu.volume : null;
         if (fat.utilisable && fat.elevee && seriesAvant > REGLES.ADAPT_SERIES_MIN) {
           ajouter(base("series", { series: seriesAvant }, { series: seriesAvant - 1 }, g.nom + " : " + (seriesAvant - 1) + " séries au lieu de " + seriesAvant,
             phrase + "Fatigue déclarée élevée (" + fat.score + "/" + fat.max + ") : une série de moins pour récupérer.", mesR, "moyenne"));
+        } else if (vEx && seriesAvant > REGLES.ADAPT_SERIES_MIN) {
+          // 0.20.0 : baisse avec un volume au-dessus de la reference du muscle -> une serie de moins plutot qu'une charge plus basse.
+          ajouter(base("series", { series: seriesAvant }, { series: seriesAvant - 1 }, g.nom + " : " + (seriesAvant - 1) + " séries au lieu de " + seriesAvant,
+            phrase + Mu.libelle + " : " + chiffre(Mu.directParSemaine) + " séries directes + " + chiffre(Mu.indirectParSemaine) + " indirectes par semaine, plus que lors de tes " + vEx.reference.periodes + " période" + (vEx.reference.periodes > 1 ? "s" : "") + " de 4 semaines où il progressait (" + chiffre(vEx.reference.totalMax) + " au plus) : une série de moins.",
+            Object.assign({ volume: vEx }, mesR), "moyenne"));
         } else if (!e.conventionnelle && ch > 0) {
           var inc = incrementPour(ch), nv = arrondiCharge(ch * (1 - REGLES.ADAPT_BAISSE_CHARGE_PCT), inc, -1); if (nv >= ch) nv = Math.round((ch - inc) * 100) / 100;
           if (nv > 0) ajouter(base("charge", { charge: ch }, { charge: nv }, g.nom + " : reprendre à " + chiffre(nv) + " kg (au lieu de " + chiffre(ch) + ")",
@@ -1878,72 +1954,113 @@
           { seances: e.diagnostic.seancesAuPlafond || 3, charge: ch, repsMoy: round1(d.repsMoy), fourchette: fT, au: e.derniereDate }, "haute"));
         return;
       }
-      if (e.etat !== "stagnation") return;
-      var dates = e.comparaisons.map(function (x) { return dateCourte(x.date); }).join(", ");
-      var phraseS = "Aucune progression sur tes " + e.comparaisons.length + " dernières séances comparables en " + fT + " (" + dates + "). ";
-      var mesS = { comparaisons: e.comparaisons, directParSemaine: m.directParSemaine, indirectParSemaine: m.indirectParSemaine, frequence: m.frequence, periodeVolume: vol.periode };
-      var volConnu = m.etat !== "donnees_insuffisantes" && m.directParSemaine !== null;
-      if (volConnu && m.directParSemaine < REGLES.ADAPT_VOLUME_BAS && seriesAvant < REGLES.ADAPT_SERIES_MAX) {
-        ajouter(base("series", { series: seriesAvant }, { series: seriesAvant + 1 }, g.nom + " : " + (seriesAvant + 1) + " séries au lieu de " + seriesAvant,
-          phraseS + m.libelle + " : " + chiffre(m.directParSemaine) + " séries directes par semaine sur 28 jours (moins de " + REGLES.ADAPT_VOLUME_BAS + ").", mesS, m.confiance === "haute" ? "haute" : "moyenne"));
-        return;
-      }
-      if (!volConnu) return; // sans volume mesurable, on ne sait pas si le probleme vient du volume : aucune proposition
-      var semaines = e.depuis ? Math.floor(joursEntre(e.depuis, aujourdhui) / 7) : 0, nf = nouvelleFourchette(g.fourchette, e.mode);
-      if (e.depuis && joursEntre(e.depuis, aujourdhui) >= REGLES.ADAPT_MEME_PLAGE_JOURS && nf) {
-        var nfT = nf.min + "-" + nf.max;
-        ajouter(base("fourchette", { fourchette: fT }, { fourchette: nfT }, g.nom + " : passer en " + nfT + " répétitions",
-          phraseS + "Même plage " + fT + " depuis " + semaines + " semaines, avec déjà " + chiffre(m.directParSemaine) + " séries directes par semaine pour " + m.libelle.toLowerCase() + ".",
-          Object.assign({ depuis: e.depuis, semaines: semaines }, mesS), "moyenne"));
-        return;
-      }
-      // Remplacement : uniquement par un exercice que l'utilisateur a deja fait (meme muscle principal), absent du programme.
-      var cand = null;
+      if (e.etat === "stagnation") stagnants.push({ g: g, e: e });
+    });
+    // Remplacant : un exercice DEJA FAIT, meme muscle principal, absent du programme, plus productif que l'exercice actuel dans son historique.
+    var remplacant = function (g, muscle) {
+      var prodA = productivite(histDe(g.nom)), best = null, vus = {};
       seances.forEach(function (s) { s.exercices.forEach(function (x) {
-        if (dansProgramme[x.nom] || x.nom === g.nom || !x.series.some(function (st) { return st.valide; })) return;
-        if (classerExercice(x.nom, options).principal !== c.principal) return;
-        if (!cand || s.date > cand.date) cand = { nom: x.nom, date: s.date };
+        if (vus[x.nom] || dansProgramme[x.nom] || x.nom === g.nom) return; vus[x.nom] = true;
+        if (principalDe(x.nom) !== muscle) return;
+        var pr = productivite(histDe(x.nom)); if (pr.fiables < REGLES.ADAPT_REMPLACANT_MIN_COMPARAISONS || !(pr.part > (prodA.part || 0))) return;
+        if (!best || pr.part > best.prod.part) best = { nom: x.nom, prod: pr, derniere: histDe(x.nom).filter(aSeriesValides).slice(-1)[0].date };
       }); });
-      if (cand) {
-        var nbF = histDe(cand.nom).filter(aSeriesValides).length;
-        ajouter(base("remplacer_exercice", { exercice: g.nom }, { exercice: cand.nom }, "Remplacer " + g.nom + " par " + cand.nom,
-          phraseS + cand.nom + " travaille le même muscle (" + m.libelle.toLowerCase() + ") : tu l'as déjà fait " + nbF + " fois, la dernière le " + dateCourte(cand.date) + ".",
-          Object.assign({ remplacant: { nom: cand.nom, seances: nbF, derniere: cand.date } }, mesS), "moyenne"));
+      return best ? { nom: best.nom, prod: best.prod, actuel: prodA, derniere: best.derniere } : null;
+    };
+    var propRemplacer = function (g, mu, phrase, mes) {
+      var r = remplacant(g, mu); if (!r) return false;
+      return ajouter({ id: idProposition("remplacer_exercice", g.nom, g.fourchette, { exercice: g.nom }, { exercice: r.nom }), type: "remplacer_exercice", muscle: mu,
+        cible: { exercice: g.nom, fourchette: texteFourchette(g.fourchette), occurrences: occ(g) }, avant: { exercice: g.nom }, apres: { exercice: r.nom },
+        titre: "Remplacer " + g.nom + " par " + r.nom,
+        raison: phrase + r.nom + " (même muscle) a progressé dans " + chiffre(r.prod.part) + " % de tes séances comparables (" + r.prod.progressions + " sur " + r.prod.fiables + "), contre " + chiffre(r.actuel.part || 0) + " % pour " + g.nom + ". Mêmes séries et même plage.",
+        mesures: Object.assign({ remplacant: r }, mes || {}), confiance: "moyenne" });
+    };
+    // 2. Muscles dont le volume est excessif ou insuffisant au regard de LEUR reference. Ordre : repartir, remplacer, reduire, echanger une serie.
+    var exosDuMuscle = function (mu) { return groupes.filter(function (g) { return principalDe(g.nom) === mu; }); };
+    var dureeEx = function (o) { var r = routines.filter(function (x) { return x && String(x.id) === String(o.routineId); })[0]; return r ? dureeExercice(r.exercises[o.index]) : 0; };
+    GROUPES.forEach(function (mu) {
+      var m = muscles[mu], v = m.volume; if (v.etat !== "excessif" && v.etat !== "insuffisant") return;
+      if (musclesTraites[mu]) return; // une seule modification a la fois par muscle
+      var R = v.reference, gs = exosDuMuscle(mu).filter(function (g) { return !enEssai[g.nom] && !cibles[g.nom]; }); if (!gs.length) return;
+      var lib = m.libelle, perio = R.periodes + " période" + (R.periodes > 1 ? "s" : "") + " de 4 semaines où il progressait (entre le " + dateCourte(R.du) + " et le " + dateCourte(R.au) + ")";
+      var constat = v.etat === "excessif"
+        ? lib + " en baisse sur 28 jours avec " + chiffre(m.directParSemaine) + " séries directes + " + chiffre(m.indirectParSemaine) + " indirectes par semaine, plus que lors de tes " + perio + " : " + chiffre(R.totalMax) + " au plus. "
+        : lib + " sans progression sur 28 jours avec " + chiffre(m.directParSemaine) + " séries directes par semaine, moins que lors de tes " + perio + " : " + chiffre(R.directMin) + " à " + chiffre(R.directMax) + " séries directes. ";
+      var mes = { volume: v, directParSemaine: m.directParSemaine, indirectParSemaine: m.indirectParSemaine, frequence: m.frequence, compte: m.compte || null };
+      // a) Repartir : tout le travail du muscle dans une seance, frequence plus basse que dans ses periodes de progression.
+      var routinesMu = distinctes(gs.reduce(function (a, g) { return a.concat(g.occurrences.map(function (o) { return { r: String(o.routineId) }; })); }, []), "r");
+      if (routinesMu.length === 1 && gs.length >= 2 && m.frequence < R.frequenceMin) {
+        var g = gs[gs.length - 1], o = g.occurrences[0];
+        var autres = routines.filter(function (r) { return r && String(r.id) !== routinesMu[0] && Array.isArray(r.exercises); }).sort(function (a, b) { return dureeRoutine(a).secondes - dureeRoutine(b).secondes; });
+        var phraseR = constat + "Tout est dans « " + o.routineNom + " », " + chiffre(m.frequence) + " fois par semaine (au moins " + chiffre(R.frequenceMin) + " quand il progressait). ";
+        for (var i = 0; i < autres.length; i++) {
+          var dest = autres[i];
+          if (ajouter({ id: idProposition("deplacer_exercice", g.nom, g.fourchette, { routineId: o.routineId }, { routineId: dest.id }), type: "deplacer_exercice", muscle: mu,
+            cible: { exercice: g.nom, fourchette: texteFourchette(g.fourchette), occurrences: occ(g, function (x) { return x === o; }) }, avant: { routineId: o.routineId, routineNom: o.routineNom }, apres: { routineId: dest.id, routineNom: dest.name || "" },
+            titre: "Déplacer " + g.nom + " vers « " + (dest.name || "autre séance") + " »", raison: phraseR + "Le répartir sur deux séances augmente la fréquence sans ajouter de série.", mesures: mes, confiance: m.confiance || "moyenne" })) return;
+          // Destination trop longue : echange avec un exercice de duree proche d'un muscle qui progresse.
+          var dO = dureeEx(o), candidats = (dest.exercises || []).map(function (x, idx) { return { x: x, idx: idx }; }).filter(function (y) {
+            var n = y.x && !estActivation(y.x) && y.x.name ? fnNom(y.x.name) : null, pm = n ? principalDe(n) : null; return pm && pm !== mu && muscles[pm] && muscles[pm].etat === "progression" && !cibles[n] && !enEssai[n]; })
+            .sort(function (a, b) { return Math.abs(dureeExercice(a.x) - dO) - Math.abs(dureeExercice(b.x) - dO); });
+          for (var j = 0; j < candidats.length; j++) { var y = candidats[j], ny = fnNom(y.x.name), fy = texteFourchette(lireFourchette(y.x.repsTarget || REGLES.FOURCHETTE_DEFAUT));
+            if (ajouter({ id: idProposition("echanger_exercices", g.nom, g.fourchette, { routineId: o.routineId }, { routineId: dest.id, avec: ny }), type: "echanger_exercices", muscle: mu,
+              cible: { exercice: g.nom, fourchette: texteFourchette(g.fourchette), occurrences: occ(g, function (x) { return x === o; }) }, avant: { routineId: o.routineId, routineNom: o.routineNom },
+              apres: { routineId: dest.id, routineNom: dest.name || "", echange: { exercice: ny, fourchette: fy, routineId: dest.id, index: y.idx } },
+              titre: "Échanger " + g.nom + " (« " + o.routineNom + " ») et " + ny + " (« " + (dest.name || "") + " »)",
+              raison: phraseR + "L'échange avec " + ny + " (" + muscles[principalDe(ny)].libelle.toLowerCase() + ", qui progresse) répartit le travail sans rallonger les séances.", mesures: mes, confiance: m.confiance || "moyenne" })) return; }
+        }
+      }
+      // b) Remplacer l'exercice le moins productif du muscle par un exercice deja fait qui a mieux progresse.
+      var parProd = gs.slice().sort(function (a, b) { return (productivite(histDe(a.nom)).part || 0) - (productivite(histDe(b.nom)).part || 0); });
+      for (var k = 0; k < parProd.length; k++) if (propRemplacer(parProd[k], mu, constat, mes)) return;
+      // c) Reduire (excessif) : une serie de moins sur l'exercice le plus charge du muscle.
+      if (v.etat === "excessif") {
+        var red = gs.filter(function (g) { return g.occurrences[0].series > REGLES.ADAPT_SERIES_MIN; }).sort(function (a, b) { return b.occurrences[0].series - a.occurrences[0].series; })[0];
+        if (red) { var sa = red.occurrences[0].series;
+          if (ajouter({ id: idProposition("series", red.nom, red.fourchette, { series: sa }, { series: sa - 1 }), type: "series", muscle: mu,
+            cible: { exercice: red.nom, fourchette: texteFourchette(red.fourchette), occurrences: occ(red) }, avant: { series: sa }, apres: { series: sa - 1 },
+            titre: red.nom + " : " + (sa - 1) + " séries au lieu de " + sa, raison: constat + noteFatigue, mesures: mes, confiance: m.confiance || "moyenne" })) return; }
+      }
+      // d) Insuffisant : echanger une serie dans la MEME seance, prise a un muscle qui progresse au-dessus de sa propre reference.
+      //    Jamais si le muscle est deja plus sollicite en indirect qu'en direct (risque de surcharge).
+      if (v.etat === "insuffisant" && m.indirectParSemaine < m.directParSemaine) {
+        for (var a = 0; a < gs.length; a++) { var ga = gs[a]; if (ga.occurrences[0].series >= REGLES.ADAPT_SERIES_MAX) continue;
+          for (var b = 0; b < ga.occurrences.length; b++) { var oa = ga.occurrences[b], rr = routines.filter(function (x) { return x && String(x.id) === String(oa.routineId); })[0]; if (!rr) continue;
+            var donneurs = rr.exercises.map(function (x, idx) { return { x: x, idx: idx }; }).filter(function (y) {
+              var n = y.x && !estActivation(y.x) && y.x.name ? fnNom(y.x.name) : null, pm = n ? principalDe(n) : null, M = pm ? muscles[pm] : null;
+              return M && pm !== mu && M.etat === "progression" && M.volume.reference && M.directParSemaine > M.volume.reference.directMin && (int(y.x.sets) || REGLES.SERIES_PREVUES_DEFAUT) > REGLES.ADAPT_SERIES_MIN && !cibles[n] && !enEssai[n]; })
+              .sort(function (p, q) { var P = muscles[principalDe(fnNom(p.x.name))], Q = muscles[principalDe(fnNom(q.x.name))]; return (Q.directParSemaine - Q.volume.reference.directMin) - (P.directParSemaine - P.volume.reference.directMin); });
+            for (var c = 0; c < donneurs.length; c++) { var dn = donneurs[c], nd = fnNom(dn.x.name), Md = muscles[principalDe(nd)], sd = int(dn.x.sets) || REGLES.SERIES_PREVUES_DEFAUT, sA = oa.series;
+              var fd = texteFourchette(lireFourchette(dn.x.repsTarget || REGLES.FOURCHETTE_DEFAUT));
+              if (ajouter({ id: idProposition("transferer_serie", ga.nom, ga.fourchette, { series: sA }, { series: sA + 1, depuis: nd }), type: "transferer_serie", muscle: mu,
+                cible: { exercice: ga.nom, fourchette: texteFourchette(ga.fourchette), occurrences: [{ routineId: oa.routineId, routineNom: oa.routineNom, index: oa.index, nom: oa.nom }] },
+                avant: { series: sA }, apres: { series: sA + 1, depuis: { exercice: nd, fourchette: fd, routineId: oa.routineId, index: dn.idx, series: sd - 1 } },
+                titre: "« " + oa.routineNom + " » : " + ga.nom + " " + (sA + 1) + " séries, " + nd + " " + (sd - 1) + " séries",
+                raison: constat + Md.libelle + " progresse avec " + chiffre(Md.directParSemaine) + " séries par semaine (il progressait déjà avec " + chiffre(Md.volume.reference.directMin) + " par semaine) : une de ses séries passe à " + lib.toLowerCase() + ", sans allonger la séance.",
+                mesures: Object.assign({ donneur: { exercice: nd, muscle: principalDe(nd), directParSemaine: Md.directParSemaine, reference: Md.volume.reference } }, mes), confiance: "moyenne" })) return; }
+          }
+        }
+      }
+      sansSolution.push({ muscle: mu, libelle: lib, etat: v.etat, texte: lib + " : " + (v.etat === "excessif" ? "volume au-dessus de ta référence" : "volume sous ta référence") + ", aucune solution sans rallonger tes séances." });
+    });
+    // 3. Exercices qui stagnent (muscle sans probleme de volume, ou deja traite) : remplacer, sinon nouvelle plage apres 8 semaines.
+    stagnants.forEach(function (x) {
+      var g = x.g, e = x.e, mu = e.muscle, m = muscles[mu]; if (cibles[g.nom] || musclesTraites[mu]) return;
+      var fT = texteFourchette(g.fourchette), dates = e.comparaisons.map(function (c) { return dateCourte(c.date); }).join(", ");
+      var phraseS = "Aucune progression sur tes " + e.comparaisons.length + " dernières séances comparables en " + fT + " (" + dates + "). ";
+      var mesS = { comparaisons: e.comparaisons, directParSemaine: m.directParSemaine, indirectParSemaine: m.indirectParSemaine, frequence: m.frequence, volume: m.volume };
+      if (propRemplacer(g, mu, phraseS, mesS)) return;
+      var nf = nouvelleFourchette(g.fourchette, e.mode);
+      if (e.depuis && joursEntre(e.depuis, aujourdhui) >= REGLES.ADAPT_MEME_PLAGE_JOURS && nf) {
+        var nfT = nf.min + "-" + nf.max, semaines = Math.floor(joursEntre(e.depuis, aujourdhui) / 7);
+        ajouter({ id: idProposition("fourchette", g.nom, g.fourchette, { fourchette: fT }, { fourchette: nfT }), type: "fourchette", muscle: mu,
+          cible: { exercice: g.nom, fourchette: fT, occurrences: occ(g) }, avant: { fourchette: fT }, apres: { fourchette: nfT },
+          titre: g.nom + " : passer en " + nfT + " répétitions", raison: phraseS + "Même plage " + fT + " depuis " + semaines + " semaines : une nouvelle plage relance la progression.",
+          mesures: Object.assign({ depuis: e.depuis, semaines: semaines }, mesS), confiance: "moyenne" });
       }
     });
-    // Niveau MUSCLE : baisse du muscle (28 j, plusieurs exercices) avec un volume direct eleve -> une serie de moins sur son exercice le plus charge.
-    GROUPES.forEach(function (mu) {
-      var m = muscles[mu]; if (m.etat !== "regression" || !(m.directParSemaine > REGLES.ADAPT_VOLUME_HAUT)) return;
-      var gs = groupes.filter(function (g) { return !enEssai[g.nom] && !cibles[g.nom] && classerExercice(g.nom, options).principal === mu && g.occurrences[0].series > REGLES.ADAPT_SERIES_MIN; });
-      if (!gs.length) return;
-      gs.sort(function (a, b) { return b.occurrences[0].series - a.occurrences[0].series; }); var g = gs[0], sa = g.occurrences[0].series;
-      ajouter({ id: idProposition("series", g.nom, g.fourchette, { series: sa }, { series: sa - 1 }), type: "series", muscle: mu,
-        cible: { exercice: g.nom, fourchette: texteFourchette(g.fourchette), occurrences: g.occurrences.map(function (o) { return { routineId: o.routineId, routineNom: o.routineNom, index: o.index, nom: o.nom }; }) },
-        avant: { series: sa }, apres: { series: sa - 1 }, titre: g.nom + " : " + (sa - 1) + " séries au lieu de " + sa,
-        raison: m.libelle + " en baisse sur 28 jours (" + m.compte.regression + " baisses sur " + m.compte.fiables + " comparaisons) avec " + chiffre(m.directParSemaine) + " séries directes par semaine (plus de " + REGLES.ADAPT_VOLUME_HAUT + "). " + noteFatigue,
-        mesures: { compte: m.compte, directParSemaine: m.directParSemaine, periode: perf.periode, fatigue: fat.utilisable ? fat.score : null }, confiance: m.confiance || "moyenne" });
-    });
-    // Niveau MUSCLE : repartition. Muscle qui ne progresse pas, travaille < 1,5 fois / semaine, avec tous ses exercices dans UNE routine
-    // (au moins 2) alors qu'une autre routine n'en a aucun -> deplacer un exercice vers la routine la plus courte.
-    var routines = Array.isArray(donnees.routines) ? donnees.routines : [];
-    GROUPES.forEach(function (mu) {
-      var m = muscles[mu]; if (["stagnation", "regression", "irregulier"].indexOf(m.etat) === -1 || !(m.frequence < REGLES.ADAPT_FREQUENCE_BASSE)) return;
-      var occ = []; groupes.forEach(function (g) { if (classerExercice(g.nom, options).principal === mu) g.occurrences.forEach(function (o) { occ.push({ g: g, o: o }); }); });
-      var ids = distinctes(occ.map(function (x) { return { r: String(x.o.routineId) }; }), "r"); if (ids.length !== 1 || occ.length < 2) return;
-      var dispo = routines.filter(function (r) { return r && String(r.id) !== ids[0] && Array.isArray(r.exercises); });
-      if (!dispo.length) return;
-      dispo.sort(function (a, b) { return a.exercises.length - b.exercises.length; });
-      var dest = dispo[0], x = occ[occ.length - 1];
-      if (enEssai[x.g.nom] || cibles[x.g.nom]) return;
-      ajouter({ id: idProposition("deplacer_exercice", x.g.nom, x.g.fourchette, { routineId: x.o.routineId }, { routineId: dest.id }), type: "deplacer_exercice", muscle: mu,
-        cible: { exercice: x.g.nom, fourchette: texteFourchette(x.g.fourchette), occurrences: [{ routineId: x.o.routineId, routineNom: x.o.routineNom, index: x.o.index, nom: x.o.nom }] },
-        avant: { routineId: x.o.routineId, routineNom: x.o.routineNom }, apres: { routineId: dest.id, routineNom: dest.name || "" },
-        titre: "Déplacer " + x.g.nom + " vers « " + (dest.name || "autre séance") + " »",
-        raison: m.libelle + " : " + (m.etat === "regression" ? "en baisse" : m.etat === "stagnation" ? "sans progression" : "résultats irréguliers") + " sur 28 jours, travaillé " + chiffre(m.frequence) + " fois par semaine, tout dans « " + x.o.routineNom + " ». Le répartir sur deux séances augmente la fréquence sans ajouter de série.",
-        mesures: { frequence: m.frequence, directParSemaine: m.directParSemaine, compte: m.compte, periode: perf.periode }, confiance: m.confiance || "moyenne" });
-    });
-    return { version: VERSION, aujourdhui: aujourdhui, fatigue: fat, muscles: muscles, exercices: etats, propositions: props,
-      rir: { utilise: false, raison: "les RIR ne servent pas aux propositions tant qu'ils ne sont pas saisis" }, adaptationAutomatique: false };
+    return { version: VERSION, aujourdhui: aujourdhui, fatigue: fat, muscles: muscles, exercices: etats, propositions: props, sansSolution: sansSolution,
+      duree: dureeProgramme(routines), rir: { utilise: false, raison: "les RIR ne servent pas aux propositions tant qu'ils ne sont pas saisis" }, adaptationAutomatique: false };
   }
 
   // Applique UNE proposition acceptee. Renvoie un NOUVEAU programme (les routines recues ne sont jamais modifiees) :
@@ -1972,6 +2089,23 @@
       var c0 = cibles[0], ex = c0.r.exercises.splice(c0.index, 1)[0]; dest.exercises.push(ex);
       return { ok: true, routines: out, modifiees: [c0.r.id, dest.id] };
     }
+    // 0.20.0 : echange de deux exercices entre deux seances ; transfert d'une serie entre deux exercices d'une meme seance.
+    var autre = function (d) {
+      var r = out.filter(function (x) { return x && String(x.id) === String(d.routineId); })[0]; if (!r || !Array.isArray(r.exercises)) return null;
+      var ok = function (x) { return x && !estActivation(x) && fnNom(x.name) === d.exercice && texteFourchette(lireFourchette(x.repsTarget || REGLES.FOURCHETTE_DEFAUT)) === d.fourchette; };
+      var i = ok(r.exercises[d.index]) ? d.index : r.exercises.findIndex(ok); return i === -1 ? null : { r: r, e: r.exercises[i], index: i };
+    };
+    if (p.type === "echanger_exercices") {
+      var y = p.apres && p.apres.echange ? autre(p.apres.echange) : null, x0 = cibles[0]; if (!y || y.r === x0.r) return { ok: false, raison: "programme_modifie" };
+      var ex1 = x0.r.exercises[x0.index]; x0.r.exercises[x0.index] = y.r.exercises[y.index]; y.r.exercises[y.index] = ex1; // chacun prend la place de l'autre
+      return { ok: true, routines: out, modifiees: [x0.r.id, y.r.id] };
+    }
+    if (p.type === "transferer_serie") {
+      var dz = p.apres && p.apres.depuis ? autre(p.apres.depuis) : null, xz = cibles[0];
+      if (!dz || dz.r !== xz.r || series(xz.e) !== p.avant.series || series(dz.e) !== p.apres.depuis.series + 1) return { ok: false, raison: "programme_modifie" };
+      xz.e.sets = p.apres.series; dz.e.sets = p.apres.depuis.series;
+      return { ok: true, routines: out, modifiees: [xz.r.id] };
+    }
     cibles.forEach(function (x) {
       if (p.type === "charge") { x.e.chargeCible = p.apres.charge; x.e.chargeCibleLe = le; }
       else if (p.type === "series") x.e.sets = p.apres.series;
@@ -1989,6 +2123,40 @@
     var c = exRoutine ? num(exRoutine.chargeCible) : null; if (!(c > 0) || !exRoutine.chargeCibleLe) return null;
     var fnNom = options && typeof options.normaliserNom === "function" ? options.normaliserNom : nomParDefaut;
     return seancesApres(sessions, fnNom(exRoutine.name), fnNom, exRoutine.chargeCibleLe) === 0 ? c : null;
+  }
+
+  // ═══════════════════════ 5 ter. DUREE ESTIMEE DES SEANCES (0.20.0) ═══════════════════════
+  // Estimation a partir du PROGRAMME (series, repetitions visees, repos prevus, echauffement, transitions). Aucune duree cible :
+  // la reference est toujours la duree estimee du programme ACTUEL, calculee de la meme facon (les hypotheses se compensent).
+  var DUREE = Object.freeze({ SECONDES_PAR_REP: 3, ECHAUFFEMENT_SERIE_S: 30, ECHAUFFEMENT_REPOS_S: 60, TRANSITION_S: 60, REPOS_DEFAUT_S: 90, REPS_INCONNUES: 10 });
+  function dureeSerieTravail(f) {
+    if (f.type === "duree") return f.min !== null && f.max !== null ? (f.min + f.max) / 2 : f.min || f.max || DUREE.REPS_INCONNUES * DUREE.SECONDES_PAR_REP;
+    if (f.type === "serie100") return 100 * DUREE.SECONDES_PAR_REP;
+    if (f.type === "reps" && f.min !== null && f.max !== null) return (f.min + f.max) / 2 * DUREE.SECONDES_PAR_REP;
+    return DUREE.REPS_INCONNUES * DUREE.SECONDES_PAR_REP;
+  }
+  function dureeExercice(e) {
+    var f = lireFourchette(e && e.repsTarget), n = int(e && e.sets) || REGLES.SERIES_PREVUES_DEFAUT, repos = num(e && e.rest), ech = int(e && e.warmupSets) || 0;
+    if (!(repos >= 0)) repos = DUREE.REPOS_DEFAUT_S;
+    return Math.round(n * (dureeSerieTravail(f) + repos) + ech * (DUREE.ECHAUFFEMENT_SERIE_S + DUREE.ECHAUFFEMENT_REPOS_S));
+  }
+  function dureeRoutine(r) {
+    var exs = (r && Array.isArray(r.exercises) ? r.exercises : []).filter(Boolean);
+    var parEx = exs.map(function (e) { return { nom: e.name, secondes: dureeExercice(e) }; });
+    var tot = parEx.reduce(function (a, x) { return a + x.secondes; }, 0) + Math.max(0, exs.length - 1) * DUREE.TRANSITION_S;
+    return { routineId: r ? r.id : null, nom: r ? r.name || "" : "", secondes: tot, minutes: Math.round(tot / 60), exercices: parEx };
+  }
+  function dureeProgramme(routines) {
+    var ss = (Array.isArray(routines) ? routines : []).filter(Boolean).map(dureeRoutine);
+    return { seances: ss, totalSecondes: ss.reduce(function (a, x) { return a + x.secondes; }, 0), hypotheses: DUREE };
+  }
+  // Compare deux programmes : ok si aucune seance ne depasse sa duree actuelle de plus de toleranceS, et si le total n'augmente pas.
+  function comparerDurees(avant, apres, toleranceS) {
+    var tol = num(toleranceS) || 0, a = dureeProgramme(avant), b = dureeProgramme(apres), parId = {};
+    a.seances.forEach(function (x) { parId[String(x.routineId)] = x.secondes; });
+    var seances = b.seances.map(function (x) { var av = parId[String(x.routineId)]; return { routineId: x.routineId, nom: x.nom, avant: av === undefined ? null : av, apres: x.secondes, ecart: av === undefined ? null : x.secondes - av }; });
+    var ok = seances.every(function (x) { return x.avant !== null && x.ecart <= tol; }) && b.totalSecondes <= a.totalSecondes;
+    return { ok: ok, toleranceS: tol, seances: seances, totalAvant: a.totalSecondes, totalApres: b.totalSecondes, ecartTotal: b.totalSecondes - a.totalSecondes };
   }
 
   // ═══════════════════════ 6. ANALYSE COMPLETE ═══════════════════════
@@ -2080,6 +2248,7 @@
     // 5. domaines
     // 5 bis. propositions d'adaptation (0.18.0)
     fatiguePourAdaptation: fatiguePourAdaptation, propositionsAdaptation: propositionsAdaptation, appliquerProposition: appliquerProposition, chargeCibleActive: chargeCibleActive,
+    DUREE: DUREE, dureeExercice: dureeExercice, dureeRoutine: dureeRoutine, dureeProgramme: dureeProgramme, comparerDurees: comparerDurees,
     decisionsVides: decisionsVides, lireDecisions: lireDecisions, enregistrerDecision: enregistrerDecision,
     FATIGUE_CRITERES: FATIGUE_CRITERES, NIVEAUX_FATIGUE: NIVEAUX_FATIGUE, scoreFatigue: scoreFatigue, repondreFatigue: repondreFatigue, heureSeance: heureSeance, dernieresSollicitations: dernieresSollicitations, rirRecent: rirRecent, recuperation: recuperation, volume: volume, priorites: priorites, morphologie: morphologie,
     // 5 bis. volume et performances par muscle (etape 3, constats seulement)

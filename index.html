@@ -2980,12 +2980,16 @@ function CoachPropositions({ sessions, routines, setRoutines, fatigue }) {
   const [decisions, setDecisions] = useState(() => load(KEYS.coachDecisions));
   const [message, setMessage] = useState(null);
   const CE = coachEngine();
-  if (!CE || typeof CE.propositionsAdaptation !== "function" || !_canWriteUserData()) return null;
-  let res = null;
-  try { res = CE.propositionsAdaptation({ sessions: sessions || [], routines: routines || [], fatigue: fatigue, decisions: decisions }, Object.assign({ normaliserNom: cleExercice }, optionsMuscles(CE))); }
-  catch (e) { console.warn("[coach] propositions", e && e.message); return null; }
-  const liste = res.propositions.slice(0, 3);
-  if (!liste.length && !message) return null;
+  // 0.20.0 : calcul refait seulement quand les seances, le programme, la fatigue ou les decisions changent (reference sur un an).
+  const optsM = optionsMuscles(CE), cleChoix = JSON.stringify(optsM.classements || null);
+  const res = React.useMemo(() => {
+    if (!CE || typeof CE.propositionsAdaptation !== "function") return null;
+    try { return CE.propositionsAdaptation({ sessions: sessions || [], routines: routines || [], fatigue: fatigue, decisions: decisions }, Object.assign({ normaliserNom: cleExercice }, optsM)); }
+    catch (e) { console.warn("[coach] propositions", e && e.message); return null; }
+  }, [CE, sessions, routines, fatigue, decisions, cleChoix]);
+  if (!res || !_canWriteUserData()) return null;
+  const liste = res.propositions.slice(0, 3), sansSolution = (res.sansSolution || []).slice(0, 2);
+  if (!liste.length && !sansSolution.length && !message) return null;
   function decider(p, statut) {
     const r = decisionCoach(CE, p, statut, routines, new Date().toISOString());
     if (r.routines) setRoutines(r.routines);
@@ -3001,11 +3005,15 @@ function CoachPropositions({ sessions, routines, setRoutines, fatigue }) {
         <div key={p.id} style={{ borderTop: "1px solid #2a1010", paddingTop: 8, marginTop: 6 }}>
           <div style={{ fontSize: 13, fontWeight: 900, color: "#eee" }}>{p.titre}</div>
           <div style={{ fontSize: 11, color: "#aa7a7a", marginTop: 3, lineHeight: 1.4 }}>{p.raison}</div>
+          {p.duree && p.duree.texte && <div style={{ fontSize: 10, color: "#777", marginTop: 3 }}>⏱ {p.duree.texte}</div>}
           <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
             <button onClick={() => decider(p, "acceptee")} style={bouton("#1f3a1f", "#4CAF50", "#cfe9cf")}>Accepter</button>
             <button onClick={() => decider(p, "refusee")} style={bouton("#1a1a1a", "#333", "#999")}>Refuser</button>
           </div>
         </div>
+      ))}
+      {sansSolution.map(x => (
+        <div key={"ss-" + x.muscle} style={{ borderTop: "1px solid #2a1010", paddingTop: 6, marginTop: 6, fontSize: 11, color: "#888", lineHeight: 1.4 }}>{x.texte}</div>
       ))}
     </div>
   );

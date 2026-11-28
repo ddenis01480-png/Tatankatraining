@@ -1,5 +1,5 @@
 // Lancer : node tests/propositions.test.js     (avec tes donnees : EXPORT_FILE=/chemin/export.json node tests/propositions.test.js)
-// Moteur 0.18.0 : propositions d'adaptation (propositionsAdaptation), application d'une proposition acceptee (appliquerProposition),
+// Moteur 0.18.0 (regles de volume mises a jour en 0.20.0, voir tests/volume-duree.test.js) : propositions d'adaptation (propositionsAdaptation), application d'une proposition acceptee (appliquerProposition),
 // decisions de l'utilisateur (enregistrerDecision) et charge proposee pour le pre-remplissage (chargeCibleActive).
 process.env.TZ = 'Europe/Paris';
 const fs = require('fs'), assert = require('assert');
@@ -60,12 +60,11 @@ t('Fatigue ancienne (> 7 jours), partielle, ou fiche par defaut a 0 : NON utilis
   assert.deepStrictEqual([defaut.fatigue.utilisable, defaut.fatigue.raison], [false, 'non_renseigne']);
 });
 
-t('Stagnation (3 comparaisons fiables sans progression) + volume direct < 10 series / semaine -> une serie de plus', () => {
+t('Stagnation SANS periode de progression connue : jamais de serie en plus (0.20.0 : aucun seuil universel de volume)', () => {
   const r = P({ sessions: stagnation(6, 4, 3), routines: [routine(1, 'Push', [[DC, 3]])] });
-  const p = r.propositions[0]; assert.ok(p);
-  assert.deepStrictEqual([p.type, p.avant, p.apres], ['series', { series: 3 }, { series: 4 }]);
-  assert.ok(/Aucune progression sur tes 3 dernières séances comparables/.test(p.raison) && /séries directes par semaine/.test(p.raison), p.raison);
-  assert.ok(r.muscles.Pectoraux.directParSemaine < 10);
+  assert.strictEqual(r.exercices[0].etat, 'stagnation');
+  assert.deepStrictEqual([r.muscles.Pectoraux.volume.etat, r.muscles.Pectoraux.volume.raison], ['indetermine', 'aucune_periode_de_progression_connue']);
+  assert.ok(!r.propositions.some(p => p.type === 'series' || p.type === 'transferer_serie'), JSON.stringify(r.propositions.map(p => p.type)));
 });
 
 t('Stagnation, volume suffisant, meme plage depuis >= 8 semaines -> nouvelle plage de repetitions (8-12 -> 6-10)', () => {
@@ -75,13 +74,15 @@ t('Stagnation, volume suffisant, meme plage depuis >= 8 semaines -> nouvelle pla
   assert.ok(/depuis 9 semaines/.test(p.raison), p.raison);
 });
 
-t('Stagnation, volume suffisant, plage recente -> remplacement UNIQUEMENT par un exercice deja fait, du meme muscle, absent du programme', () => {
+t('Stagnation, plage recente -> remplacement UNIQUEMENT par un exercice deja fait (au moins 2 comparaisons), du meme muscle, plus productif, absent du programme', () => {
   const DI = 'Développé incliné haltères';
-  const vieux = [sess(addDays(J, -45), [ex(DI, '30x10,30x10')])];
+  const vieux = [10, 9, 8, 7].map((d, i) => sess(addDays(J, -d * 6), [ex(DI, ['30x9,30x9', '30x10,30x10', '30x11,30x11', '30x12,30x12'][i])]));
   const avec = P({ sessions: vieux.concat(stagnation(8, 3, 5)), routines: [routine(1, 'Push', [[DC, 5]])] });
   const p = avec.propositions[0]; assert.ok(p);
   assert.deepStrictEqual([p.type, p.avant, p.apres], ['remplacer_exercice', { exercice: DC }, { exercice: DI }]);
-  assert.ok(/tu l'as déjà fait 1 fois/.test(p.raison), p.raison);
+  assert.ok(/a progressé dans 100 % de tes séances comparables \(3 sur 3\), contre 0 %/.test(p.raison), p.raison);
+  const une = P({ sessions: [sess(addDays(J, -45), [ex(DI, '30x10,30x10')])].concat(stagnation(8, 3, 5)), routines: [routine(1, 'Push', [[DC, 5]])] });
+  assert.strictEqual(une.propositions.length, 0, 'fait une seule fois : rien a comparer -> pas de remplacement');
   const sans = P({ sessions: stagnation(8, 3, 5), routines: [routine(1, 'Push', [[DC, 5]])] });
   assert.strictEqual(sans.propositions.length, 0, 'aucun exercice connu -> aucune proposition (rien d\'invente)');
 });
@@ -165,14 +166,16 @@ t('Muscle en baisse sur 28 jours avec un volume direct > 20 series / semaine -> 
   assert.ok(r.propositions.some(p => p.type === 'series' && p.apres.series === p.avant.series - 1 || p.type === 'charge' && p.apres.charge < p.avant.charge), 'reduction proposee');
 });
 
-t('Repartition : muscle sans progression, < 1,5 fois / semaine, tout dans une routine -> deplacer un exercice vers la routine la plus courte', () => {
+t('Repartition : deplacer un exercice vers une autre seance qui s\'allongerait de plus de 2 min n\'est JAMAIS propose (0.20.0)', () => {
   const A = 'Curl barre EZ', B = 'Curl marteau haltères';
   const ss = historique(6, 6, () => [ex(A, '30x10,30x10,30x10,30x10,30x10,30x10'), ex(B, '14x10,14x10,14x10,14x10,14x10', '10-15')]);
   const routines = [routine(1, 'Pull', [[A, 6], [B, 5, '10-15'], ['Rowing', 3]]), routine(2, 'Bras', [['Dips', 3]]), routine(3, 'Jambes', [['Squat', 3], ['Leg curl', 3]])];
   const r = P({ sessions: ss, routines });
   info('Biceps : ' + r.muscles.Biceps.etat + ', frequence ' + r.muscles.Biceps.frequence + ', direct ' + r.muscles.Biceps.directParSemaine + ' ; ' + r.propositions.map(p => p.type + ' ' + p.cible.exercice).join(' ; '));
-  const d = r.propositions.find(p => p.type === 'deplacer_exercice'); assert.ok(d, 'deplacement propose');
-  assert.deepStrictEqual([d.cible.exercice, d.apres.routineId], [B, 2]);
+  assert.ok(!r.propositions.some(p => p.type === 'deplacer_exercice'));
+  r.propositions.forEach(p => assert.ok(p.duree && p.duree.ok, p.type));
+  // L'application d'un deplacement reste possible (proposition acceptee d'une version precedente).
+  const d = { type: 'deplacer_exercice', cible: { exercice: B, fourchette: '10-15', occurrences: [{ routineId: 1, index: 1 }] }, avant: { routineId: 1 }, apres: { routineId: 2 } };
   const a = E.appliquerProposition(routines, d); assert.ok(a.ok);
   assert.deepStrictEqual([a.routines[0].exercises.map(e => e.name), a.routines[1].exercises.map(e => e.name)], [[A, 'Rowing'], ['Dips', B]]);
 });
