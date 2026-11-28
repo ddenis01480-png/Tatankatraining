@@ -261,7 +261,7 @@ t('17. Programme et routines jamais modifies ; aucun resultat ne contient d\'act
   const r = [E.volumeMuscles(N(raw), { fin: '2026-04-15' }), E.performanceMuscles(N(raw), { fin: '2026-04-15' }), E.bilanEntrainement(N(raw), { fin: '2026-04-15' })];
   r.forEach(x => { assert.deepStrictEqual(x.actions, []); assert.strictEqual(x.adaptationAutomatique, false); });
   assert.ok(!/"(nouvelleCharge|appliquer|applique|reduire|decharge)"/.test(JSON.stringify(r)), 'aucune consigne dans les constats');
-  assert.deepStrictEqual(Object.keys(E).filter(k => /^(appliquer|modifier|ecrire|sauver|enregistrer)/i.test(k)), []);
+  assert.deepStrictEqual(Object.keys(E).filter(k => /^(appliquer|modifier|ecrire|sauver|enregistrer)/i.test(k)), ['appliquerProposition', 'enregistrerDecision']); // 0.18.0 : pures, apres decision de l'utilisateur
   assert.strictEqual(JSON.stringify(routines), '[{"id":1,"name":"R","exercises":[{"name":"Pec deck (Butterfly)","sets":3,"repsTarget":"8-12"}]}]'); });
 
 t('19. Donnees generees au hasard (beta-testeurs) : aucun plantage ; petits historiques -> « donnees insuffisantes »', () => {

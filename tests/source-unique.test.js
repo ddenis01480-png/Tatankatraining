@@ -45,7 +45,8 @@ t('Inventaire : l\'appli n\'appelle ni volume(), ni recuperation(), ni priorites
   const code = sansCommentaires(HTML);
   ['volume', 'recuperation', 'priorites', 'rirRecent', 'morphologie'].forEach(f => assert.ok(!new RegExp('\\b(CE|CEfin|CoachEngine|E)\\.' + f + '\\b').test(code), 'appel CE.' + f));
   ['.priorites', '.recuperation', '.parMuscle', '.rir7j', '.morphologie', '.propositions', '.exercicesNonClasses', '.idsEnDouble', '.seancesHorsOrdre'].forEach(champ =>
-    assert.ok(code.indexOf(champ) < 0, 'lecture du champ ' + champ)); });
+    // 0.18.0 : « res.propositions » = resultat de propositionsAdaptation() (carte de l'Accueil), pas le champ d'analyser().
+    assert.ok(code.replace(/res\.propositions\b|\.propositionsAdaptation\b/g, '').indexOf(champ) < 0, 'lecture du champ ' + champ)); });
 t('Inventaire : les fonctions serveur du depot (api/) n\'utilisent pas le moteur', () => {
   FICHIERS_CODE.filter(f => f.indexOf('api/') === 0).forEach(f => assert.ok(!/CoachEngine|coach-engine/.test(lire(f)), f)); });
 t('Inventaire : dans le moteur, volume(), recuperation() et priorites() ne sont plus appelees (definition + export seulement)', () => {

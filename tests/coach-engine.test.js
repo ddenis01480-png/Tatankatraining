@@ -73,7 +73,9 @@ t('A', 'Les donnees recues (gelees) ne sont jamais modifiees : seances, routines
   r.exercices['Squat barre'].derniereMesure.force = -1; assert.strictEqual(JSON.stringify(data), before, 'modifier le resultat ne touche pas les donnees'); });
 t('A', 'API figee ; aucune fonction qui appliquerait une adaptation ; propositions = liste vide', () => {
   assert.ok(Object.isFrozen(E) && Object.isFrozen(E.REGLES));
-  assert.ok(!Object.keys(E).some(k => /appliqu|apply|save|enregistr|ecrire|write|set[A-Z]/i.test(k)), Object.keys(E).join(','));
+  // 0.18.0 : seules exceptions, deux fonctions PURES (elles renvoient un nouvel objet, testees dans propositions.test.js) appelees
+  // par l'appli apres « Accepter » / « Refuser » ; le moteur n'ecrit jamais rien lui-meme.
+  assert.deepStrictEqual(Object.keys(E).filter(k => /appliqu|apply|save|enregistr|ecrire|write|set[A-Z]/i.test(k)), ['appliquerProposition', 'enregistrerDecision'], Object.keys(E).join(','));
   assert.deepStrictEqual(E.analyser({ sessions: [] }, { maintenant: '2026-01-01' }).propositions, []); });
 t('A', 'Resultats deterministes : deux analyses identiques des memes donnees donnent le meme resultat', () => {
   const d = representative(); assert.deepStrictEqual(plain(E.analyser(d, { maintenant: '2026-06-01' })), plain(E.analyser(d, { maintenant: '2026-06-01' }))); });

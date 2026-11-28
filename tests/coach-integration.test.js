@@ -52,6 +52,11 @@ t('index.html n\'appelle que des fonctions de LECTURE du moteur (aucune ecriture
   allowed.push('synchroniserClassements');
   assert.ok(!/localStorage|fetch\(|supabase|KEYS|it3_sessions|it3_routines/.test(E.synchroniserClassements.toString()), 'synchroniserClassements : aucun acces direct');
   ['choisirClassement', 'classementsMoteur', 'fusionnerClassements'].forEach(f => assert.ok(!/localStorage|save\(|fetch\(/.test(E[f].toString()), f + ' : aucune ecriture'));
+  // 0.18.0 : propositions d'adaptation. propositionsAdaptation et appliquerProposition sont PURES (objet neuf, entrees intactes :
+  // tests/propositions.test.js) ; appliquerProposition n'est appelee que par decisionCoach(), au clic « Accepter ».
+  allowed.push('propositionsAdaptation', 'appliquerProposition', 'enregistrerDecision', 'chargeCibleActive');
+  ['propositionsAdaptation', 'appliquerProposition', 'enregistrerDecision', 'chargeCibleActive'].forEach(f => assert.ok(!/localStorage|save\(|fetch\(|supabase/.test(E[f].toString()), f + ' : aucune ecriture'));
+  assert.strictEqual((SRC.match(/CE\.appliquerProposition\(/g) || []).length, 1, 'un seul appel, dans decisionCoach');
   calls.forEach(c => assert.ok(allowed.includes(c), 'appel non prevu : CE.' + c)); info('fonctions du moteur utilisees : ' + calls.join(', ')); });
 
 // ── Conseil de progression (encadre au-dessus des series) ──

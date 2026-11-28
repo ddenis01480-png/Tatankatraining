@@ -33,7 +33,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var VERSION = "0.17.0";
+  var VERSION = "0.18.0";
 
   // Reglages centralises (une seule valeur par regle).
   var REGLES = Object.freeze({
@@ -97,7 +97,19 @@
     GENERALE_HAUTE_FIABLES: 20,    // confiance haute si >= 20 comparaisons et aucun retour de pause
     LOCALE_BAISSES: 2,             // R-D2 : >= 2 baisses sur >= 2 seances, B >= P...
     LOCALE_AUTRES_MAX: 0.2,        // ... et les autres muscles < 20 % de baisses
-    ISOLEE_BAISSES: 2              // R-D4 : une seance avec >= 2 baisses, sans baisse ailleurs sur ces exercices
+    ISOLEE_BAISSES: 2,             // R-D4 : une seance avec >= 2 baisses, sans baisse ailleurs sur ces exercices
+    // 0.18.0 : PROPOSITIONS D'ADAPTATION (jamais appliquees par le moteur ; l'utilisateur accepte ou refuse). Seuils regroupes ici.
+    ADAPT_RECENT_JOURS: 28,        // un exercice n'est evalue que si sa derniere seance (meme plage que la routine) date de 28 jours au plus
+    ADAPT_STAGNATION_COMPARAISONS: 3, // stagnation = les 3 dernieres comparaisons FIABLES de l'exercice, sans aucune progression ni baisse persistante
+    ADAPT_VOLUME_BAS: 10,          // volume DIRECT du muscle < 10 series / semaine active : une serie de plus est proposee en cas de stagnation
+    ADAPT_VOLUME_HAUT: 20,         // volume DIRECT du muscle > 20 series / semaine active : une serie de moins est proposee en cas de baisse du muscle
+    ADAPT_SERIES_MIN: 2,           // jamais moins de 2 series de travail proposees
+    ADAPT_SERIES_MAX: 5,           // jamais plus de 5 series de travail proposees
+    ADAPT_BAISSE_CHARGE_PCT: 0.05, // baisse de performance persistante : charge proposee = -5 % (arrondie a l'increment, vers le bas)
+    ADAPT_MEME_PLAGE_JOURS: 56,    // stagnation dans la meme plage depuis >= 8 semaines (volume suffisant) : nouvelle plage de repetitions proposee
+    ADAPT_FREQUENCE_BASSE: 1.5,    // muscle travaille < 1,5 fois / semaine active, tout dans une seule routine : repartition proposee
+    ADAPT_SEANCES_APRES_ACCEPTATION: 2, // apres une proposition acceptee, l'exercice n'est plus evalue avant 2 seances faites avec le nouveau programme
+    ADAPT_FATIGUE_JOURS: 7         // le questionnaire de fatigue n'est pris en compte que s'il est complet et rempli dans les 7 derniers jours
   });
 
   // ─────────────────────────── outils internes (purs) ───────────────────────────
@@ -1670,6 +1682,289 @@
     return { disponible: fournis.length > 0, champsFournis: fournis, champsManquants: CHAMPS_MORPHO.filter(function (k) { return fournis.indexOf(k) === -1; }), regles: [] };
   }
 
+  // ═══════════════════════ 5 bis. PROPOSITIONS D'ADAPTATION (0.18.0) ═══════════════════════
+  // Transforme les constats deja calcules (analyseExercice, volumeMuscles, performanceMuscles, scoreFatigue) en PROPOSITIONS
+  // concretes sur le programme. Regles de securite :
+  //   - le moteur ne modifie jamais rien : il renvoie des objets « proposee » ; seule l'appli, apres « Accepter », appelle
+  //     appliquerProposition() qui renvoie un NOUVEAU programme (l'ancien n'est jamais modifie) ;
+  //   - aucune donnee inventee : RIR non saisi = non utilise ; fatigue non renseignee, partielle ou ancienne = non utilisee
+  //     (jamais lue comme une mauvaise recuperation) ; volume ou performance insuffisants = aucune proposition qui en depend ;
+  //   - chaque proposition donne sa raison en une phrase et les mesures qui la justifient (dates, chiffres, periode).
+  function chiffre(n) { return String(round1(n)).replace(".", ","); }
+  function incrementPour(charge) { return charge >= REGLES.SEUIL_CHARGE_LOURDE ? REGLES.INCREMENT_LOURD : REGLES.INCREMENT_LEGER; }
+  function arrondiCharge(x, inc, sens) { var k = x / inc; k = sens < 0 ? Math.floor(k + 1e-9) : Math.round(k); return Math.round(k * inc * 100) / 100; }
+  function dateCourte(d) { return d && d.length >= 10 ? d.slice(8, 10) + "/" + d.slice(5, 7) : d || "?"; }
+
+  // Questionnaire de fatigue pris en compte seulement s'il est COMPLET et rempli dans les 7 derniers jours (chaque critere date).
+  function fatiguePourAdaptation(fiche, aujourdhui) {
+    var sc = scoreFatigue(fiche);
+    var base = { utilisable: false, score: sc.score, max: sc.max, niveau: sc.niveau, repondus: sc.repondus, total: sc.total };
+    if (sc.statut === "non_renseigne") { base.raison = "non_renseigne"; return base; }
+    if (sc.statut !== "complet") { base.raison = "partiel"; return base; }
+    var marques = fiche && fiche._repondu && typeof fiche._repondu === "object" ? fiche._repondu : {};
+    var recent = FATIGUE_CRITERES.every(function (c) { var d = marques[c.cle]; return typeof d === "string" && /^\d{4}-\d{2}-\d{2}/.test(d) && joursEntre(d.slice(0, 10), aujourdhui) >= 0 && joursEntre(d.slice(0, 10), aujourdhui) < REGLES.ADAPT_FATIGUE_JOURS; });
+    if (!recent) { base.raison = "ancien_ou_non_date"; return base; }
+    base.utilisable = true; base.raison = null; base.elevee = sc.niveau === "eleve" || sc.niveau === "tres_eleve";
+    return base;
+  }
+
+  // Etat d'un exercice dans la plage de sa routine. Comparaisons = analyseExercice (meme definition que Fin de seance et Progres).
+  function etatExerciceProgramme(hist, fourchette, nom, aujourdhui) {
+    var f = enFourchette(fourchette), h = historiqueMemePlage(hist, f).filter(aSeriesValides);
+    if (!h.length) return { etat: "aucune_seance", fourchette: f };
+    var der = h[h.length - 1], age = der.date ? joursEntre(der.date, aujourdhui) : null;
+    var o = { fourchette: f, mode: modeMesure(f), derniereDate: der.date, ageJours: age, seances: h.length, depuis: h[0].date,
+      derniere: mesuresSeance(seriesNorm(der.series)), conventionnelle: uniteEntree(der) === "conventionnelle", comparaisons: [] };
+    if (age === null || age > REGLES.ADAPT_RECENT_JOURS) { o.etat = "pas_recent"; return o; }
+    var a = analyseExercice(h, { fourchette: f, exercice: nom }); o.diagnostic = a.diagnostic; o.analyse = a.performance;
+    // Les N dernieres comparaisons FIABLES, sans franchir une rupture (non comparable, premiere) ni une interruption de plus de 28 jours.
+    for (var i = h.length - 1; i > 0 && o.comparaisons.length < REGLES.ADAPT_STAGNATION_COMPARAISONS; i--) {
+      if (h[i].date && h[i - 1].date && joursEntre(h[i - 1].date, h[i].date) > REGLES.INTERRUPTION_ALERTE_JOURS) break;
+      var p = i === h.length - 1 ? a.performance : analyseExercice(h.slice(0, i + 1), { fourchette: f, exercice: nom }).performance;
+      if (p === "seance_incomplete") continue; // R-P3 : ni progression ni baisse, on regarde la precedente
+      if (FIABLES.indexOf(p) === -1) break;
+      o.comparaisons.unshift({ date: h[i].date, precedente: h[i - 1].date, resultat: p });
+    }
+    var al = a.alerte;
+    if (al && al.code === "regression") o.etat = "regression";
+    else if (al && al.code === "plafond") o.etat = "plafond";
+    else if (al && al.code === "progression_trop_rapide") o.etat = "progression_rapide";
+    else if (o.comparaisons.length < REGLES.ADAPT_STAGNATION_COMPARAISONS) o.etat = "donnees_insuffisantes";
+    // Stagnation = uniquement des comparaisons « stable ». Des baisses sans baisse persistante (seuil V1 non atteint) : « baisse a
+    // confirmer », sans proposition (jamais « une serie de plus » sur une performance qui baisse).
+    else o.etat = o.comparaisons.some(function (c) { return c.resultat === "progression"; }) ? "progression"
+      : o.comparaisons.some(function (c) { return c.resultat === "regression"; }) ? "baisse_a_confirmer" : "stagnation";
+    return o;
+  }
+
+  // Etat de chaque muscle (constat, sans proposition) : performance (28 j), volume direct et indirect, frequence.
+  function etatMuscle(m, perf, vol) {
+    var p = perf.muscles[m], v = vol.muscles[m];
+    var o = { muscle: m, libelle: libelleGroupe(m), directParSemaine: v.direct.parSemaineActive, indirectParSemaine: v.indirect.parSemaineActive,
+      frequence: v.direct.frequenceActive, seriesDirectes: v.direct.series, seriesIndirectes: v.indirect.series, confiance: p.confiance || null,
+      seriesEfficaces: v.efficaces.statut === "mesure" ? v.efficaces.valeur : null };
+    if (vol.statut !== "ok") { o.etat = "donnees_insuffisantes"; o.raison = "semaines_actives_insuffisantes"; return o; }
+    if (p.statut === "aucune_donnee") { o.etat = "non_travaille"; o.raison = "aucune_serie"; return o; }
+    if (p.statut === "secondaire_seulement") { o.etat = "secondaire_seulement"; o.raison = p.raison; return o; }
+    if (p.statut !== "ok") { o.etat = "donnees_insuffisantes"; o.raison = p.raison; return o; }
+    o.etat = { hausse: "progression", stable: "stagnation", baisse: "regression", mixte: "irregulier" }[p.tendance] || "donnees_insuffisantes";
+    o.raison = null; o.compte = p.compte; return o;
+  }
+
+  // Occurrences de travail des exercices dans le programme, regroupees par exercice (nom normalise) ET plage de repetitions.
+  function exercicesDuProgramme(routines, fnNom) {
+    var groupes = {}, ordre = [];
+    (Array.isArray(routines) ? routines : []).forEach(function (r) { ((r && r.exercises) || []).forEach(function (e, idx) {
+      if (!e || estActivation(e) || !e.name) return;
+      var nom = fnNom(e.name), f = lireFourchette(e.repsTarget || REGLES.FOURCHETTE_DEFAUT), k = nom + "|" + texteFourchette(f);
+      if (!groupes[k]) { groupes[k] = { nom: nom, fourchette: f, occurrences: [] }; ordre.push(k); }
+      groupes[k].occurrences.push({ routineId: r.id, routineNom: r.name || "", index: idx, nom: e.name, series: int(e.sets) || REGLES.SERIES_PREVUES_DEFAUT, repsTarget: e.repsTarget || "" });
+    }); });
+    return ordre.map(function (k) { return groupes[k]; });
+  }
+
+  // Nombre de seances faites avec un exercice APRES un instant (ISO) : heure reelle de fin si fiable, sinon le jour (meme jour = apres).
+  function seancesApres(seancesBrutes, nom, fnNom, iso) {
+    var t = instantChoix(iso); if (!isFinite(t)) return 0; var jour = dateLocale(new Date(t)), n = 0;
+    (seancesBrutes || []).forEach(function (s) {
+      if (!s || !((s.exercises || []).some(function (e) { return e && !estActivation(e) && fnNom(e.name) === nom && (e.sets || []).some(function (st) { return normaliserSerie(st).valide; }); }))) return;
+      var hs = heureSeance(s, NaN), d = dateSeance(s);
+      if (hs.fiable ? hs.ms > t : (d && d >= jour)) n++;
+    });
+    return n;
+  }
+
+  function decisionsVides() { return { version: 1, decisions: {} }; }
+  function lireDecisions(brut) { var o = decisionsVides(); if (brut && typeof brut === "object" && brut.decisions && typeof brut.decisions === "object") Object.keys(brut.decisions).forEach(function (k) { var d = brut.decisions[k]; if (d && (d.statut === "acceptee" || d.statut === "refusee")) o.decisions[k] = d; }); return o; }
+  // Decision de l'utilisateur, gardee comme trace (la fiche recue n'est jamais modifiee). Une proposition refusee ne revient pas
+  // tant que les chiffres sont les memes (l'identifiant contient l'avant et l'apres).
+  function enregistrerDecision(brut, proposition, statut, le) {
+    if (statut !== "acceptee" && statut !== "refusee") throw new Error("decision invalide : " + statut);
+    if (!proposition || !proposition.id) throw new Error("proposition sans identifiant");
+    var o = lireDecisions(brut), out = decisionsVides();
+    Object.keys(o.decisions).forEach(function (k) { out.decisions[k] = o.decisions[k]; });
+    out.decisions[proposition.id] = { statut: statut, le: le || null, type: proposition.type, exercice: proposition.cible ? proposition.cible.exercice : null,
+      muscle: proposition.muscle || null, avant: proposition.avant, apres: proposition.apres };
+    return out;
+  }
+
+  function idProposition(type, exercice, f, avant, apres) { return [type, exercice, texteFourchette(f), JSON.stringify(avant), JSON.stringify(apres)].join("|"); }
+  function nouvelleFourchette(f, mode) {
+    var ecart = f.max - f.min; if (!(ecart >= 0)) return null;
+    if (mode === "force") { var min = f.min - 2; return min >= 4 ? { min: min, max: f.max - 2 } : { min: f.min + 2, max: f.max + 2 }; }
+    return { min: f.max, max: f.max + Math.max(ecart, 5) };
+  }
+
+  // PROPOSITIONS. donnees : { sessions, routines, fatigue, decisions } ; options : { maintenant, normaliserNom, classements }.
+  // Retour (objet neuf) : { aujourdhui, fatigue, muscles: { m: etat }, exercices: [etat], propositions: [...], adaptationAutomatique: false }
+  // Proposition : { id, type: "charge"|"series"|"fourchette"|"remplacer_exercice"|"deplacer_exercice", muscle, cible: { exercice, fourchette, occurrences },
+  //   avant, apres, titre, raison, mesures, confiance, statut: "proposee" }. Au plus une proposition par exercice ; ordre = priorite.
+  function propositionsAdaptation(donnees, options) {
+    donnees = donnees || {}; options = options || {};
+    var fnNom = typeof options.normaliserNom === "function" ? options.normaliserNom : nomParDefaut;
+    var aujourdhui = options.maintenant !== undefined ? dateLocale(options.maintenant) : jourParDefaut();
+    var brutes = Array.isArray(donnees.sessions) ? donnees.sessions : [], seances = normaliserSeances(brutes, options);
+    var optsP = { fin: aujourdhui, normaliserNom: options.normaliserNom, classements: options.classements };
+    var vol = volumeMuscles(seances, optsP), perf = performanceMuscles(seances, optsP), fat = fatiguePourAdaptation(donnees.fatigue, aujourdhui);
+    var decisions = lireDecisions(donnees.decisions).decisions, muscles = {};
+    GROUPES.forEach(function (m) { muscles[m] = etatMuscle(m, perf, vol); });
+    var groupes = exercicesDuProgramme(donnees.routines, fnNom), dansProgramme = {};
+    groupes.forEach(function (g) { dansProgramme[g.nom] = true; });
+    // Exercices en « periode d'essai » : une proposition acceptee, moins de 2 seances faites depuis -> le nouveau programme sert de reference, on attend.
+    var enEssai = {};
+    Object.keys(decisions).forEach(function (k) { var d = decisions[k]; if (d.statut === "acceptee" && d.exercice && seancesApres(brutes, d.exercice, fnNom, d.le) < REGLES.ADAPT_SEANCES_APRES_ACCEPTATION) enEssai[d.exercice] = true; });
+    var props = [], cibles = {}, etats = [];
+    var noteFatigue = fat.utilisable ? "Fatigue déclarée cette semaine : " + fat.score + "/" + fat.max + "." : "Fatigue non renseignée cette semaine : seule la performance mesurée est prise en compte.";
+    var ajouter = function (p) {
+      if (cibles[p.cible.exercice]) return; var d = decisions[p.id]; if (d) return; // deja acceptee ou refusee avec les memes chiffres
+      p.statut = "proposee"; cibles[p.cible.exercice] = true; props.push(p);
+    };
+    var hists = {}; var histDe = function (n) { return hists[n] = hists[n] || historiqueExercice(seances, n); };
+    groupes.forEach(function (g) {
+      var c = classerExercice(g.nom, options), e = etatExerciceProgramme(histDe(g.nom), g.fourchette, g.nom, aujourdhui);
+      e.exercice = g.nom; e.muscle = c.principal; e.enEssai = !!enEssai[g.nom]; etats.push(e);
+      if (e.enEssai || !c.principal) return;
+      var m = muscles[c.principal], seriesAvant = g.occurrences[0].series, fT = texteFourchette(g.fourchette);
+      var cible = { exercice: g.nom, fourchette: fT, occurrences: g.occurrences.map(function (o) { return { routineId: o.routineId, routineNom: o.routineNom, index: o.index, nom: o.nom }; }) };
+      var base = function (type, avant, apres, titre, raison, mesures, confiance) {
+        return { id: idProposition(type, g.nom, g.fourchette, avant, apres), type: type, muscle: c.principal, cible: cible, avant: avant, apres: apres, titre: titre, raison: raison, mesures: mesures, confiance: confiance };
+      };
+      var d = e.derniere, ch = d ? d.chargeMax : 0;
+      if (e.etat === "regression") {
+        var dg = e.diagnostic, unite = dg.mode === "force" ? "force estimée" : "volume de travail";
+        var debut = round1(dg.mesure.derniere + (dg.perte || 0)), pct = debut > 0 ? round1((dg.perte || 0) / debut * 100) : null;
+        var mesR = { periode: { du: null, au: e.derniereDate }, seances: 3, mesure: unite, debut: debut, fin: dg.mesure.derniere, baissePct: pct, fatigue: fat.utilisable ? fat.score : null };
+        var phrase = "Baisse sur tes 3 dernières séances comparables en " + fT + " : " + unite + " " + chiffre(debut) + " kg → " + chiffre(dg.mesure.derniere) + " kg" + (pct !== null ? " (−" + chiffre(pct) + " %)" : "") + ". ";
+        if (fat.utilisable && fat.elevee && seriesAvant > REGLES.ADAPT_SERIES_MIN) {
+          ajouter(base("series", { series: seriesAvant }, { series: seriesAvant - 1 }, g.nom + " : " + (seriesAvant - 1) + " séries au lieu de " + seriesAvant,
+            phrase + "Fatigue déclarée élevée (" + fat.score + "/" + fat.max + ") : une série de moins pour récupérer.", mesR, "moyenne"));
+        } else if (!e.conventionnelle && ch > 0) {
+          var inc = incrementPour(ch), nv = arrondiCharge(ch * (1 - REGLES.ADAPT_BAISSE_CHARGE_PCT), inc, -1); if (nv >= ch) nv = Math.round((ch - inc) * 100) / 100;
+          if (nv > 0) ajouter(base("charge", { charge: ch }, { charge: nv }, g.nom + " : reprendre à " + chiffre(nv) + " kg (au lieu de " + chiffre(ch) + ")",
+            phrase + noteFatigue, mesR, "moyenne"));
+        }
+        return;
+      }
+      if (e.etat === "plafond" && !e.conventionnelle && ch > 0) {
+        var inc2 = incrementPour(ch), nv2 = Math.round((ch + inc2) * 100) / 100;
+        ajouter(base("charge", { charge: ch }, { charge: nv2 }, g.nom + " : passer à " + chiffre(nv2) + " kg",
+          (e.diagnostic.seancesAuPlafond || 3) + " séances à " + chiffre(ch) + " kg avec " + chiffre(d.repsMoy) + " reps en moyenne : haut de ta fourchette " + fT + " atteint.",
+          { seances: e.diagnostic.seancesAuPlafond || 3, charge: ch, repsMoy: round1(d.repsMoy), fourchette: fT, au: e.derniereDate }, "haute"));
+        return;
+      }
+      if (e.etat !== "stagnation") return;
+      var dates = e.comparaisons.map(function (x) { return dateCourte(x.date); }).join(", ");
+      var phraseS = "Aucune progression sur tes " + e.comparaisons.length + " dernières séances comparables en " + fT + " (" + dates + "). ";
+      var mesS = { comparaisons: e.comparaisons, directParSemaine: m.directParSemaine, indirectParSemaine: m.indirectParSemaine, frequence: m.frequence, periodeVolume: vol.periode };
+      var volConnu = m.etat !== "donnees_insuffisantes" && m.directParSemaine !== null;
+      if (volConnu && m.directParSemaine < REGLES.ADAPT_VOLUME_BAS && seriesAvant < REGLES.ADAPT_SERIES_MAX) {
+        ajouter(base("series", { series: seriesAvant }, { series: seriesAvant + 1 }, g.nom + " : " + (seriesAvant + 1) + " séries au lieu de " + seriesAvant,
+          phraseS + m.libelle + " : " + chiffre(m.directParSemaine) + " séries directes par semaine sur 28 jours (moins de " + REGLES.ADAPT_VOLUME_BAS + ").", mesS, m.confiance === "haute" ? "haute" : "moyenne"));
+        return;
+      }
+      if (!volConnu) return; // sans volume mesurable, on ne sait pas si le probleme vient du volume : aucune proposition
+      var semaines = e.depuis ? Math.floor(joursEntre(e.depuis, aujourdhui) / 7) : 0, nf = nouvelleFourchette(g.fourchette, e.mode);
+      if (e.depuis && joursEntre(e.depuis, aujourdhui) >= REGLES.ADAPT_MEME_PLAGE_JOURS && nf) {
+        var nfT = nf.min + "-" + nf.max;
+        ajouter(base("fourchette", { fourchette: fT }, { fourchette: nfT }, g.nom + " : passer en " + nfT + " répétitions",
+          phraseS + "Même plage " + fT + " depuis " + semaines + " semaines, avec déjà " + chiffre(m.directParSemaine) + " séries directes par semaine pour " + m.libelle.toLowerCase() + ".",
+          Object.assign({ depuis: e.depuis, semaines: semaines }, mesS), "moyenne"));
+        return;
+      }
+      // Remplacement : uniquement par un exercice que l'utilisateur a deja fait (meme muscle principal), absent du programme.
+      var cand = null;
+      seances.forEach(function (s) { s.exercices.forEach(function (x) {
+        if (dansProgramme[x.nom] || x.nom === g.nom || !x.series.some(function (st) { return st.valide; })) return;
+        if (classerExercice(x.nom, options).principal !== c.principal) return;
+        if (!cand || s.date > cand.date) cand = { nom: x.nom, date: s.date };
+      }); });
+      if (cand) {
+        var nbF = histDe(cand.nom).filter(aSeriesValides).length;
+        ajouter(base("remplacer_exercice", { exercice: g.nom }, { exercice: cand.nom }, "Remplacer " + g.nom + " par " + cand.nom,
+          phraseS + cand.nom + " travaille le même muscle (" + m.libelle.toLowerCase() + ") : tu l'as déjà fait " + nbF + " fois, la dernière le " + dateCourte(cand.date) + ".",
+          Object.assign({ remplacant: { nom: cand.nom, seances: nbF, derniere: cand.date } }, mesS), "moyenne"));
+      }
+    });
+    // Niveau MUSCLE : baisse du muscle (28 j, plusieurs exercices) avec un volume direct eleve -> une serie de moins sur son exercice le plus charge.
+    GROUPES.forEach(function (mu) {
+      var m = muscles[mu]; if (m.etat !== "regression" || !(m.directParSemaine > REGLES.ADAPT_VOLUME_HAUT)) return;
+      var gs = groupes.filter(function (g) { return !enEssai[g.nom] && !cibles[g.nom] && classerExercice(g.nom, options).principal === mu && g.occurrences[0].series > REGLES.ADAPT_SERIES_MIN; });
+      if (!gs.length) return;
+      gs.sort(function (a, b) { return b.occurrences[0].series - a.occurrences[0].series; }); var g = gs[0], sa = g.occurrences[0].series;
+      ajouter({ id: idProposition("series", g.nom, g.fourchette, { series: sa }, { series: sa - 1 }), type: "series", muscle: mu,
+        cible: { exercice: g.nom, fourchette: texteFourchette(g.fourchette), occurrences: g.occurrences.map(function (o) { return { routineId: o.routineId, routineNom: o.routineNom, index: o.index, nom: o.nom }; }) },
+        avant: { series: sa }, apres: { series: sa - 1 }, titre: g.nom + " : " + (sa - 1) + " séries au lieu de " + sa,
+        raison: m.libelle + " en baisse sur 28 jours (" + m.compte.regression + " baisses sur " + m.compte.fiables + " comparaisons) avec " + chiffre(m.directParSemaine) + " séries directes par semaine (plus de " + REGLES.ADAPT_VOLUME_HAUT + "). " + noteFatigue,
+        mesures: { compte: m.compte, directParSemaine: m.directParSemaine, periode: perf.periode, fatigue: fat.utilisable ? fat.score : null }, confiance: m.confiance || "moyenne" });
+    });
+    // Niveau MUSCLE : repartition. Muscle qui ne progresse pas, travaille < 1,5 fois / semaine, avec tous ses exercices dans UNE routine
+    // (au moins 2) alors qu'une autre routine n'en a aucun -> deplacer un exercice vers la routine la plus courte.
+    var routines = Array.isArray(donnees.routines) ? donnees.routines : [];
+    GROUPES.forEach(function (mu) {
+      var m = muscles[mu]; if (["stagnation", "regression", "irregulier"].indexOf(m.etat) === -1 || !(m.frequence < REGLES.ADAPT_FREQUENCE_BASSE)) return;
+      var occ = []; groupes.forEach(function (g) { if (classerExercice(g.nom, options).principal === mu) g.occurrences.forEach(function (o) { occ.push({ g: g, o: o }); }); });
+      var ids = distinctes(occ.map(function (x) { return { r: String(x.o.routineId) }; }), "r"); if (ids.length !== 1 || occ.length < 2) return;
+      var dispo = routines.filter(function (r) { return r && String(r.id) !== ids[0] && Array.isArray(r.exercises); });
+      if (!dispo.length) return;
+      dispo.sort(function (a, b) { return a.exercises.length - b.exercises.length; });
+      var dest = dispo[0], x = occ[occ.length - 1];
+      if (enEssai[x.g.nom] || cibles[x.g.nom]) return;
+      ajouter({ id: idProposition("deplacer_exercice", x.g.nom, x.g.fourchette, { routineId: x.o.routineId }, { routineId: dest.id }), type: "deplacer_exercice", muscle: mu,
+        cible: { exercice: x.g.nom, fourchette: texteFourchette(x.g.fourchette), occurrences: [{ routineId: x.o.routineId, routineNom: x.o.routineNom, index: x.o.index, nom: x.o.nom }] },
+        avant: { routineId: x.o.routineId, routineNom: x.o.routineNom }, apres: { routineId: dest.id, routineNom: dest.name || "" },
+        titre: "Déplacer " + x.g.nom + " vers « " + (dest.name || "autre séance") + " »",
+        raison: m.libelle + " : " + (m.etat === "regression" ? "en baisse" : m.etat === "stagnation" ? "sans progression" : "résultats irréguliers") + " sur 28 jours, travaillé " + chiffre(m.frequence) + " fois par semaine, tout dans « " + x.o.routineNom + " ». Le répartir sur deux séances augmente la fréquence sans ajouter de série.",
+        mesures: { frequence: m.frequence, directParSemaine: m.directParSemaine, compte: m.compte, periode: perf.periode }, confiance: m.confiance || "moyenne" });
+    });
+    return { version: VERSION, aujourdhui: aujourdhui, fatigue: fat, muscles: muscles, exercices: etats, propositions: props,
+      rir: { utilise: false, raison: "les RIR ne servent pas aux propositions tant qu'ils ne sont pas saisis" }, adaptationAutomatique: false };
+  }
+
+  // Applique UNE proposition acceptee. Renvoie un NOUVEAU programme (les routines recues ne sont jamais modifiees) :
+  //   { ok: true, routines, modifiees: [routineId] } ou { ok: false, raison: "programme_modifie" | "proposition_invalide" }.
+  // Securite : si le programme a change depuis la proposition (exercice deplace, series ou plage modifiees), rien n'est applique.
+  function appliquerProposition(routines, proposition, options) {
+    options = options || {};
+    var fnNom = typeof options.normaliserNom === "function" ? options.normaliserNom : nomParDefaut;
+    if (!proposition || !proposition.cible || !Array.isArray(proposition.cible.occurrences) || !proposition.cible.occurrences.length) return { ok: false, raison: "proposition_invalide" };
+    var out = JSON.parse(JSON.stringify(Array.isArray(routines) ? routines : [])), p = proposition, le = options.le || null, modifiees = [];
+    var trouver = function (o) {
+      var r = out.filter(function (x) { return x && String(x.id) === String(o.routineId); })[0]; if (!r || !Array.isArray(r.exercises)) return null;
+      var e = r.exercises[o.index];
+      var ok = function (x) { return x && !estActivation(x) && fnNom(x.name) === p.cible.exercice && texteFourchette(lireFourchette(x.repsTarget || REGLES.FOURCHETTE_DEFAUT)) === p.cible.fourchette; };
+      if (!ok(e)) { var i = r.exercises.findIndex(ok); if (i === -1) return null; e = r.exercises[i]; o = { routineId: o.routineId, index: i }; }
+      return { r: r, e: e, index: r.exercises.indexOf(e) };
+    };
+    var cibles = p.cible.occurrences.map(trouver);
+    if (cibles.some(function (x) { return !x; })) return { ok: false, raison: "programme_modifie" };
+    var series = function (e) { return int(e.sets) || REGLES.SERIES_PREVUES_DEFAUT; };
+    if (p.type === "series" && cibles.some(function (x) { return series(x.e) !== p.avant.series; })) return { ok: false, raison: "programme_modifie" };
+    if (p.type === "remplacer_exercice" && out.some(function (r) { return (r.exercises || []).some(function (e) { return e && fnNom(e.name) === p.apres.exercice; }); })) return { ok: false, raison: "programme_modifie" };
+    if (p.type === "deplacer_exercice") {
+      var dest = out.filter(function (x) { return x && String(x.id) === String(p.apres.routineId); })[0];
+      if (!dest || !Array.isArray(dest.exercises)) return { ok: false, raison: "programme_modifie" };
+      var c0 = cibles[0], ex = c0.r.exercises.splice(c0.index, 1)[0]; dest.exercises.push(ex);
+      return { ok: true, routines: out, modifiees: [c0.r.id, dest.id] };
+    }
+    cibles.forEach(function (x) {
+      if (p.type === "charge") { x.e.chargeCible = p.apres.charge; x.e.chargeCibleLe = le; }
+      else if (p.type === "series") x.e.sets = p.apres.series;
+      else if (p.type === "fourchette") { x.e.repsTarget = p.apres.fourchette; delete x.e.chargeCible; delete x.e.chargeCibleLe; }
+      else if (p.type === "remplacer_exercice") { x.e.name = p.apres.exercice; delete x.e.chargeCible; delete x.e.chargeCibleLe; }
+      if (modifiees.indexOf(x.r.id) === -1) modifiees.push(x.r.id);
+    });
+    if (["charge", "series", "fourchette", "remplacer_exercice"].indexOf(p.type) === -1) return { ok: false, raison: "proposition_invalide" };
+    return { ok: true, routines: out, modifiees: modifiees };
+  }
+
+  // Charge proposee par le coach (proposition acceptee) pour le pre-remplissage : valable jusqu'a la premiere seance faite avec cet
+  // exercice APRES l'acceptation. Ensuite, la derniere seance redevient la reference (regle 1). Renvoie la charge ou null.
+  function chargeCibleActive(exRoutine, sessions, options) {
+    var c = exRoutine ? num(exRoutine.chargeCible) : null; if (!(c > 0) || !exRoutine.chargeCibleLe) return null;
+    var fnNom = options && typeof options.normaliserNom === "function" ? options.normaliserNom : nomParDefaut;
+    return seancesApres(sessions, fnNom(exRoutine.name), fnNom, exRoutine.chargeCibleLe) === 0 ? c : null;
+  }
+
   // ═══════════════════════ 6. ANALYSE COMPLETE ═══════════════════════
   // donnees : { sessions, routines?, fatigue? (reponses du questionnaire), profil? }
   // options : { maintenant (Date ou texte, defaut : maintenant), normaliserNom, classements, musclesSuivis }
@@ -1757,6 +2052,9 @@
     volumeEntre: volumeEntre, meilleureSerieEntre: meilleureSerieEntre, tendanceGenerale: tendanceGenerale, TENDANCES: TENDANCES,
     syntheseExercice: syntheseExercice, pistesAdaptation: pistesAdaptation, comparabilite: comparabilite, blocComparable: blocComparable, analyseExercice: analyseExercice, filtrerSuspectes: filtrerSuspectes,
     // 5. domaines
+    // 5 bis. propositions d'adaptation (0.18.0)
+    fatiguePourAdaptation: fatiguePourAdaptation, propositionsAdaptation: propositionsAdaptation, appliquerProposition: appliquerProposition, chargeCibleActive: chargeCibleActive,
+    decisionsVides: decisionsVides, lireDecisions: lireDecisions, enregistrerDecision: enregistrerDecision,
     FATIGUE_CRITERES: FATIGUE_CRITERES, NIVEAUX_FATIGUE: NIVEAUX_FATIGUE, scoreFatigue: scoreFatigue, repondreFatigue: repondreFatigue, heureSeance: heureSeance, dernieresSollicitations: dernieresSollicitations, rirRecent: rirRecent, recuperation: recuperation, volume: volume, priorites: priorites, morphologie: morphologie,
     // 5 bis. volume et performances par muscle (etape 3, constats seulement)
     volumeMuscles: volumeMuscles, performanceMuscles: performanceMuscles, bilanEntrainement: bilanEntrainement,

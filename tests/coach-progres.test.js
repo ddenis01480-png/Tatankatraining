@@ -105,7 +105,7 @@ t('Futures adaptations preparees mais NON activees : statut « non_activee », j
   assert.ok(s.pistes.length >= 1); s.pistes.forEach(p => assert.strictEqual(p.statut, 'non_activee'));
   const src = progSrc() + fnSrc('function coachLectureDerniere(') + fnSrc('function coachLecturePeriode(');
   assert.ok(!/pistes/.test(src), 'les pistes ne sont pas affichees');
-  assert.ok(!Object.keys(E).some(k => /appliquer|apply|ecrire|save|write/i.test(k)), 'aucune fonction d\'ecriture dans le moteur'); });
+  assert.deepStrictEqual(Object.keys(E).filter(k => /appliquer|apply|ecrire|save|write/i.test(k)), ['appliquerProposition'], 'seule fonction d\'application : pure, apres acceptation (0.18.0)'); });
 
 // ── 3 bis. Verifications demandees (PLAFOND, rupture de charge, serie aberrante, fourchettes differentes) ──
 t('PLAFOND en progression (cas reel Belt squat 80 kg, 8-12) : diagnostic positif garde + indication « augmenter la charge »', () => {
