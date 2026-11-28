@@ -1872,7 +1872,7 @@
     return "Durée estimée : " + ch.map(function (x) { var mn = Math.round(x.ecart / 60); return "« " + x.nom + " » " + (mn > 0 ? "+" : "−") + Math.abs(mn) + " min"; }).join(", ") + ".";
   }
 
-  // PROPOSITIONS. donnees : { sessions, routines, fatigue, decisions } ; options : { maintenant, normaliserNom, classements }.
+  // PROPOSITIONS. donnees : { sessions, routines, fatigue, decisions } ; options : { maintenant, normaliserNom, classements, sansDeplacements }.
   // Retour (objet neuf) : { aujourdhui, fatigue, muscles: { m: etat + volume }, exercices: [etat], propositions: [...], sansSolution: [...], adaptationAutomatique: false }
   // Proposition : { id, type: "charge"|"series"|"fourchette"|"remplacer_exercice"|"deplacer_exercice"|"echanger_exercices"|"transferer_serie", muscle,
   //   cible: { exercice, fourchette, occurrences }, avant, apres, titre, raison, mesures, duree, confiance, statut: "proposee" }.
@@ -1989,7 +1989,8 @@
       var mes = { volume: v, directParSemaine: m.directParSemaine, indirectParSemaine: m.indirectParSemaine, frequence: m.frequence, compte: m.compte || null };
       // a) Repartir : tout le travail du muscle dans une seance, frequence plus basse que dans ses periodes de progression.
       var routinesMu = distinctes(gs.reduce(function (a, g) { return a.concat(g.occurrences.map(function (o) { return { r: String(o.routineId) }; })); }, []), "r");
-      if (routinesMu.length === 1 && gs.length >= 2 && m.frequence < R.frequenceMin) {
+      // options.sansDeplacements : aucun deplacement, echange ni transfert de serie entre exercices (page coach, phase de test).
+      if (!options.sansDeplacements && routinesMu.length === 1 && gs.length >= 2 && m.frequence < R.frequenceMin) {
         var g = gs[gs.length - 1], o = g.occurrences[0];
         var autres = routines.filter(function (r) { return r && String(r.id) !== routinesMu[0] && Array.isArray(r.exercises); }).sort(function (a, b) { return dureeRoutine(a).secondes - dureeRoutine(b).secondes; });
         var phraseR = constat + "Tout est dans « " + o.routineNom + " », " + chiffre(m.frequence) + " fois par semaine (au moins " + chiffre(R.frequenceMin) + " quand il progressait). ";
@@ -2023,7 +2024,7 @@
       }
       // d) Insuffisant : echanger une serie dans la MEME seance, prise a un muscle qui progresse au-dessus de sa propre reference.
       //    Jamais si le muscle est deja plus sollicite en indirect qu'en direct (risque de surcharge).
-      if (v.etat === "insuffisant" && m.indirectParSemaine < m.directParSemaine) {
+      if (!options.sansDeplacements && v.etat === "insuffisant" && m.indirectParSemaine < m.directParSemaine) {
         for (var a = 0; a < gs.length; a++) { var ga = gs[a]; if (ga.occurrences[0].series >= REGLES.ADAPT_SERIES_MAX) continue;
           for (var b = 0; b < ga.occurrences.length; b++) { var oa = ga.occurrences[b], rr = routines.filter(function (x) { return x && String(x.id) === String(oa.routineId); })[0]; if (!rr) continue;
             var donneurs = rr.exercises.map(function (x, idx) { return { x: x, idx: idx }; }).filter(function (y) {

@@ -54,7 +54,7 @@ t('ENREGISTREMENT identique avec ou sans moteur (seances, RIR cible et RIR reel 
   assert.strictEqual(JSON.stringify(old), before, 'anciennes seances intactes');
   assert.deepStrictEqual(b.saved.slice(0, 2), plain(old)); assert.strictEqual(b.saved.length, 3);
   const strip = x => x.map(s => Object.assign({}, s, { id: 0 })); assert.deepStrictEqual(strip(b.saved), strip(a.saved), 'meme enregistrement V1 / moteur');
-  assert.deepStrictEqual(b.saved[2].exercises[0].sets, [{ weight: 100, reps: 10, rir: 0, rirSaisi: true, rirCible: 3, done: true }, { weight: 100, reps: 9, rir: null, rirSaisi: false, rirCible: 2, done: true }, { weight: 100, reps: 8, rir: 2, rirSaisi: true, done: true }]);
+  assert.deepStrictEqual(b.saved[2].exercises[0].sets, [{ weight: 100, reps: 10, rir: 0, rirReel: 0, rirSaisi: true, rirCible: 3, done: true }, { weight: 100, reps: 9, rir: null, rirReel: null, rirSaisi: false, rirCible: 2, done: true }, { weight: 100, reps: 8, rir: 2, rirReel: 2, rirSaisi: true, done: true }]);
   assert.strictEqual(b.backups, 1, 'une sauvegarde cloud, comme avant'); });
 
 // ── 2. Bilan progression / stagnation / regression : memes regles que l'ecran Seance en cours ──

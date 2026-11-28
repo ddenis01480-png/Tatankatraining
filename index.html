@@ -338,6 +338,8 @@ function fmtDate(d) { if (!d) return ""; const p = d.split("-"); return p[2] + "
 var SB_ENV = (window.TATANKA_ENV && window.TATANKA_ENV.autorise && window.TATANKA_ENV.config) ? window.TATANKA_ENV.config : null;
 var SB_URL = SB_ENV ? SB_ENV.url : null;
 var SB_KEY = SB_ENV ? SB_ENV.key : null;
+// Options de la page coach (coach.html) : fournies par le script d'environnement. Absentes = comportement habituel.
+function _coachOptions() { return (window.TATANKA_ENV && window.TATANKA_ENV.coach) || {}; }
 var STRIPE_MONTHLY = 'https://buy.stripe.com/test_bJe8wRb1s0kcc1l1uQcQU02';
 var STRIPE_YEARLY  = 'https://buy.stripe.com/test_7sY6oJfhI1og1mH3CYcQU04';
 var PACK_MONTHLY = 'https://buy.stripe.com/test_aFa3cxglMgja9TdddycQU07';
@@ -421,6 +423,11 @@ function initSupabase() {
           try { sessionStorage.removeItem('it3_signout_reload_guard'); } catch(e) {}
         }
         if (session && session.user) {
+          // Page coach : seul le compte autorise y entre. Tout autre compte repart vers la version normale, sans rien lire ni ecrire.
+          if (window.TATANKA_ENV && typeof window.TATANKA_ENV.compteAutorise === "function" && !window.TATANKA_ENV.compteAutorise(session.user.id)) {
+            try { window.location.replace("/"); } catch(e) {}
+            return;
+          }
           currentUser = session.user;
           migrateLegacyDataForUser(session.user.id);
           if (typeof window._hydrateUserState === "function") window._hydrateUserState();
@@ -750,6 +757,22 @@ function mergeSuppsNonDestructive(existing, incoming) {
 }
 // Calcule le resultat d'un import SANS rien ecrire. current = { sessions, routines, supps, fatigue, cycle } (valeurs stockees).
 // opts.routines === false : ne touche pas aux routines. Fatigue et cycle : renseignes seulement s'ils sont absents.
+// Import des donnees du coach : on AJOUTE ce qui manque, on ne remplace jamais une decision ou une version deja presente.
+function fusionnerDecisionsCoach(actuel, importe) {
+  const a = (actuel && actuel.decisions && typeof actuel.decisions === "object") ? actuel.decisions : {};
+  const b = (importe && importe.decisions && typeof importe.decisions === "object") ? importe.decisions : {};
+  const out = { version: 1, decisions: Object.assign({}, a) }; let ajoutes = 0, conserves = 0;
+  Object.keys(b).forEach(k => { if (Object.prototype.hasOwnProperty.call(a, k)) { conserves++; return; } if (b[k] && typeof b[k] === "object") { out.decisions[k] = b[k]; ajoutes++; } });
+  return { valeur: out, ajoutes, conserves };
+}
+function fusionnerHistoriqueRoutines(actuel, importe) {
+  const a = (actuel && Array.isArray(actuel.versions)) ? actuel.versions : [];
+  const b = (importe && Array.isArray(importe.versions)) ? importe.versions : [];
+  const cle = v => String(v && v.le) + "|" + String(v && v.proposition);
+  const vus = new Set(a.map(cle)), ajout = [];
+  b.forEach(v => { if (v && Array.isArray(v.routines) && !vus.has(cle(v))) { vus.add(cle(v)); ajout.push(v); } });
+  return { valeur: { version: 1, versions: a.concat(ajout) }, ajoutes: ajout.length };
+}
 function applyImport(data, current, opts) {
   opts = opts || {}; current = current || {}; data = (data && typeof data === "object") ? data : {};
   var sm = mergeSessionsNonDestructive(current.sessions || [], data.sessions);
@@ -1001,6 +1024,7 @@ function _ecrireVerifie(k, v) { save(k, v); return JSON.stringify(load(k)) === J
 var COLONNES_CHOIX = "nom,catalogue,principal,secondaires,modifie_le";
 function syncClassements(raison) {
   try {
+    if (typeof _coachOptions === "function" && _coachOptions().sansSynchroClassements) return Promise.resolve(null); // page coach : choix de muscles gardes sur l'appareil seulement
     var CE = coachEngine();
     if (!CE || typeof CE.synchroniserClassements !== "function" || !supabase || !currentUser || !currentUser.id || !_canWriteUserData()) return Promise.resolve(null);
     if (_syncMusclesEnCours) { _syncMusclesARelancer = true; return Promise.resolve(null); }
@@ -1893,7 +1917,7 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
       ...(estActivation(ex) ? { activation: true } : {}),
       sets: ex.sets
         .filter(s => s.weight && s.reps)
-        .map(s => ({ weight: parseFloat(s.weight), reps: parseInt(s.reps), rir: parseRir(s.rir), rirSaisi: s.rirSaisi === true && parseRir(s.rir) !== null, ...(parseRir(s.rirCible) !== null ? { rirCible: parseRir(s.rirCible) } : {}), ...(parseInt(s.repsCible) > 0 ? { repsCible: parseInt(s.repsCible) } : {}), ...(Number(s.faiteLe) > 0 ? { faiteLe: Number(s.faiteLe) } : {}), done: true }))
+        .map(s => ({ weight: parseFloat(s.weight), reps: parseInt(s.reps), rir: parseRir(s.rir), rirReel: parseRir(s.rir), rirSaisi: s.rirSaisi === true && parseRir(s.rir) !== null, ...(parseRir(s.rirCible) !== null ? { rirCible: parseRir(s.rirCible) } : {}), ...(parseInt(s.repsCible) > 0 ? { repsCible: parseInt(s.repsCible) } : {}), ...(Number(s.faiteLe) > 0 ? { faiteLe: Number(s.faiteLe) } : {}), done: true }))
     })).filter(ex => ex.sets.length > 0);
 
     if (!validExs.length) return alert("Aucune serie remplie !");
@@ -3003,11 +3027,13 @@ function CoachPropositions({ sessions, routines, setRoutines, fatigue }) {
   const optsM = optionsMuscles(CE), cleChoix = JSON.stringify(optsM.classements || null);
   const res = React.useMemo(() => {
     if (!CE || typeof CE.propositionsAdaptation !== "function") return null;
-    try { return CE.propositionsAdaptation({ sessions: sessions || [], routines: routines || [], fatigue: fatigue, decisions: decisions }, Object.assign({ normaliserNom: cleExercice }, optsM)); }
+    try { return CE.propositionsAdaptation({ sessions: sessions || [], routines: routines || [], fatigue: fatigue, decisions: decisions }, Object.assign({ normaliserNom: cleExercice, sansDeplacements: !!_coachOptions().sansDeplacements }, optsM)); }
     catch (e) { console.warn("[coach] propositions", e && e.message); return null; }
   }, [CE, sessions, routines, fatigue, decisions, cleChoix]);
   if (!res || !_canWriteUserData()) return null;
-  const liste = res.propositions.slice(0, 3), sansSolution = (res.sansSolution || []).slice(0, 2);
+  // Page coach : echanges et deplacements d'exercices desactives pour l'instant (double securite avec le moteur).
+  const TYPES_DESACTIVES = _coachOptions().sansDeplacements ? ["deplacer_exercice", "echanger_exercices", "transferer_serie"] : [];
+  const liste = res.propositions.filter(p => TYPES_DESACTIVES.indexOf(p.type) < 0).slice(0, 3), sansSolution = (res.sansSolution || []).slice(0, 2);
   if (!liste.length && !sansSolution.length && !message) return null;
   function decider(p, statut) {
     const r = decisionCoach(CE, p, statut, routines, new Date().toISOString());
@@ -3518,7 +3544,8 @@ function IronTraining() {
             ...st,
             weight: parseFloat(st.weight) || 0,
             reps: parseInt(st.reps) || 0,
-            rir: parseRir(st.rir) !== null ? parseRir(st.rir) : st.rir
+            // rirReel : copie du vrai RIR (null = non saisi), que la version normale conserve sans la transformer.
+            rir: ("rirReel" in st) ? parseRir(st.rirReel) : (parseRir(st.rir) !== null ? parseRir(st.rir) : st.rir)
           }))
         }))
       })));
@@ -3890,6 +3917,9 @@ function exportData() {
     if (r.changed.fatigue) { save(KEYS.fatigue, r.fatigue); setFatigue(r.fatigue); }
     if (r.changed.cycle) { save(KEYS.cycle, r.cycle); }
     if (data && Array.isArray(data.customEx)) { data.customEx.forEach(n => { if (typeof n === "string") addCustomExercise(n); }); }
+    // Decisions du coach et historique du programme : AJOUT seulement, ce qui existe deja sur cet appareil est garde.
+    if (data && data.coachDecisions) { const f = fusionnerDecisionsCoach(load(KEYS.coachDecisions), data.coachDecisions); if (f.ajoutes) save(KEYS.coachDecisions, f.valeur); r.summary.decisionsAjoutees = f.ajoutes; }
+    if (data && data.routinesHistorique) { const f = fusionnerHistoriqueRoutines(load(KEYS.routinesHistorique), data.routinesHistorique); if (f.ajoutes) save(KEYS.routinesHistorique, f.valeur); r.summary.historiqueAjoute = f.ajoutes; }
     // Choix de muscles : on AJOUTE seulement ; un choix deja fait sur cet appareil est toujours conserve (fusion dans le moteur).
     const CEi = typeof coachEngine === "function" ? coachEngine() : null;
     if (data && data.classements && CEi && typeof CEi.fusionnerClassements === "function") {
@@ -3902,6 +3932,7 @@ function exportData() {
   function importSummaryText(sm) {
     return "Import terminé (rien n'a été supprimé ni remplacé).\n- Séances ajoutées : " + sm.sessionsAdded + " (déjà présentes, ignorées : " + sm.sessionsDuplicates + (sm.sessionsConflicts ? " ; ajoutées avec un nouvel identifiant : " + sm.sessionsConflicts : "") + ")" +
       "\n- Routines ajoutées : " + sm.routinesAdded + (sm.routinesDuplicates ? " (déjà présentes : " + sm.routinesDuplicates + ")" : "") + (sm.routinesRenamed ? " ; renommées « (import) » : " + sm.routinesRenamed : "") +
+ (sm.decisionsAjoutees ? "\n- Décisions du coach ajoutées : " + sm.decisionsAjoutees : "") + (sm.historiqueAjoute ? "\n- Anciennes versions du programme ajoutées : " + sm.historiqueAjoute : "") +
       (sm.classementsAjoutes ? "\n- Muscles d'exercices ajoutés : " + sm.classementsAjoutes : "") + (sm.classementsConserves ? "\n- Tes choix de muscles déjà faits sont conservés : " + sm.classementsConserves : "");
   }
   function addImportedRoutines(routines, label) {
@@ -4034,6 +4065,17 @@ function exportData() {
             <div style={{ fontSize: 9, color: "#333", fontFamily: "monospace", textAlign: "center", marginTop: 4 }}>
               Import = fusion sans perte de donnees existantes
             </div>
+            {_coachOptions().retourVersionNormale && (
+              <button onClick={() => {
+                if (currentSets) { alert("Termine ou annule ta séance en cours avant de revenir à la version normale."); return; }
+                if (!confirm("Revenir à la version normale ? Un export complet de tes données va d'abord être téléchargé. Rien n'est effacé : tu pourras revenir au coach.")) return;
+                exportData();
+                try { localStorage.setItem("tatanka_coach_off", "1"); } catch(e) {}
+                setTimeout(() => { window.location.href = "/"; }, 1200);
+              }} style={{ width: "100%", background: "#111", border: "1px solid #333", color: "#aaa", borderRadius: 10, padding: "12px", fontSize: 12, fontWeight: 700, cursor: "pointer", marginTop: 10 }}>
+                ↩ REVENIR À LA VERSION NORMALE
+              </button>
+            )}
             <button onClick={async () => {
               const code = prompt('Entre ton code promo :');
               if (!code) return;

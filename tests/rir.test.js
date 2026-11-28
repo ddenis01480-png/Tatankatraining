@@ -17,7 +17,7 @@ async function boot(ls) { const app = openApp(ls); app.mount(null); app.startSup
 // Le VRAI updateSet de la seance en cours, et la VRAIE transformation des series a l'enregistrement (saveSession).
 function realUpdateSet(app) { let cur = null; const f = vm.runInContext('(function(setCurrentSets, lsSetNs){ ' + fnSrc('function updateSet(') + ' return updateSet; })', app.ctx)(fn => { cur = fn(cur); }, () => {});
   return { set: v => { cur = v; }, get: () => cur, update: f }; }
-const SAVE_MAP = SRC.match(/\.map\(s => \(\{ weight: parseFloat\(s\.weight\), reps: parseInt\(s\.reps\), rir: parseRir\(s\.rir\), rirSaisi: s\.rirSaisi === true && parseRir\(s\.rir\) !== null, \.\.\.\(parseRir\(s\.rirCible\) !== null \? \{ rirCible: parseRir\(s\.rirCible\) \} : \{\}\)(?:, \.\.\.\(parseInt\(s\.repsCible\) > 0 \? \{ repsCible: parseInt\(s\.repsCible\) \} : \{\}\))?(?:, \.\.\.\(Number\(s\.faiteLe\) > 0 \? \{ faiteLe: Number\(s\.faiteLe\) \} : \{\}\))?, done: true \}\)\)/);
+const SAVE_MAP = SRC.match(/\.map\(s => \(\{ weight: parseFloat\(s\.weight\), reps: parseInt\(s\.reps\), rir: parseRir\(s\.rir\), (?:rirReel: parseRir\(s\.rir\), )?rirSaisi: s\.rirSaisi === true && parseRir\(s\.rir\) !== null, \.\.\.\(parseRir\(s\.rirCible\) !== null \? \{ rirCible: parseRir\(s\.rirCible\) \} : \{\}\)(?:, \.\.\.\(parseInt\(s\.repsCible\) > 0 \? \{ repsCible: parseInt\(s\.repsCible\) \} : \{\}\))?(?:, \.\.\.\(Number\(s\.faiteLe\) > 0 \? \{ faiteLe: Number\(s\.faiteLe\) \} : \{\}\))?, done: true \}\)\)/);
 if (!SAVE_MAP) throw new Error('transformation des series de saveSession introuvable');
 const toSaved = (app, sets) => vm.runInContext('(function(sets){ return sets.filter(s => s.weight && s.reps)' + SAVE_MAP[0] + '; })', app.ctx)(sets);
 
@@ -40,10 +40,10 @@ t('SEANCE EN COURS : serie neuve = RIR vide + rirSaisi:false ; choisir une valeu
   assert.deepStrictEqual(sets.map(x => [x.rir, x.rirSaisi]), [['0', true], ['3', true], ['', false], ['', false]]); });
 t('ENREGISTREMENT : RIR jamais choisi -> RIR inconnu (null) et rirSaisi:false, rien d\'invente', async () => {
   const app = await boot(store()); const out = toSaved(app, [{ weight: '50', reps: '8', rir: '', rirSaisi: false }, { weight: '50', reps: '8', rir: '', rirSaisi: true }, { weight: '50', reps: '8', rir: '3', rirSaisi: true }]);
-  assert.deepStrictEqual(JSON.parse(JSON.stringify(out)), [{ weight: 50, reps: 8, rir: null, rirSaisi: false, done: true }, { weight: 50, reps: 8, rir: null, rirSaisi: false, done: true }, { weight: 50, reps: 8, rir: 3, rirSaisi: true, done: true }]); });
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(out)), [{ weight: 50, reps: 8, rir: null, rirReel: null, rirSaisi: false, done: true }, { weight: 50, reps: 8, rir: null, rirReel: null, rirSaisi: false, done: true }, { weight: 50, reps: 8, rir: 3, rirReel: 3, rirSaisi: true, done: true }]); });
 t('ENREGISTREMENT : RIR 0 enregistre 0 (plus 2) ; rirSaisi true/false conserve ; serie ancienne sans rirSaisi -> false', async () => {
   const app = await boot(store()); const out = toSaved(app, [{ weight: '50', reps: '8', rir: '0', rirSaisi: true, done: true }, { weight: '50', reps: '8', rir: '2', rirSaisi: false, done: true }, { weight: '50', reps: '7', rir: '1', done: true }]);
-  assert.deepStrictEqual(JSON.parse(JSON.stringify(out)), [{ weight: 50, reps: 8, rir: 0, rirSaisi: true, done: true }, { weight: 50, reps: 8, rir: 2, rirSaisi: false, done: true }, { weight: 50, reps: 7, rir: 1, rirSaisi: false, done: true }]); });
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(out)), [{ weight: 50, reps: 8, rir: 0, rirReel: 0, rirSaisi: true, done: true }, { weight: 50, reps: 8, rir: 2, rirReel: 2, rirSaisi: false, done: true }, { weight: 50, reps: 7, rir: 1, rirReel: 1, rirSaisi: false, done: true }]); });
 t('SAUVEGARDE + RECHARGEMENT : une nouvelle seance a RIR 0 survit au rechargement ; les anciennes seances restent octet pour octet', async () => {
   const ls = store(); let app = await boot(ls);
   const newS = { id: 3, date: '2026-11-22', routineId: 1, routineName: 'PUSH', exercises: [{ name: 'Exo A', repsTarget: '8-12', note: '', rest: 90, sets: toSaved(app, [{ weight: '52.5', reps: '8', rir: '0', rirSaisi: true }, { weight: '52.5', reps: '7', rir: '1', rirSaisi: false }]) }] };
@@ -54,7 +54,7 @@ t('SAUVEGARDE + RECHARGEMENT : une nouvelle seance a RIR 0 survit au rechargemen
   const last = app.state('sessions')[2].exercises[0].sets; assert.strictEqual(last[0].rir, 0); assert.strictEqual(last[0].rirSaisi, true); assert.strictEqual(last[1].rirSaisi, false); });
 t('RIR CIBLE : enregistre a part (rirCible) ; jamais recopie dans le RIR reel ; RIR reel vide = inconnu', async () => {
   const app = await boot(store()); const out = toSaved(app, [{ weight: '50', reps: '8', rir: '', rirCible: 3, rirSaisi: false }, { weight: '50', reps: '8', rir: '2', rirCible: 2, rirSaisi: true }, { weight: '50', reps: '8', rir: '1', rirSaisi: true }]);
-  assert.deepStrictEqual(JSON.parse(JSON.stringify(out)), [{ weight: 50, reps: 8, rir: null, rirSaisi: false, rirCible: 3, done: true }, { weight: 50, reps: 8, rir: 2, rirSaisi: true, rirCible: 2, done: true }, { weight: 50, reps: 8, rir: 1, rirSaisi: true, done: true }]); });
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(out)), [{ weight: 50, reps: 8, rir: null, rirReel: null, rirSaisi: false, rirCible: 3, done: true }, { weight: 50, reps: 8, rir: 2, rirReel: 2, rirSaisi: true, rirCible: 2, done: true }, { weight: 50, reps: 8, rir: 1, rirReel: 1, rirSaisi: true, done: true }]); });
 t('EXPORT JSON : l\'export lit les seances stockees telles quelles (RIR 0 et rirSaisi inclus)', async () => {
   const ex = fnSrc('function exportData('); assert.ok(/sessions: load\(KEYS\.sessions\) \|\| \[\]/.test(ex), 'export = contenu stocke, sans transformation');
   const ls = store(); const app = await boot(ls); const withNew = OLD.concat([{ id: 3, date: '2026-11-22', routineName: 'PUSH', exercises: [{ name: 'Exo A', sets: [{ weight: 50, reps: 8, rir: 0, rirSaisi: true, done: true }] }] }]);

@@ -211,6 +211,17 @@ t('0.20.1 Appli : heure de validation notee a la validation, retiree a la devali
   assert.strictEqual((SRC.match(/faiteLe/g) || []).length, 5, 'aucun autre usage (pas d\'affichage)');
 });
 
+t('Page coach (option sansDeplacements) : aucun deplacement, echange ni transfert de serie ; les autres propositions restent', () => {
+  const INTERDITS = ['deplacer_exercice', 'echanger_exercices', 'transferer_serie'];
+  [scTransfert(), scRepartition('prog')].forEach(d => {
+    const avec = P(d), sans = P(d, { sansDeplacements: true });
+    assert.ok(avec.propositions.some(p => INTERDITS.includes(p.type)), 'le scenario produit bien un echange sans l option');
+    assert.ok(!sans.propositions.some(p => INTERDITS.includes(p.type)), JSON.stringify(sans.propositions.map(p => p.type)));
+  });
+  const s = seances([{ du: -120, au: -60, pas: 4, exos: [[DI, 'prog', 3, 20]] }, { du: -56, au: -30, pas: 4, exos: [[DC, 'prog', 3, 30]] }, { du: -27, au: -1, pas: 4, exos: [[DC, 'stag', 3, 45]] }]);
+  assert.ok(P({ sessions: s, routines: [routine(1, 'Push', [[DC, 3]])] }, { sansDeplacements: true }).propositions.some(x => x.type === 'remplacer_exercice'), 'remplacement toujours propose');
+});
+
 (async () => { let fail = 0;
   for (const [n, f] of tests) { try { await f(); console.log('OK   ' + n); } catch (e) { fail++; console.log('FAIL ' + n + '\n     -> ' + String(e.message).split('\n').slice(0, 6).join('\n        ')); } }
   console.log(`\n${tests.length - fail}/${tests.length} tests passes`); process.exit(fail ? 1 : 0); })();

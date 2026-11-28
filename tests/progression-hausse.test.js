@@ -94,7 +94,7 @@ t('Appli : textes affiches (vrai coachConseilAffichage) ; pre-remplissage 42,5 k
   const m = SRC.match(/\.map\(s => \(\{ weight: parseFloat\(s\.weight\), reps: parseInt\(s\.reps\),[^\n]*repsCible: parseInt\(s\.repsCible\)[^\n]*done: true \}\)\)/); assert.ok(m, 'enregistrement');
   const sauve = vm.runInContext('(function(sets){ return sets.filter(s => s.weight && s.reps)' + m[0] + '; })', Object.assign(vm.createContext({ parseRir: v => (v === '' || v === null || v === undefined ? null : parseInt(v, 10)) })))(
     [{ weight: '42.5', reps: '9', rir: '', rirCible: 3, repsCible: 8, rirSaisi: false }, { weight: '42.5', reps: '', rir: '', repsCible: 8 }]);
-  assert.deepStrictEqual(JSON.parse(JSON.stringify(sauve)), [{ weight: 42.5, reps: 9, rir: null, rirSaisi: false, rirCible: 3, repsCible: 8, done: true }], 'reps faites = 9, cible = 8 a part ; serie vide non enregistree');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(sauve)), [{ weight: 42.5, reps: 9, rir: null, rirReel: null, rirSaisi: false, rirCible: 3, repsCible: 8, done: true }], 'reps faites = 9, cible = 8 a part ; serie vide non enregistree');
   // La cible enregistree n'entre dans aucun calcul : memes mesures avec ou sans elle.
   const a = E.mesuresSeance(st('42.5x9,42.5x9').map(E.normaliserSerie)), b = E.mesuresSeance(st('42.5x9,42.5x9').map(s => Object.assign(s, { repsCible: 8 })).map(E.normaliserSerie));
   assert.deepStrictEqual(a, b);
