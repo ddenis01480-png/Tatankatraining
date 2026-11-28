@@ -1797,11 +1797,12 @@ function SessionTab({ sessions, setSessions, activeRoutine, setActiveRoutine, ro
     const wasNotDone = !exSets2[setIdx].done;
     // 0.20.1 : heure de validation de la serie (mesure de la duree active, rien d'affiche) ; retiree si la serie est devalidee.
     const updatedSets = exSets2.map((s, si) => si !== setIdx ? s : (s.done ? (({ faiteLe, ...reste }) => ({ ...reste, done: false }))(s) : { ...s, done: true, faiteLe: Date.now() }));
-    setCurrentSets(prev => ({
-      ...prev, exercises: prev.exercises.map((e, ei) =>
-        ei !== exIdx ? e : { ...e, sets: updatedSets }
-      )
-    }));
+    setCurrentSets(prev => {
+      const updated = { ...prev, exercises: prev.exercises.map((e, ei) => ei !== exIdx ? e : { ...e, sets: updatedSets }) };
+      // Sauvegarde immediate de la seance en cours (validation + heure), meme si l'appli est fermee juste apres.
+      try { lsSetNs("it3_current_session", JSON.stringify(updated)); } catch(e) {}
+      return updated;
+    });
     if (wasNotDone) {
       try { if (navigator.vibrate) navigator.vibrate(40); } catch(e) {}
       // Détecter PR
